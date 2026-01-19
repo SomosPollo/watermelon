@@ -23,6 +23,47 @@ Edit this file to configure your sandbox, then run 'watermelon run'
 
 ---
 
+## `watermelon code`
+
+Opens your IDE connected to the sandbox VM via SSH.
+
+```bash
+watermelon code
+```
+
+**Behavior:**
+- Requires the VM to exist (run `watermelon run` first)
+- Starts the VM if it was stopped
+- Automatically configures `~/.ssh/config` for Lima VMs (one-time setup)
+- Launches your configured IDE with Remote-SSH to the VM
+- Opens directly to `/project` directory
+
+**IDE Configuration:**
+
+By default, uses VS Code (`code`). Configure in `.watermelon.toml`:
+
+```toml
+[ide]
+command = "cursor"  # Or "code", "codium", "code-insiders", etc.
+```
+
+**Supported IDEs:**
+- VS Code (`code`)
+- Cursor (`cursor`)
+- VSCodium (`codium`)
+- Any editor supporting `--remote ssh-remote+<host>` syntax
+
+**Manual SSH Connection:**
+
+If you prefer to connect manually:
+```bash
+ssh lima-watermelon-myapp-a1b2c3d4
+```
+
+The SSH host is printed when you run `watermelon run`.
+
+---
+
 ## `watermelon run`
 
 Enters an interactive shell inside the sandbox VM.

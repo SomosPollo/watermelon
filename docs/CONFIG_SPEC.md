@@ -30,6 +30,9 @@ disk = "10GB"
 
 [security]
 on_violation = "log"
+
+[ide]
+command = "code"
 ```
 
 ---
@@ -262,6 +265,48 @@ on_violation = "fail"
 # Quiet mode: block without noise
 on_violation = "silent"
 ```
+
+---
+
+### `[ide]`
+
+Configures the IDE for the `watermelon code` command.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | string | `"code"` | IDE command to launch |
+
+**Supported IDE commands:**
+
+| IDE | Command |
+|-----|---------|
+| VS Code | `code` |
+| Cursor | `cursor` |
+| VSCodium | `codium` |
+| VS Code Insiders | `code-insiders` |
+
+```toml
+[ide]
+# VS Code (default)
+command = "code"
+
+# Cursor
+command = "cursor"
+
+# VSCodium
+command = "codium"
+```
+
+**How it works:**
+
+When you run `watermelon code`, it executes:
+```bash
+<command> --remote ssh-remote+lima-<vmname> /project
+```
+
+This opens your IDE connected to the sandbox VM via SSH Remote, directly in the `/project` directory.
+
+**Security:** The IDE command is validated to prevent shell injection (no metacharacters allowed).
 
 ---
 

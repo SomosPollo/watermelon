@@ -50,6 +50,7 @@ exit
 |---------|-------------|
 | `watermelon init` | Create `.watermelon.toml` config |
 | `watermelon run` | Enter sandbox (creates VM if needed) |
+| `watermelon code` | Open IDE connected to sandbox via SSH |
 | `watermelon exec <cmd>` | Run command without interactive shell |
 | `watermelon stop` | Stop VM (preserves state) |
 | `watermelon destroy` | Delete VM and all state |
@@ -76,6 +77,9 @@ forward = [3000]
 [resources]
 memory = "4GB"
 cpus = 2
+
+[ide]
+command = "code"  # or "cursor", "codium"
 ```
 
 See [docs/CONFIG_SPEC.md](./docs/CONFIG_SPEC.md) for full reference.
