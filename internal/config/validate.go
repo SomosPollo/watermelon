@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 )
 
 // Validate checks config for errors
@@ -23,6 +24,14 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Resources.Disk == "" {
 		return fmt.Errorf("disk is required")
+	}
+
+	// Validate IDE command
+	if cfg.IDE.Command == "" {
+		return fmt.Errorf("IDE command cannot be empty")
+	}
+	if strings.ContainsAny(cfg.IDE.Command, ";|&$`\\") {
+		return fmt.Errorf("IDE command contains invalid characters")
 	}
 
 	return nil

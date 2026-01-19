@@ -19,4 +19,7 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.Security.OnViolation != "log" {
 		t.Errorf("expected default on_violation 'log', got %s", cfg.Security.OnViolation)
 	}
+	if cfg.IDE.Command != "code" {
+		t.Errorf("expected default IDE command 'code', got %s", cfg.IDE.Command)
+	}
 }

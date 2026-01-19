@@ -2,13 +2,14 @@ package config
 
 // Config represents .watermelon.toml
 type Config struct {
-	VM        VMConfig          `toml:"vm"`
-	Network   NetworkConfig     `toml:"network"`
+	VM        VMConfig            `toml:"vm"`
+	Network   NetworkConfig       `toml:"network"`
 	Tools     map[string][]string `toml:"tools"`
-	Mounts    map[string]Mount  `toml:"mounts"`
-	Ports     PortsConfig       `toml:"ports"`
-	Resources ResourcesConfig   `toml:"resources"`
-	Security  SecurityConfig    `toml:"security"`
+	Mounts    map[string]Mount    `toml:"mounts"`
+	Ports     PortsConfig         `toml:"ports"`
+	Resources ResourcesConfig     `toml:"resources"`
+	Security  SecurityConfig      `toml:"security"`
+	IDE       IDEConfig           `toml:"ide"`
 }
 
 type VMConfig struct {
@@ -38,6 +39,10 @@ type SecurityConfig struct {
 	OnViolation string `toml:"on_violation"`
 }
 
+type IDEConfig struct {
+	Command string `toml:"command"`
+}
+
 // NewConfig returns a Config with default values
 func NewConfig() *Config {
 	return &Config{
@@ -59,6 +64,9 @@ func NewConfig() *Config {
 		},
 		Security: SecurityConfig{
 			OnViolation: "log",
+		},
+		IDE: IDEConfig{
+			Command: "code",
 		},
 	}
 }

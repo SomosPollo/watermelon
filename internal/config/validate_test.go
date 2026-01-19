@@ -61,3 +61,33 @@ func TestValidateResources(t *testing.T) {
 		t.Errorf("error should mention disk: %v", err)
 	}
 }
+
+func TestValidateIDECommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		wantErr bool
+	}{
+		{"valid code", "code", false},
+		{"valid cursor", "cursor", false},
+		{"valid with dash", "code-insiders", false},
+		{"empty command", "", true},
+		{"semicolon injection", "code; rm -rf /", true},
+		{"pipe injection", "code | cat", true},
+		{"ampersand injection", "code && evil", true},
+		{"dollar injection", "code$PATH", true},
+		{"backtick injection", "code`whoami`", true},
+		{"backslash injection", "code\\test", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.IDE.Command = tt.command
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with IDE.Command=%q error = %v, wantErr %v", tt.command, err, tt.wantErr)
+			}
+		})
+	}
+}

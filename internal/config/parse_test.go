@@ -83,3 +83,31 @@ allow = ["example.com"]
 		t.Errorf("expected default on_violation log, got %s", cfg.Security.OnViolation)
 	}
 }
+
+func TestParseIDEConfig(t *testing.T) {
+	tomlData := `
+[ide]
+command = "cursor"
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if cfg.IDE.Command != "cursor" {
+		t.Errorf("expected IDE.Command = 'cursor', got %q", cfg.IDE.Command)
+	}
+}
+
+func TestParseIDEConfigDefault(t *testing.T) {
+	tomlData := `
+[network]
+allow = []
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if cfg.IDE.Command != "code" {
+		t.Errorf("expected IDE.Command default = 'code', got %q", cfg.IDE.Command)
+	}
+}
