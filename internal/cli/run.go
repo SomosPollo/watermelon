@@ -41,6 +41,12 @@ func runRun() error {
 
 	if status == lima.StatusNotFound {
 		fmt.Println("Creating sandbox VM...")
+
+		// Setup SSH config for IDE access
+		if err := lima.EnsureSSHConfig(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not configure SSH: %v\n", err)
+		}
+
 		yamlContent, err := lima.GenerateConfig(cfg, dir)
 		if err != nil {
 			return fmt.Errorf("generating Lima config: %w", err)
@@ -69,9 +75,8 @@ func runRun() error {
 		}
 	}
 
-	fmt.Printf("Entering sandbox (VM: %s)\n", vmName)
-	fmt.Println("Project mounted at /project")
-	fmt.Println("Type 'exit' to leave the sandbox")
+	sshHost := lima.GetSSHHost(vmName)
+	fmt.Printf("IDE: connect to %s\n", sshHost)
 	fmt.Println()
 
 	return lima.Shell(vmName)

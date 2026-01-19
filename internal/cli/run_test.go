@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/saeta/watermelon/internal/lima"
 )
 
 func TestRunCommandRequiresConfig(t *testing.T) {
@@ -44,5 +46,16 @@ allow = []
 	}
 	if cfg.VM.Image != "ubuntu-22.04" {
 		t.Errorf("expected ubuntu-22.04, got %s", cfg.VM.Image)
+	}
+}
+
+func TestRunPrintsSSHHost(t *testing.T) {
+	// This tests that the vmName is converted to SSH host format
+	vmName := "watermelon-test-12345678"
+	expectedHost := "lima-" + vmName
+
+	host := lima.GetSSHHost(vmName)
+	if host != expectedHost {
+		t.Errorf("expected SSH host %q, got %q", expectedHost, host)
 	}
 }
