@@ -79,6 +79,11 @@ provision:
       iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
       iptables -A OUTPUT -j REJECT
 {{- end }}
+  - mode: user
+    script: |
+      if ! grep -q 'cd /project' ~/.bashrc 2>/dev/null; then
+        echo '[ -d /project ] && cd /project' >> ~/.bashrc
+      fi
 
 networks: []
 

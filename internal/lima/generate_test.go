@@ -126,3 +126,19 @@ func TestGenerateLimaConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateConfigHasBashrcProvision(t *testing.T) {
+	cfg := config.NewConfig()
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Check for user-mode provision that sets up /project cd
+	if !strings.Contains(yaml, "mode: user") {
+		t.Error("expected user-mode provision in yaml")
+	}
+	if !strings.Contains(yaml, "cd /project") {
+		t.Error("expected 'cd /project' in bashrc provision")
+	}
+}
