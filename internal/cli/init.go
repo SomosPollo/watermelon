@@ -42,6 +42,10 @@ disk = "10GB"
 [security]
 # What to do on policy violations: "log", "fail", or "silent"
 on_violation = "log"
+
+[ide]
+# IDE command for 'watermelon code' (e.g., "code", "cursor", "codium")
+command = "code"
 `
 
 func NewInitCmd() *cobra.Command {
