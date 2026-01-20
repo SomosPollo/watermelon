@@ -96,6 +96,35 @@ allow = [
 allow = []
 ```
 
+#### `[network.process]`
+
+Per-process network rules. Each key is a process name, and the value is a list of additional domains that process can access (in addition to the general `allow` list).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `"<process-name>"` | string[] | Additional allowed domains for this process |
+
+**Behavior:**
+- Rules are **additive**: process-specific domains are added to the general `allow` list
+- Processes not listed use only the general `allow` rules
+- Wildcards supported: `"*.example.com"`
+
+**Implementation:** Each listed process runs in a dedicated Linux network namespace with its own iptables rules. Wrapper scripts in `/usr/local/bin/` transparently route the process through its namespace.
+
+```toml
+[network]
+allow = ["registry.npmjs.org", "pypi.org"]
+
+[network.process]
+claude = ["api.anthropic.com", "*.anthropic.com"]
+codex = ["api.openai.com"]
+aider = ["api.anthropic.com", "api.openai.com"]
+```
+
+**Security:** Process names cannot contain shell metacharacters (`;|&$\`\\ /`).
+
+**Note:** Requires VM reprovisioning (`watermelon destroy && watermelon init`) to apply changes.
+
 ---
 
 ### `[tools]`

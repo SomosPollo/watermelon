@@ -6,6 +6,7 @@ Real-world configuration examples for different project types and security scena
 
 | Example | Use Case |
 |---------|----------|
+| [ai-coding-assistants](./ai-coding-assistants/) | Claude Code, Codex, Aider with per-process network isolation |
 | [react-app](./react-app/) | Standard React/Vite development |
 | [nextjs](./nextjs/) | Next.js with API routes |
 | [python-django](./python-django/) | Django web application |
