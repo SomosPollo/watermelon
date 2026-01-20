@@ -23,3 +23,13 @@ func TestConfigDefaults(t *testing.T) {
 		t.Errorf("expected default IDE command 'code', got %s", cfg.IDE.Command)
 	}
 }
+
+func TestNewConfigHasEmptyNetworkProcess(t *testing.T) {
+	cfg := NewConfig()
+	if cfg.Network.Process == nil {
+		t.Error("expected Network.Process to be initialized, got nil")
+	}
+	if len(cfg.Network.Process) != 0 {
+		t.Errorf("expected Network.Process to be empty, got %d entries", len(cfg.Network.Process))
+	}
+}

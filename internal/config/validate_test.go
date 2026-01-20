@@ -91,3 +91,64 @@ func TestValidateIDECommand(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateNetworkProcessNames(t *testing.T) {
+	tests := []struct {
+		name        string
+		processName string
+		wantErr     bool
+	}{
+		{"valid simple", "claude", false},
+		{"valid with dash", "code-insiders", false},
+		{"valid with underscore", "my_tool", false},
+		{"empty name", "", true},
+		{"semicolon injection", "claude;rm", true},
+		{"pipe injection", "claude|cat", true},
+		{"ampersand injection", "claude&&evil", true},
+		{"dollar injection", "claude$PATH", true},
+		{"backtick injection", "claude`whoami`", true},
+		{"backslash injection", "claude\\test", true},
+		{"space in name", "my tool", true},
+		{"slash in name", "my/tool", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Network.Process = map[string][]string{
+				tt.processName: {"example.com"},
+			}
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with process name %q error = %v, wantErr %v", tt.processName, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateNetworkProcessDomains(t *testing.T) {
+	tests := []struct {
+		name    string
+		domains []string
+		wantErr bool
+	}{
+		{"valid domains", []string{"api.anthropic.com", "example.com"}, false},
+		{"valid wildcard", []string{"*.anthropic.com"}, false},
+		{"empty list", []string{}, false},
+		{"injection in domain", []string{"evil.com; rm -rf /"}, true},
+		{"empty domain in list", []string{"good.com", ""}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Network.Process = map[string][]string{
+				"testprocess": tt.domains,
+			}
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with domains %v error = %v, wantErr %v", tt.domains, err, tt.wantErr)
+			}
+		})
+	}
+}

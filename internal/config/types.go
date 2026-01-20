@@ -17,7 +17,8 @@ type VMConfig struct {
 }
 
 type NetworkConfig struct {
-	Allow []string `toml:"allow"`
+	Allow   []string            `toml:"allow"`
+	Process map[string][]string `toml:"process"`
 }
 
 type Mount struct {
@@ -50,7 +51,8 @@ func NewConfig() *Config {
 			Image: "ubuntu-22.04",
 		},
 		Network: NetworkConfig{
-			Allow: []string{},
+			Allow:   []string{},
+			Process: map[string][]string{},
 		},
 		Tools:  map[string][]string{},
 		Mounts: map[string]Mount{},

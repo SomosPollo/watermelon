@@ -111,3 +111,35 @@ allow = []
 		t.Errorf("expected IDE.Command default = 'code', got %q", cfg.IDE.Command)
 	}
 }
+
+func TestParseNetworkProcess(t *testing.T) {
+	tomlData := `
+[network]
+allow = ["registry.npmjs.org"]
+
+[network.process]
+claude = ["api.anthropic.com", "*.anthropic.com"]
+codex = ["api.openai.com"]
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+
+	if len(cfg.Network.Process) != 2 {
+		t.Errorf("expected 2 process entries, got %d", len(cfg.Network.Process))
+	}
+
+	claudeDomains := cfg.Network.Process["claude"]
+	if len(claudeDomains) != 2 {
+		t.Errorf("expected 2 domains for claude, got %d", len(claudeDomains))
+	}
+	if claudeDomains[0] != "api.anthropic.com" {
+		t.Errorf("expected first claude domain to be 'api.anthropic.com', got %q", claudeDomains[0])
+	}
+
+	codexDomains := cfg.Network.Process["codex"]
+	if len(codexDomains) != 1 {
+		t.Errorf("expected 1 domain for codex, got %d", len(codexDomains))
+	}
+}
