@@ -70,7 +70,9 @@ provision:
 {{- end }}
       # Network restrictions via iptables
 {{- range .NetworkAllow }}
+{{- if not (. | isWildcard) }}
       iptables -A OUTPUT -d {{ . }} -j ACCEPT
+{{- end }}
 {{- end }}
 {{- if .NetworkAllow }}
       iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
@@ -78,6 +80,89 @@ provision:
       iptables -A OUTPUT -o lo -j ACCEPT
       iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
       iptables -A OUTPUT -j REJECT
+{{- end }}
+{{- if .NetworkProcess }}
+      # Per-process network namespaces
+      apt-get update && apt-get install -y dnsmasq ipset
+{{- $netIndex := 1 }}
+{{- range $proc, $domains := .NetworkProcess }}
+      # Setup namespace for {{ $proc }}
+      ip netns add watermelon-{{ $proc }}
+
+      # Create veth pair
+      ip link add veth-{{ $proc }} type veth peer name veth-{{ $proc }}-ns
+      ip link set veth-{{ $proc }}-ns netns watermelon-{{ $proc }}
+
+      # Configure host side
+      ip addr add 10.200.{{ $netIndex }}.1/24 dev veth-{{ $proc }}
+      ip link set veth-{{ $proc }} up
+
+      # Configure namespace side
+      ip netns exec watermelon-{{ $proc }} ip addr add 10.200.{{ $netIndex }}.2/24 dev veth-{{ $proc }}-ns
+      ip netns exec watermelon-{{ $proc }} ip link set veth-{{ $proc }}-ns up
+      ip netns exec watermelon-{{ $proc }} ip link set lo up
+      ip netns exec watermelon-{{ $proc }} ip route add default via 10.200.{{ $netIndex }}.1
+
+      # Enable forwarding and NAT for this namespace
+      iptables -t nat -A POSTROUTING -s 10.200.{{ $netIndex }}.0/24 -j MASQUERADE
+      echo 1 > /proc/sys/net/ipv4/ip_forward
+
+      # Create ipset for wildcard domains
+      ipset create watermelon-{{ $proc }}-allow hash:ip
+
+      # Apply iptables rules in namespace (general + process-specific)
+{{- range $.NetworkAllow }}
+{{- if not (. | isWildcard) }}
+      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -d {{ . }} -j ACCEPT
+{{- end }}
+{{- end }}
+{{- range $domains }}
+{{- if not (. | isWildcard) }}
+      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -d {{ . }} -j ACCEPT
+{{- end }}
+{{- end }}
+      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -m set --match-set watermelon-{{ $proc }}-allow dst -j ACCEPT
+      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -o lo -j ACCEPT
+      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -j REJECT
+
+      # Configure dnsmasq for {{ $proc }} wildcard domains
+      mkdir -p /etc/watermelon
+      cat > /etc/watermelon/{{ $proc }}-dns.conf << 'DNSCONF'
+# dnsmasq config for {{ $proc }}
+port=53
+bind-interfaces
+listen-address=10.200.{{ $netIndex }}.1
+server=8.8.8.8
+server=8.8.4.4
+{{- range $domains }}
+{{- if . | isWildcard }}
+ipset=/{{ . | baseDomain }}/watermelon-{{ $proc }}-allow
+{{- end }}
+{{- end }}
+DNSCONF
+      # Start dnsmasq for this namespace
+      dnsmasq --conf-file=/etc/watermelon/{{ $proc }}-dns.conf
+      # Configure namespace to use this DNS
+      mkdir -p /etc/netns/watermelon-{{ $proc }}
+      echo "nameserver 10.200.{{ $netIndex }}.1" > /etc/netns/watermelon-{{ $proc }}/resolv.conf
+
+      # Create wrapper script for {{ $proc }}
+      cat > /usr/local/bin/{{ $proc }} << 'WRAPPER'
+#!/bin/bash
+# Find the real binary (skip this wrapper)
+REAL_BIN=$(which -a {{ $proc }} 2>/dev/null | grep -v /usr/local/bin/{{ $proc }} | head -1)
+if [ -z "$REAL_BIN" ]; then
+    echo "Error: {{ $proc }} not found in PATH" >&2
+    exit 1
+fi
+exec ip netns exec watermelon-{{ $proc }} "$REAL_BIN" "$@"
+WRAPPER
+      chmod +x /usr/local/bin/{{ $proc }}
+{{- $netIndex = add $netIndex 1 }}
+{{- end }}
 {{- end }}
   - mode: user
     script: |
@@ -102,14 +187,15 @@ portForwards:
 `
 
 type templateData struct {
-	CPUs         int
-	Memory       string
-	Disk         string
-	ProjectDir   string
-	ToolsDir     string
-	NetworkAllow []string
-	PortForwards []int
-	Tools        map[string][]string
+	CPUs           int
+	Memory         string
+	Disk           string
+	ProjectDir     string
+	ToolsDir       string
+	NetworkAllow   []string
+	NetworkProcess map[string][]string
+	PortForwards   []int
+	Tools          map[string][]string
 }
 
 // GenerateConfig creates Lima YAML from watermelon config
@@ -121,6 +207,21 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		}
 	}
 
+	// Validate network process names and domains
+	for processName, domains := range cfg.Network.Process {
+		if processName == "" {
+			return "", fmt.Errorf("process name cannot be empty")
+		}
+		if strings.ContainsAny(processName, shellMetacharacters+" /") {
+			return "", fmt.Errorf("invalid process name %q: contains invalid characters", processName)
+		}
+		for _, domain := range domains {
+			if err := validateDomain(domain); err != nil {
+				return "", fmt.Errorf("invalid domain for process %q: %w", processName, err)
+			}
+		}
+	}
+
 	// Validate port forwards
 	for _, port := range cfg.Ports.Forward {
 		if err := validatePort(port); err != nil {
@@ -128,20 +229,30 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		}
 	}
 
-	tmpl, err := template.New("lima").Parse(limaTemplate)
+	funcMap := template.FuncMap{
+		"add": func(a, b int) int { return a + b },
+		"isWildcard": func(s string) bool {
+			return strings.HasPrefix(s, "*.")
+		},
+		"baseDomain": func(s string) string {
+			return strings.TrimPrefix(s, "*.")
+		},
+	}
+	tmpl, err := template.New("lima").Funcs(funcMap).Parse(limaTemplate)
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}
 
 	data := templateData{
-		CPUs:         cfg.Resources.CPUs,
-		Memory:       convertMemory(cfg.Resources.Memory),
-		Disk:         convertDisk(cfg.Resources.Disk),
-		ProjectDir:   projectDir,
-		ToolsDir:     "",
-		NetworkAllow: cfg.Network.Allow,
-		PortForwards: cfg.Ports.Forward,
-		Tools:        cfg.Tools,
+		CPUs:           cfg.Resources.CPUs,
+		Memory:         convertMemory(cfg.Resources.Memory),
+		Disk:           convertDisk(cfg.Resources.Disk),
+		ProjectDir:     projectDir,
+		ToolsDir:       "",
+		NetworkAllow:   cfg.Network.Allow,
+		NetworkProcess: cfg.Network.Process,
+		PortForwards:   cfg.Ports.Forward,
+		Tools:          cfg.Tools,
 	}
 
 	var buf bytes.Buffer

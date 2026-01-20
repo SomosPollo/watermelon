@@ -142,3 +142,146 @@ func TestGenerateConfigHasBashrcProvision(t *testing.T) {
 		t.Error("expected 'cd /project' in bashrc provision")
 	}
 }
+
+func TestGenerateConfigWithNetworkProcess(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org"}
+	cfg.Network.Process = map[string][]string{
+		"claude": {"api.anthropic.com"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Check that namespace creation is present
+	if !strings.Contains(yaml, "watermelon-claude") {
+		t.Error("expected yaml to contain namespace name 'watermelon-claude'")
+	}
+}
+
+func TestGenerateConfigRejectsInvalidProcessDomain(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Process = map[string][]string{
+		"claude": {"api.anthropic.com", "evil.com; rm -rf /"},
+	}
+
+	_, err := GenerateConfig(cfg, "/test")
+	if err == nil {
+		t.Fatal("expected error for invalid process domain, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("expected error to mention 'invalid', got: %v", err)
+	}
+}
+
+func TestGenerateConfigRejectsInvalidProcessName(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Process = map[string][]string{
+		"claude;evil": {"api.anthropic.com"},
+	}
+
+	_, err := GenerateConfig(cfg, "/test")
+	if err == nil {
+		t.Fatal("expected error for invalid process name, got nil")
+	}
+}
+
+func TestGenerateConfigNetworkNamespaceSetup(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org"}
+	cfg.Network.Process = map[string][]string{
+		"claude": {"api.anthropic.com", "*.anthropic.com"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Check for veth pair setup
+	if !strings.Contains(yaml, "ip link add") {
+		t.Error("expected yaml to contain veth pair creation")
+	}
+
+	// Check for namespace network config
+	if !strings.Contains(yaml, "ip netns exec watermelon-claude") {
+		t.Error("expected yaml to contain namespace execution")
+	}
+
+	// Check for iptables in namespace
+	if !strings.Contains(yaml, "api.anthropic.com") {
+		t.Error("expected yaml to contain process-specific domain")
+	}
+
+	// Check that wildcards are NOT passed directly to iptables (iptables doesn't support wildcard syntax)
+	if strings.Contains(yaml, "iptables -A OUTPUT -d *.anthropic.com") {
+		t.Error("wildcard domain should NOT appear in direct iptables rules")
+	}
+}
+
+func TestGenerateConfigWrapperScripts(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Process = map[string][]string{
+		"claude": {"api.anthropic.com"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Check for wrapper script creation
+	if !strings.Contains(yaml, "/usr/local/bin/claude") {
+		t.Error("expected yaml to contain wrapper script path")
+	}
+
+	// Check wrapper uses namespace
+	if !strings.Contains(yaml, "ip netns exec watermelon-claude") {
+		t.Error("expected wrapper to use network namespace")
+	}
+}
+
+func TestGenerateConfigDnsmasqForWildcards(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Process = map[string][]string{
+		"claude": {"*.anthropic.com"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Check for dnsmasq config
+	if !strings.Contains(yaml, "dnsmasq") {
+		t.Error("expected yaml to contain dnsmasq setup")
+	}
+
+	// Check for ipset configuration in dnsmasq
+	if !strings.Contains(yaml, "ipset=/anthropic.com/") {
+		t.Error("expected yaml to contain ipset dnsmasq rule")
+	}
+}
+
+func TestGenerateConfigEmptyNetworkProcess(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org"}
+	// Network.Process is empty (default)
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Should NOT contain namespace setup
+	if strings.Contains(yaml, "ip netns add") {
+		t.Error("expected yaml to NOT contain namespace setup when NetworkProcess is empty")
+	}
+
+	// Should still have regular iptables
+	if !strings.Contains(yaml, "registry.npmjs.org") {
+		t.Error("expected yaml to contain general network allow rules")
+	}
+}
