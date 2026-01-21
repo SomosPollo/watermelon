@@ -16,6 +16,20 @@ watermelon run
 
 ## How It Works
 
+### Automatic Installation
+
+The `[provision]` section installs AI tools during VM provisioning:
+
+```toml
+[provision]
+npm = ["@anthropic-ai/claude-code", "@openai/codex"]
+pip = ["aider-chat"]
+```
+
+This runs `npm install -g` and `pip install` automatically when the VM starts.
+
+### Per-Process Network Access
+
 The `[network.process]` section gives specific processes additional network access:
 
 ```toml

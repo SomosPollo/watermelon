@@ -127,6 +127,44 @@ aider = ["api.anthropic.com", "api.openai.com"]
 
 ---
 
+### `[provision]`
+
+Packages to install during VM provisioning. Each key corresponds to a package manager.
+
+| Field | Type | Requires Tool | Install Command |
+|-------|------|---------------|-----------------|
+| `npm` | string[] | `node` image | `npm install -g <pkg>` |
+| `pip` | string[] | `python` image | `pip install <pkg>` |
+| `cargo` | string[] | `rust` image | `cargo install <pkg>` |
+| `go` | string[] | `go` or `golang` image | `go install <pkg>` |
+| `gem` | string[] | `ruby` image | `gem install <pkg>` |
+
+**Validation:**
+- Package names cannot contain shell metacharacters (`;|&$\`\``)
+- Each package manager requires a matching tool image in `[tools]`
+- If the package manager command is not found at provision time, provisioning fails
+
+```toml
+[tools]
+"node:20-slim" = ["node", "npm", "npx"]
+"python:3.12-slim" = ["python", "python3", "pip"]
+
+[provision]
+npm = ["@anthropic-ai/claude-code", "typescript"]
+pip = ["aider-chat", "black"]
+```
+
+**Use case:** Install AI coding assistants and development tools automatically:
+
+```toml
+[provision]
+npm = ["@anthropic-ai/claude-code"]  # Claude Code CLI
+pip = ["aider-chat"]                  # Aider AI assistant
+cargo = ["ripgrep", "fd-find"]        # Fast search tools
+```
+
+---
+
 ### `[tools]`
 
 Defines containerized tools available in the sandbox. Tools are run via nerdctl containers with host networking enabled.
