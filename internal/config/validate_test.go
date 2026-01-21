@@ -152,3 +152,145 @@ func TestValidateNetworkProcessDomains(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateProvisionPackageNames(t *testing.T) {
+	tests := []struct {
+		name    string
+		npm     []string
+		wantErr bool
+	}{
+		{"valid simple package", []string{"typescript"}, false},
+		{"valid scoped package", []string{"@anthropic-ai/claude-code"}, false},
+		{"valid with version", []string{"typescript@5.0.0"}, false},
+		{"empty list", []string{}, false},
+		{"empty package name", []string{""}, true},
+		{"semicolon injection", []string{"pkg; rm -rf /"}, true},
+		{"pipe injection", []string{"pkg | cat"}, true},
+		{"ampersand injection", []string{"pkg && evil"}, true},
+		{"dollar injection", []string{"pkg$HOME"}, true},
+		{"backtick injection", []string{"pkg`whoami`"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Provision.Npm = tt.npm
+			// Add node tool so tool dependency validation passes for valid package names
+			if len(tt.npm) > 0 {
+				cfg.Tools = map[string][]string{"node:20-slim": {"node", "npm"}}
+			}
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with npm=%v error = %v, wantErr %v", tt.npm, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateProvisionRequiresTool(t *testing.T) {
+	tests := []struct {
+		name    string
+		npm     []string
+		pip     []string
+		cargo   []string
+		goPkgs  []string
+		gem     []string
+		tools   map[string][]string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "npm without node tool",
+			npm:     []string{"typescript"},
+			tools:   map[string][]string{},
+			wantErr: true,
+			errMsg:  "node",
+		},
+		{
+			name:    "npm with node tool",
+			npm:     []string{"typescript"},
+			tools:   map[string][]string{"node:20-slim": {"node", "npm"}},
+			wantErr: false,
+		},
+		{
+			name:    "pip without python tool",
+			pip:     []string{"requests"},
+			tools:   map[string][]string{},
+			wantErr: true,
+			errMsg:  "python",
+		},
+		{
+			name:    "pip with python tool",
+			pip:     []string{"requests"},
+			tools:   map[string][]string{"python:3.12-slim": {"python", "pip"}},
+			wantErr: false,
+		},
+		{
+			name:    "cargo without rust tool",
+			cargo:   []string{"ripgrep"},
+			tools:   map[string][]string{},
+			wantErr: true,
+			errMsg:  "rust",
+		},
+		{
+			name:    "cargo with rust tool",
+			cargo:   []string{"ripgrep"},
+			tools:   map[string][]string{"rust:latest": {"cargo", "rustc"}},
+			wantErr: false,
+		},
+		{
+			name:    "go without golang tool",
+			goPkgs:  []string{"github.com/junegunn/fzf@latest"},
+			tools:   map[string][]string{},
+			wantErr: true,
+			errMsg:  "go",
+		},
+		{
+			name:    "go with golang tool",
+			goPkgs:  []string{"github.com/junegunn/fzf@latest"},
+			tools:   map[string][]string{"golang:1.22": {"go"}},
+			wantErr: false,
+		},
+		{
+			name:    "gem without ruby tool",
+			gem:     []string{"rails"},
+			tools:   map[string][]string{},
+			wantErr: true,
+			errMsg:  "ruby",
+		},
+		{
+			name:    "gem with ruby tool",
+			gem:     []string{"rails"},
+			tools:   map[string][]string{"ruby:3.2": {"ruby", "gem"}},
+			wantErr: false,
+		},
+		{
+			name:    "empty provision is valid",
+			npm:     []string{},
+			pip:     []string{},
+			tools:   map[string][]string{},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Provision.Npm = tt.npm
+			cfg.Provision.Pip = tt.pip
+			cfg.Provision.Cargo = tt.cargo
+			cfg.Provision.Go = tt.goPkgs
+			cfg.Provision.Gem = tt.gem
+			cfg.Tools = tt.tools
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && tt.errMsg != "" && err != nil {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("expected error to contain %q, got: %v", tt.errMsg, err)
+				}
+			}
+		})
+	}
+}

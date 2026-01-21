@@ -33,3 +33,25 @@ func TestNewConfigHasEmptyNetworkProcess(t *testing.T) {
 		t.Errorf("expected Network.Process to be empty, got %d entries", len(cfg.Network.Process))
 	}
 }
+
+func TestNewConfigHasEmptyProvision(t *testing.T) {
+	cfg := NewConfig()
+	if cfg.Provision.Npm == nil {
+		t.Error("expected Provision.Npm to be initialized, got nil")
+	}
+	if len(cfg.Provision.Npm) != 0 {
+		t.Errorf("expected Provision.Npm to be empty, got %d entries", len(cfg.Provision.Npm))
+	}
+	if cfg.Provision.Pip == nil {
+		t.Error("expected Provision.Pip to be initialized, got nil")
+	}
+	if cfg.Provision.Cargo == nil {
+		t.Error("expected Provision.Cargo to be initialized, got nil")
+	}
+	if cfg.Provision.Go == nil {
+		t.Error("expected Provision.Go to be initialized, got nil")
+	}
+	if cfg.Provision.Gem == nil {
+		t.Error("expected Provision.Gem to be initialized, got nil")
+	}
+}

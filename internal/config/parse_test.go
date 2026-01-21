@@ -143,3 +143,45 @@ codex = ["api.openai.com"]
 		t.Errorf("expected 1 domain for codex, got %d", len(codexDomains))
 	}
 }
+
+func TestParseConfigWithProvision(t *testing.T) {
+	tomlContent := `
+[vm]
+image = "ubuntu-22.04"
+
+[provision]
+npm = ["@anthropic-ai/claude-code", "typescript"]
+pip = ["aider-chat"]
+cargo = ["ripgrep"]
+go = ["github.com/junegunn/fzf@latest"]
+gem = ["rails"]
+
+[resources]
+memory = "2GB"
+cpus = 1
+disk = "10GB"
+`
+	cfg, err := Parse([]byte(tomlContent))
+	if err != nil {
+		t.Fatalf("failed to parse config: %v", err)
+	}
+
+	if len(cfg.Provision.Npm) != 2 {
+		t.Errorf("expected 2 npm packages, got %d", len(cfg.Provision.Npm))
+	}
+	if cfg.Provision.Npm[0] != "@anthropic-ai/claude-code" {
+		t.Errorf("expected first npm package '@anthropic-ai/claude-code', got %q", cfg.Provision.Npm[0])
+	}
+	if len(cfg.Provision.Pip) != 1 || cfg.Provision.Pip[0] != "aider-chat" {
+		t.Errorf("expected pip package 'aider-chat', got %v", cfg.Provision.Pip)
+	}
+	if len(cfg.Provision.Cargo) != 1 || cfg.Provision.Cargo[0] != "ripgrep" {
+		t.Errorf("expected cargo package 'ripgrep', got %v", cfg.Provision.Cargo)
+	}
+	if len(cfg.Provision.Go) != 1 || cfg.Provision.Go[0] != "github.com/junegunn/fzf@latest" {
+		t.Errorf("expected go package, got %v", cfg.Provision.Go)
+	}
+	if len(cfg.Provision.Gem) != 1 || cfg.Provision.Gem[0] != "rails" {
+		t.Errorf("expected gem package 'rails', got %v", cfg.Provision.Gem)
+	}
+}

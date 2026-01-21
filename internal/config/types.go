@@ -4,6 +4,7 @@ package config
 type Config struct {
 	VM        VMConfig            `toml:"vm"`
 	Network   NetworkConfig       `toml:"network"`
+	Provision ProvisionConfig     `toml:"provision"`
 	Tools     map[string][]string `toml:"tools"`
 	Mounts    map[string]Mount    `toml:"mounts"`
 	Ports     PortsConfig         `toml:"ports"`
@@ -19,6 +20,14 @@ type VMConfig struct {
 type NetworkConfig struct {
 	Allow   []string            `toml:"allow"`
 	Process map[string][]string `toml:"process"`
+}
+
+type ProvisionConfig struct {
+	Npm   []string `toml:"npm"`
+	Pip   []string `toml:"pip"`
+	Cargo []string `toml:"cargo"`
+	Go    []string `toml:"go"`
+	Gem   []string `toml:"gem"`
 }
 
 type Mount struct {
@@ -54,7 +63,14 @@ func NewConfig() *Config {
 			Allow:   []string{},
 			Process: map[string][]string{},
 		},
-		Tools:  map[string][]string{},
+		Provision: ProvisionConfig{
+			Npm:   []string{},
+			Pip:   []string{},
+			Cargo: []string{},
+			Go:    []string{},
+			Gem:   []string{},
+		},
+		Tools: map[string][]string{},
 		Mounts: map[string]Mount{},
 		Ports: PortsConfig{
 			Forward: []int{},
