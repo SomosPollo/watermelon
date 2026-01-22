@@ -68,6 +68,41 @@ provision:
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if .Provision.Npm }}
+      # Install npm global packages
+      command -v npm >/dev/null 2>&1 || { echo "Error: npm not found. Add a node image to [tools]"; exit 1; }
+{{- range .Provision.Npm }}
+      npm install -g {{ . }}
+{{- end }}
+{{- end }}
+{{- if .Provision.Pip }}
+      # Install pip packages
+      command -v pip >/dev/null 2>&1 || { echo "Error: pip not found. Add a python image to [tools]"; exit 1; }
+{{- range .Provision.Pip }}
+      pip install {{ . }}
+{{- end }}
+{{- end }}
+{{- if .Provision.Cargo }}
+      # Install cargo packages
+      command -v cargo >/dev/null 2>&1 || { echo "Error: cargo not found. Add a rust image to [tools]"; exit 1; }
+{{- range .Provision.Cargo }}
+      cargo install {{ . }}
+{{- end }}
+{{- end }}
+{{- if .Provision.Go }}
+      # Install go packages
+      command -v go >/dev/null 2>&1 || { echo "Error: go not found. Add a go image to [tools]"; exit 1; }
+{{- range .Provision.Go }}
+      go install {{ . }}
+{{- end }}
+{{- end }}
+{{- if .Provision.Gem }}
+      # Install gem packages
+      command -v gem >/dev/null 2>&1 || { echo "Error: gem not found. Add a ruby image to [tools]"; exit 1; }
+{{- range .Provision.Gem }}
+      gem install {{ . }}
+{{- end }}
+{{- end }}
       # Network restrictions via iptables
 {{- range .NetworkAllow }}
 {{- if not (. | isWildcard) }}
@@ -196,6 +231,13 @@ type templateData struct {
 	NetworkProcess map[string][]string
 	PortForwards   []int
 	Tools          map[string][]string
+	Provision      struct {
+		Npm   []string
+		Pip   []string
+		Cargo []string
+		Go    []string
+		Gem   []string
+	}
 }
 
 // GenerateConfig creates Lima YAML from watermelon config
@@ -254,6 +296,11 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		PortForwards:   cfg.Ports.Forward,
 		Tools:          cfg.Tools,
 	}
+	data.Provision.Npm = cfg.Provision.Npm
+	data.Provision.Pip = cfg.Provision.Pip
+	data.Provision.Cargo = cfg.Provision.Cargo
+	data.Provision.Go = cfg.Provision.Go
+	data.Provision.Gem = cfg.Provision.Gem
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {

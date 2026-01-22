@@ -285,3 +285,116 @@ func TestGenerateConfigEmptyNetworkProcess(t *testing.T) {
 		t.Error("expected yaml to contain general network allow rules")
 	}
 }
+
+func TestGenerateConfigWithProvision(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Tools = map[string][]string{
+		"node:20-slim":     {"node", "npm"},
+		"python:3.12-slim": {"python", "pip"},
+	}
+	cfg.Provision.Npm = []string{"@anthropic-ai/claude-code", "typescript"}
+	cfg.Provision.Pip = []string{"aider-chat"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Check npm install commands
+	if !strings.Contains(yaml, "npm install -g @anthropic-ai/claude-code") {
+		t.Error("expected yaml to contain npm install command for claude-code")
+	}
+	if !strings.Contains(yaml, "npm install -g typescript") {
+		t.Error("expected yaml to contain npm install command for typescript")
+	}
+
+	// Check pip install commands
+	if !strings.Contains(yaml, "pip install aider-chat") {
+		t.Error("expected yaml to contain pip install command for aider-chat")
+	}
+}
+
+func TestGenerateConfigEmptyProvision(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org"}
+	// Provision is empty (default)
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Should NOT contain any provision install commands
+	if strings.Contains(yaml, "npm install -g") {
+		t.Error("expected yaml to NOT contain npm install when Provision.Npm is empty")
+	}
+	if strings.Contains(yaml, "pip install") {
+		t.Error("expected yaml to NOT contain pip install when Provision.Pip is empty")
+	}
+	if strings.Contains(yaml, "cargo install") {
+		t.Error("expected yaml to NOT contain cargo install when Provision.Cargo is empty")
+	}
+	if strings.Contains(yaml, "go install") {
+		t.Error("expected yaml to NOT contain go install when Provision.Go is empty")
+	}
+	if strings.Contains(yaml, "gem install") {
+		t.Error("expected yaml to NOT contain gem install when Provision.Gem is empty")
+	}
+}
+
+func TestGenerateConfigWithCargoProvision(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Tools = map[string][]string{
+		"rust:latest": {"cargo", "rustc"},
+	}
+	cfg.Provision.Cargo = []string{"ripgrep", "fd-find"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "cargo install ripgrep") {
+		t.Error("expected yaml to contain cargo install ripgrep")
+	}
+	if !strings.Contains(yaml, "cargo install fd-find") {
+		t.Error("expected yaml to contain cargo install fd-find")
+	}
+}
+
+func TestGenerateConfigWithGoProvision(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Tools = map[string][]string{
+		"golang:1.22": {"go"},
+	}
+	cfg.Provision.Go = []string{"github.com/junegunn/fzf@latest"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "go install github.com/junegunn/fzf@latest") {
+		t.Error("expected yaml to contain go install command")
+	}
+}
+
+func TestGenerateConfigWithGemProvision(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Tools = map[string][]string{
+		"ruby:3.2": {"ruby", "gem"},
+	}
+	cfg.Provision.Gem = []string{"rails", "bundler"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "gem install rails") {
+		t.Error("expected yaml to contain gem install rails")
+	}
+	if !strings.Contains(yaml, "gem install bundler") {
+		t.Error("expected yaml to contain gem install bundler")
+	}
+}
