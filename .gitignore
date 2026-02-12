@@ -1,5 +1,5 @@
 # Binaries
-watermelon
+/watermelon
 *.exe
 *.exe~
 *.dll
@@ -32,8 +32,8 @@ Thumbs.db
 .env
 .env.local
 
-# Binary
-./watermelon
+# Binary output
+# (covered by /watermelon above)
 
 # Config toml example
 .watermelon.toml
