@@ -33,7 +33,7 @@ Watermelon provides this: a Linux VM where your project runs normally, but the h
 
 ```bash
 brew install lima                    # Install dependency
-go install github.com/saeta/watermelon/cmd/watermelon@latest
+curl -fsSL https://raw.githubusercontent.com/saeta-eth/watermelon/main/install.sh | sh
 
 cd your-project
 watermelon init                      # Create .watermelon.toml
@@ -42,6 +42,11 @@ watermelon init                      # Create .watermelon.toml
 watermelon run                       # Enter sandbox
 npm install                          # Safe!
 exit
+```
+
+**Alternative:** install with Go directly:
+```bash
+go install github.com/saeta-eth/watermelon/cmd/watermelon@latest
 ```
 
 ## Commands
