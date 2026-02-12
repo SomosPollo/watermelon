@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/saeta/watermelon/internal/violations"
+	"github.com/saeta-eth/watermelon/internal/violations"
 	"github.com/spf13/cobra"
 )
 

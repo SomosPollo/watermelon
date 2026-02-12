@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/saeta/watermelon/internal/config"
+	"github.com/saeta-eth/watermelon/internal/config"
 )
 
 func TestValidateDomain(t *testing.T) {

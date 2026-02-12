@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/saeta/watermelon/internal/lima"
+	"github.com/saeta-eth/watermelon/internal/lima"
 )
 
 func TestRunCommandRequiresConfig(t *testing.T) {

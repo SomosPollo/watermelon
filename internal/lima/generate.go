@@ -6,7 +6,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/saeta/watermelon/internal/config"
+	"github.com/saeta-eth/watermelon/internal/config"
 )
 
 // shellMetacharacters contains characters that could be used for shell injection
