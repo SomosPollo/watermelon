@@ -5,8 +5,8 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/saeta/watermelon/internal/config"
-	"github.com/saeta/watermelon/internal/lima"
+	"github.com/saeta-eth/watermelon/internal/config"
+	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/spf13/cobra"
 )
 

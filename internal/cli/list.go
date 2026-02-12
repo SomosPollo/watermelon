@@ -5,7 +5,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/saeta/watermelon/internal/lima"
+	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/spf13/cobra"
 )
 

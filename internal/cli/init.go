@@ -9,7 +9,7 @@ import (
 )
 
 const defaultConfig = `# Watermelon sandbox configuration
-# See: https://github.com/saeta/watermelon
+# See: https://github.com/saeta-eth/watermelon
 
 [vm]
 image = "ubuntu-22.04"

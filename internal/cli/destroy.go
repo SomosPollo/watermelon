@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/saeta/watermelon/internal/lima"
+	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/spf13/cobra"
 )
 

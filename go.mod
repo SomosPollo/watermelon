@@ -1,4 +1,4 @@
-module github.com/saeta/watermelon
+module github.com/saeta-eth/watermelon
 
 go 1.24.4
 
