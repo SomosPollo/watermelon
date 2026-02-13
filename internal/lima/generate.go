@@ -86,12 +86,23 @@ provision:
       set -e
       export DEBIAN_FRONTEND=noninteractive
 {{- if .ProvisionBuilds }}
+      # Rootless nerdctl helper for provisioning-time image builds
+      _WM_USER=$(awk -F: '$3 >= 500 && $1 != "nobody" {print $1; exit}' /etc/passwd)
+      if [ -z "$_WM_USER" ]; then
+        echo "failed to find non-root VM user for rootless nerdctl" >&2
+        exit 1
+      fi
+      _WM_UID=$(id -u "$_WM_USER")
+      wm_nerdctl() {
+        sudo -iu "$_WM_USER" XDG_RUNTIME_DIR="/run/user/$_WM_UID" nerdctl "$@"
+      }
+
       # Build custom container images with provisioned packages
 {{- range .ProvisionBuilds }}
-      nerdctl rm -f {{ .CustomTag }}-build 2>/dev/null || true
-      nerdctl run --name {{ .CustomTag }}-build {{ .BaseImage }} sh -c '{{ .InstallCmd }} {{ join .Packages " " }}'
-      nerdctl commit {{ .CustomTag }}-build {{ .CustomTag }}
-      nerdctl rm {{ .CustomTag }}-build
+      wm_nerdctl rm -f {{ .CustomTag }}-build 2>/dev/null || true
+      wm_nerdctl run --name {{ .CustomTag }}-build {{ .BaseImage }} sh -c '{{ .InstallCmd }} {{ join .Packages " " }}'
+      wm_nerdctl commit {{ .CustomTag }}-build {{ .CustomTag }}
+      wm_nerdctl rm {{ .CustomTag }}-build
 {{- end }}
 {{- end }}
 {{- if .Tools }}
@@ -106,68 +117,76 @@ provision:
 {{- if .ProvisionBuilds }}
       # Discover and create wrapper scripts for binaries installed by provisioned packages
 {{- range .ProvisionBuilds }}
-      _WM_BASE_BINS=$(nerdctl run --rm {{ .BaseImage }} sh -c 'ls {{ .BinDirs }} 2>/dev/null' | sort)
-      _WM_CUSTOM_BINS=$(nerdctl run --rm {{ .CustomTag }} sh -c 'ls {{ .BinDirs }} 2>/dev/null' | sort)
+      _WM_BASE_BINS=$(wm_nerdctl run --rm {{ .BaseImage }} sh -c 'ls {{ .BinDirs }} 2>/dev/null' | sort)
+      _WM_CUSTOM_BINS=$(wm_nerdctl run --rm {{ .CustomTag }} sh -c 'ls {{ .BinDirs }} 2>/dev/null' | sort)
       echo "$_WM_BASE_BINS" > /tmp/_wm_base_bins.txt
       for _bin in $(echo "$_WM_CUSTOM_BINS" | grep -vxFf /tmp/_wm_base_bins.txt 2>/dev/null || true); do
         [ -f "/usr/local/bin/$_bin" ] && continue
         printf '%s\n' '#!/bin/bash' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'else' '    exec nerdctl run --rm --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'fi' > "/usr/local/bin/$_bin"
         chmod +x "/usr/local/bin/$_bin"
       done
+{{- if .ExposeBins }}
+      # Ensure wrappers exist for provisioned package commands
+      for _bin in {{ join .ExposeBins " " }}; do
+        [ -f "/usr/local/bin/$_bin" ] && continue
+        printf '%s\n' '#!/bin/bash' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'else' '    exec nerdctl run --rm --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'fi' > "/usr/local/bin/$_bin"
+        chmod +x "/usr/local/bin/$_bin"
+      done
+{{- end }}
 {{- end }}
 {{- end }}
 {{- range .SmartWrappers }}
       # Smart {{ .Cmd }} wrapper: persists global installs via nerdctl commit
       cat > /usr/local/bin/{{ .Cmd }} << 'WATERMELON_SMART_WRAPPER_{{ .Cmd }}'
-#!/bin/bash
-# Ensure custom image exists (create from base on first use)
-if ! nerdctl image inspect "{{ .CustomTag }}" >/dev/null 2>&1; then
-  nerdctl tag "{{ .BaseImage }}" "{{ .CustomTag }}" 2>/dev/null || \
-    { nerdctl pull "{{ .BaseImage }}" && nerdctl tag "{{ .BaseImage }}" "{{ .CustomTag }}"; }
-fi
+      #!/bin/bash
+      # Ensure custom image exists (create from base on first use)
+      if ! nerdctl image inspect "{{ .CustomTag }}" >/dev/null 2>&1; then
+        nerdctl tag "{{ .BaseImage }}" "{{ .CustomTag }}" 2>/dev/null || \
+          { nerdctl pull "{{ .BaseImage }}" && nerdctl tag "{{ .BaseImage }}" "{{ .CustomTag }}"; }
+      fi
 
-# Detect global install
-_wm_global=false
-{{ .GlobalCheck }}
+      # Detect global install
+      _wm_global=false
+{{ indent 6 .GlobalCheck }}
 
-if [ "$_wm_global" = true ]; then
-  # Global install: run in named container, then commit to persist
-  nerdctl rm -f {{ .CustomTag }}-adhoc 2>/dev/null || true
-  if [ -t 0 ]; then
-    nerdctl run --name {{ .CustomTag }}-adhoc -it --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
-  else
-    nerdctl run --name {{ .CustomTag }}-adhoc --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
-  fi
-  _wm_exit=$?
-  if [ $_wm_exit -eq 0 ]; then
-    nerdctl commit {{ .CustomTag }}-adhoc "{{ .CustomTag }}" >/dev/null
-    nerdctl rm {{ .CustomTag }}-adhoc >/dev/null
-    # Create wrappers for any new binaries
-    for _bin in $(nerdctl run --rm "{{ .CustomTag }}" sh -c 'ls {{ .BinDirs }} 2>/dev/null'); do
-      [ -f "/usr/local/bin/$_bin" ] && continue
-      sudo tee "/usr/local/bin/$_bin" > /dev/null << WRAPPEREOF
-#!/bin/bash
-if [ -t 0 ]; then
-    exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ .CustomTag }} $_bin "\$@"
-else
-    exec nerdctl run --rm --network=host -v /project:/project -w /project {{ .CustomTag }} $_bin "\$@"
-fi
-WRAPPEREOF
-      sudo chmod +x "/usr/local/bin/$_bin"
-    done
-  else
-    nerdctl rm -f {{ .CustomTag }}-adhoc 2>/dev/null || true
-  fi
-  exit $_wm_exit
-else
-  # Regular {{ .Cmd }} command: ephemeral container
-  if [ -t 0 ]; then
-    exec nerdctl run --rm -it --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
-  else
-    exec nerdctl run --rm --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
-  fi
-fi
-WATERMELON_SMART_WRAPPER_{{ .Cmd }}
+      if [ "$_wm_global" = true ]; then
+        # Global install: run in named container, then commit to persist
+        nerdctl rm -f {{ .CustomTag }}-adhoc 2>/dev/null || true
+        if [ -t 0 ]; then
+          nerdctl run --name {{ .CustomTag }}-adhoc -it --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+        else
+          nerdctl run --name {{ .CustomTag }}-adhoc --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+        fi
+        _wm_exit=$?
+        if [ $_wm_exit -eq 0 ]; then
+          nerdctl commit {{ .CustomTag }}-adhoc "{{ .CustomTag }}" >/dev/null
+          nerdctl rm {{ .CustomTag }}-adhoc >/dev/null
+          # Create wrappers for any new binaries
+          for _bin in $(nerdctl run --rm "{{ .CustomTag }}" sh -c 'ls {{ .BinDirs }} 2>/dev/null'); do
+            [ -f "/usr/local/bin/$_bin" ] && continue
+            sudo tee "/usr/local/bin/$_bin" > /dev/null << WRAPPEREOF
+            #!/bin/bash
+            if [ -t 0 ]; then
+                exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ .CustomTag }} $_bin "\$@"
+            else
+                exec nerdctl run --rm --network=host -v /project:/project -w /project {{ .CustomTag }} $_bin "\$@"
+            fi
+            WRAPPEREOF
+            sudo chmod +x "/usr/local/bin/$_bin"
+          done
+        else
+          nerdctl rm -f {{ .CustomTag }}-adhoc 2>/dev/null || true
+        fi
+        exit $_wm_exit
+      else
+        # Regular {{ .Cmd }} command: ephemeral container
+        if [ -t 0 ]; then
+          exec nerdctl run --rm -it --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+        else
+          exec nerdctl run --rm --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+        fi
+      fi
+      WATERMELON_SMART_WRAPPER_{{ .Cmd }}
       chmod +x /usr/local/bin/{{ .Cmd }}
 {{- end }}
       # Network restrictions via iptables
@@ -294,6 +313,7 @@ type provisionBuild struct {
 	InstallCmd string
 	Packages   []string
 	BinDirs    string
+	ExposeBins []string
 }
 
 type smartWrapper struct {
@@ -388,6 +408,7 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 			InstallCmd: spec.installCmd,
 			Packages:   spec.pkgs,
 			BinDirs:    spec.binDirs,
+			ExposeBins: provisionExposeBins(spec.cmd, spec.pkgs),
 		})
 	}
 
@@ -408,6 +429,10 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		},
 		"baseDomain": func(s string) string {
 			return strings.TrimPrefix(s, "*.")
+		},
+		"indent": func(n int, s string) string {
+			pad := strings.Repeat(" ", n)
+			return pad + strings.ReplaceAll(s, "\n", "\n"+pad)
 		},
 		"join": strings.Join,
 	}
@@ -469,6 +494,57 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+// provisionExposeBins returns best-effort CLI command names that should get wrappers
+// for provisioned packages even when they already exist in the base image.
+func provisionExposeBins(manager string, pkgs []string) []string {
+	if manager != "npm" {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var bins []string
+	for _, pkg := range pkgs {
+		bin := npmPackageToCommand(pkg)
+		if bin == "" || seen[bin] {
+			continue
+		}
+		seen[bin] = true
+		bins = append(bins, bin)
+	}
+	return bins
+}
+
+// npmPackageToCommand converts npm package specs to likely command names:
+// - "pnpm" -> "pnpm"
+// - "pnpm@10" -> "pnpm"
+// - "@scope/name" -> "name"
+// - "@scope/name@1.2.3" -> "name"
+func npmPackageToCommand(pkg string) string {
+	if pkg == "" {
+		return ""
+	}
+
+	name := pkg
+	if strings.HasPrefix(name, "@") {
+		if slash := strings.LastIndex(name, "/"); slash >= 0 && slash+1 < len(name) {
+			name = name[slash+1:]
+		}
+	}
+
+	if at := strings.LastIndex(name, "@"); at > 0 {
+		name = name[:at]
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if strings.ContainsAny(name, shellMetacharacters+" /") {
+		return ""
+	}
+	return name
 }
 
 // convertMemory converts "4GB" to "4GiB" for Lima

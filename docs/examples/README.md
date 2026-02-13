@@ -9,6 +9,8 @@ Real-world configuration examples for different project types and security scena
 | [ai-coding-assistants](./ai-coding-assistants/) | Claude Code, Codex, Aider with per-process network isolation |
 | [react-app](./react-app/) | Standard React/Vite development |
 | [nextjs](./nextjs/) | Next.js with API routes |
+| [pnpm](./pnpm/) | JavaScript/TypeScript with pnpm |
+| [bun](./bun/) | JavaScript/TypeScript with Bun |
 | [python-django](./python-django/) | Django web application |
 | [python-ml](./python-ml/) | Machine learning with PyTorch/TensorFlow |
 | [rust-project](./rust-project/) | Rust development with Cargo |

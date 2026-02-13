@@ -331,6 +331,55 @@ func TestGenerateConfigWithProvision(t *testing.T) {
 	if !strings.Contains(yaml, "grep -vxFf") {
 		t.Error("expected yaml to contain binary discovery logic")
 	}
+	if !strings.Contains(yaml, "wm_nerdctl()") {
+		t.Error("expected yaml to define rootless nerdctl helper for provisioning")
+	}
+
+	// Ensure wrappers exist for provisioned package commands even if base image already has them
+	if !strings.Contains(yaml, "for _bin in claude-code typescript; do") {
+		t.Error("expected yaml to ensure wrappers for npm provisioned package commands")
+	}
+}
+
+func TestNpmPackageToCommand(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"pnpm", "pnpm"},
+		{"pnpm@10", "pnpm"},
+		{"@scope/name", "name"},
+		{"@scope/name@1.2.3", "name"},
+		{"", ""},
+	}
+
+	for _, tc := range tests {
+		got := npmPackageToCommand(tc.in)
+		if got != tc.want {
+			t.Errorf("npmPackageToCommand(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestGenerateConfigSmartWrapperYamlIndentation(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Tools = map[string][]string{
+		"node:20-slim": {"node", "npm"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Regression check: smart-wrapper heredoc body must remain indented
+	// inside the YAML block scalar.
+	if strings.Contains(yaml, "\n#!/bin/bash\n# Ensure custom image exists") {
+		t.Error("expected smart wrapper script body to be indented in YAML")
+	}
+	if !strings.Contains(yaml, "\n      #!/bin/bash\n      # Ensure custom image exists") {
+		t.Error("expected indented smart wrapper script body in YAML output")
+	}
 }
 
 func TestGenerateConfigEmptyProvision(t *testing.T) {
