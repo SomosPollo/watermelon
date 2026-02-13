@@ -8,10 +8,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is set at build time via -ldflags
+var Version = "dev"
+
 var rootCmd = &cobra.Command{
-	Use:   "watermelon",
-	Short: "Sandbox that isolates your project inside a Linux VM",
-	Long:  "Watermelon is a sandbox that isolates your project inside a Linux VM.",
+	Use:     "watermelon",
+	Short:   "Sandbox that isolates your project inside a Linux VM",
+	Long:    "Watermelon is a sandbox that isolates your project inside a Linux VM.",
+	Version: Version,
 }
 
 func init() {

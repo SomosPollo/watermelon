@@ -22,13 +22,13 @@ jobs:
         env:
           GOOS: darwin
           GOARCH: arm64
-        run: go build -o watermelon-darwin-arm64 ./cmd/watermelon
+        run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o watermelon-darwin-arm64 ./cmd/watermelon
 
       - name: Build darwin/amd64
         env:
           GOOS: darwin
           GOARCH: amd64
-        run: go build -o watermelon-darwin-amd64 ./cmd/watermelon
+        run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o watermelon-darwin-amd64 ./cmd/watermelon
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
