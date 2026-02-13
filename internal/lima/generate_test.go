@@ -454,3 +454,163 @@ func TestGenerateConfigProvisionRejectsInvalidPackageName(t *testing.T) {
 		t.Errorf("expected error about invalid package, got: %v", err)
 	}
 }
+
+func TestGenerateConfigSmartWrappers(t *testing.T) {
+	t.Run("npm wrapper detects -g/--global", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.Tools = map[string][]string{
+			"node:20-slim": {"node", "npm"},
+		}
+
+		yaml, err := GenerateConfig(cfg, "/test/project")
+		if err != nil {
+			t.Fatalf("failed to generate: %v", err)
+		}
+
+		if !strings.Contains(yaml, "WATERMELON_SMART_WRAPPER_npm") {
+			t.Error("expected yaml to contain smart npm wrapper heredoc")
+		}
+		if !strings.Contains(yaml, "-g|--global") {
+			t.Error("expected npm smart wrapper to detect -g/--global flags")
+		}
+		if !strings.Contains(yaml, "nerdctl commit") {
+			t.Error("expected smart wrapper to use nerdctl commit")
+		}
+		if !strings.Contains(yaml, `nerdctl tag "node:20-slim" "watermelon-npm"`) {
+			t.Error("expected smart wrapper to reference base image for tagging")
+		}
+	})
+
+	t.Run("pip wrapper detects install subcommand", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.Tools = map[string][]string{
+			"python:3.12-slim": {"python", "pip"},
+		}
+
+		yaml, err := GenerateConfig(cfg, "/test/project")
+		if err != nil {
+			t.Fatalf("failed to generate: %v", err)
+		}
+
+		if !strings.Contains(yaml, "WATERMELON_SMART_WRAPPER_pip") {
+			t.Error("expected yaml to contain smart pip wrapper heredoc")
+		}
+		if !strings.Contains(yaml, `case "$1" in install)`) {
+			t.Error("expected pip smart wrapper to detect install subcommand")
+		}
+		if !strings.Contains(yaml, `nerdctl tag "python:3.12-slim" "watermelon-pip"`) {
+			t.Error("expected smart wrapper to reference base image for tagging")
+		}
+	})
+
+	t.Run("cargo wrapper with correct bin dirs", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.Tools = map[string][]string{
+			"rust:latest": {"cargo", "rustc"},
+		}
+
+		yaml, err := GenerateConfig(cfg, "/test/project")
+		if err != nil {
+			t.Fatalf("failed to generate: %v", err)
+		}
+
+		if !strings.Contains(yaml, "WATERMELON_SMART_WRAPPER_cargo") {
+			t.Error("expected yaml to contain smart cargo wrapper heredoc")
+		}
+		if !strings.Contains(yaml, "/usr/local/cargo/bin /usr/local/bin") {
+			t.Error("expected cargo wrapper to scan cargo-specific bin dirs")
+		}
+	})
+
+	t.Run("go wrapper with correct bin dirs", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.Tools = map[string][]string{
+			"golang:1.22": {"go"},
+		}
+
+		yaml, err := GenerateConfig(cfg, "/test/project")
+		if err != nil {
+			t.Fatalf("failed to generate: %v", err)
+		}
+
+		if !strings.Contains(yaml, "WATERMELON_SMART_WRAPPER_go") {
+			t.Error("expected yaml to contain smart go wrapper heredoc")
+		}
+		if !strings.Contains(yaml, "/go/bin /usr/local/bin") {
+			t.Error("expected go wrapper to scan go-specific bin dirs")
+		}
+	})
+
+	t.Run("gem wrapper is generated", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.Tools = map[string][]string{
+			"ruby:3.2": {"ruby", "gem"},
+		}
+
+		yaml, err := GenerateConfig(cfg, "/test/project")
+		if err != nil {
+			t.Fatalf("failed to generate: %v", err)
+		}
+
+		if !strings.Contains(yaml, "WATERMELON_SMART_WRAPPER_gem") {
+			t.Error("expected yaml to contain smart gem wrapper heredoc")
+		}
+		if !strings.Contains(yaml, `nerdctl tag "ruby:3.2" "watermelon-gem"`) {
+			t.Error("expected smart wrapper to reference base image for tagging")
+		}
+	})
+
+	t.Run("all package managers get wrappers when present", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.Tools = map[string][]string{
+			"node:20-slim":     {"node", "npm"},
+			"python:3.12-slim": {"python", "pip"},
+			"rust:latest":      {"cargo", "rustc"},
+			"golang:1.22":      {"go"},
+			"ruby:3.2":         {"ruby", "gem"},
+		}
+
+		yaml, err := GenerateConfig(cfg, "/test/project")
+		if err != nil {
+			t.Fatalf("failed to generate: %v", err)
+		}
+
+		for _, cmd := range []string{"npm", "pip", "cargo", "go", "gem"} {
+			if !strings.Contains(yaml, "WATERMELON_SMART_WRAPPER_"+cmd) {
+				t.Errorf("expected yaml to contain smart wrapper for %s", cmd)
+			}
+		}
+	})
+
+	t.Run("non-package-manager tools do not get smart wrappers", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.Tools = map[string][]string{
+			"node:20-slim": {"node"},
+		}
+
+		yaml, err := GenerateConfig(cfg, "/test/project")
+		if err != nil {
+			t.Fatalf("failed to generate: %v", err)
+		}
+
+		if strings.Contains(yaml, "WATERMELON_SMART_WRAPPER") {
+			t.Error("expected yaml to NOT contain any smart wrappers for non-package-manager tools")
+		}
+	})
+}
+
+func TestGenerateConfigNoSmartWrapperWithoutPackageManagers(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Tools = map[string][]string{
+		"alpine:latest": {"sh"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if strings.Contains(yaml, "WATERMELON_SMART_WRAPPER") {
+		t.Error("expected yaml to NOT contain smart wrappers when no package managers are in tools")
+	}
+}

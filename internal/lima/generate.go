@@ -116,6 +116,60 @@ provision:
       done
 {{- end }}
 {{- end }}
+{{- range .SmartWrappers }}
+      # Smart {{ .Cmd }} wrapper: persists global installs via nerdctl commit
+      cat > /usr/local/bin/{{ .Cmd }} << 'WATERMELON_SMART_WRAPPER_{{ .Cmd }}'
+#!/bin/bash
+# Ensure custom image exists (create from base on first use)
+if ! nerdctl image inspect "{{ .CustomTag }}" >/dev/null 2>&1; then
+  nerdctl tag "{{ .BaseImage }}" "{{ .CustomTag }}" 2>/dev/null || \
+    { nerdctl pull "{{ .BaseImage }}" && nerdctl tag "{{ .BaseImage }}" "{{ .CustomTag }}"; }
+fi
+
+# Detect global install
+_wm_global=false
+{{ .GlobalCheck }}
+
+if [ "$_wm_global" = true ]; then
+  # Global install: run in named container, then commit to persist
+  nerdctl rm -f {{ .CustomTag }}-adhoc 2>/dev/null || true
+  if [ -t 0 ]; then
+    nerdctl run --name {{ .CustomTag }}-adhoc -it --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+  else
+    nerdctl run --name {{ .CustomTag }}-adhoc --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+  fi
+  _wm_exit=$?
+  if [ $_wm_exit -eq 0 ]; then
+    nerdctl commit {{ .CustomTag }}-adhoc "{{ .CustomTag }}" >/dev/null
+    nerdctl rm {{ .CustomTag }}-adhoc >/dev/null
+    # Create wrappers for any new binaries
+    for _bin in $(nerdctl run --rm "{{ .CustomTag }}" sh -c 'ls {{ .BinDirs }} 2>/dev/null'); do
+      [ -f "/usr/local/bin/$_bin" ] && continue
+      sudo tee "/usr/local/bin/$_bin" > /dev/null << WRAPPEREOF
+#!/bin/bash
+if [ -t 0 ]; then
+    exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ .CustomTag }} $_bin "\$@"
+else
+    exec nerdctl run --rm --network=host -v /project:/project -w /project {{ .CustomTag }} $_bin "\$@"
+fi
+WRAPPEREOF
+      sudo chmod +x "/usr/local/bin/$_bin"
+    done
+  else
+    nerdctl rm -f {{ .CustomTag }}-adhoc 2>/dev/null || true
+  fi
+  exit $_wm_exit
+else
+  # Regular {{ .Cmd }} command: ephemeral container
+  if [ -t 0 ]; then
+    exec nerdctl run --rm -it --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+  else
+    exec nerdctl run --rm --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+  fi
+fi
+WATERMELON_SMART_WRAPPER_{{ .Cmd }}
+      chmod +x /usr/local/bin/{{ .Cmd }}
+{{- end }}
       # Network restrictions via iptables
 {{- range .NetworkAllow }}
 {{- if not (. | isWildcard) }}
@@ -242,6 +296,14 @@ type provisionBuild struct {
 	BinDirs    string
 }
 
+type smartWrapper struct {
+	Cmd         string // "npm", "pip", etc.
+	BaseImage   string // original container image
+	CustomTag   string // "watermelon-npm", etc.
+	BinDirs     string // dirs to scan for new binaries
+	GlobalCheck string // shell snippet setting _wm_global=true
+}
+
 type templateData struct {
 	CPUs            int
 	Memory          string
@@ -253,6 +315,7 @@ type templateData struct {
 	PortForwards    []int
 	Tools           map[string][]string
 	ProvisionBuilds []provisionBuild
+	SmartWrappers   []smartWrapper
 }
 
 // GenerateConfig creates Lima YAML from watermelon config
@@ -353,6 +416,39 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}
 
+	// Generate smart wrappers for package manager commands found in tools
+	type wrapperSpec struct {
+		cmd         string
+		customTag   string
+		binDirs     string
+		globalCheck string
+	}
+	wrapperSpecs := []wrapperSpec{
+		{"npm", "watermelon-npm", "/usr/local/bin",
+			`for _arg in "$@"; do` + "\n" + `  case "$_arg" in -g|--global) _wm_global=true ;; esac` + "\n" + `done`},
+		{"pip", "watermelon-pip", "/usr/local/bin",
+			`case "$1" in install) _wm_global=true ;; esac`},
+		{"cargo", "watermelon-cargo", "/usr/local/cargo/bin /usr/local/bin",
+			`case "$1" in install) _wm_global=true ;; esac`},
+		{"go", "watermelon-go", "/go/bin /usr/local/bin",
+			`case "$1" in install) _wm_global=true ;; esac`},
+		{"gem", "watermelon-gem", "/usr/local/bin",
+			`case "$1" in install) _wm_global=true ;; esac`},
+	}
+
+	var smartWrappers []smartWrapper
+	for _, ws := range wrapperSpecs {
+		if img := findImageForCommand(cfg.Tools, ws.cmd); img != "" {
+			smartWrappers = append(smartWrappers, smartWrapper{
+				Cmd:         ws.cmd,
+				BaseImage:   img,
+				CustomTag:   ws.customTag,
+				BinDirs:     ws.binDirs,
+				GlobalCheck: ws.globalCheck,
+			})
+		}
+	}
+
 	data := templateData{
 		CPUs:            cfg.Resources.CPUs,
 		Memory:          convertMemory(cfg.Resources.Memory),
@@ -364,6 +460,7 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		PortForwards:    cfg.Ports.Forward,
 		Tools:           tools,
 		ProvisionBuilds: provisionBuilds,
+		SmartWrappers:   smartWrappers,
 	}
 
 	var buf bytes.Buffer
