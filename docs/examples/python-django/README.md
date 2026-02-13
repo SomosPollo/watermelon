@@ -6,7 +6,7 @@ Sandbox configuration for Django web development.
 
 ```bash
 cd your-django-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/python-django/.watermelon.toml ./
 watermelon run
 ```
 

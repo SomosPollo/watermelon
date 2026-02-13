@@ -1,0 +1,24 @@
+[vm]
+image = "ubuntu-22.04"
+
+[network]
+allow = [
+    "ghcr.io",
+    "pkg-containers.githubusercontent.com",
+    "github.com",
+    "*.githubusercontent.com",
+]
+
+[tools]
+"ghcr.io/foundry-rs/foundry" = ["forge", "cast", "anvil", "chisel"]
+
+[ports]
+forward = [8545]
+
+[resources]
+memory = "4GB"
+cpus = 2
+disk = "20GB"
+
+[security]
+on_violation = "log"

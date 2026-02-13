@@ -1,0 +1,19 @@
+[vm]
+image = "ubuntu-22.04"
+
+[network]
+allow = [
+    "proxy.golang.org",
+    "sum.golang.org",
+    "github.com",
+    "registry-1.docker.io",
+    "auth.docker.io",
+    "production.cloudflare.docker.com",
+    "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
+]
+
+[tools]
+"golang:1.22" = ["go", "gofmt"]
+
+[security]
+on_violation = "log"

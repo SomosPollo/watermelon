@@ -15,7 +15,7 @@ Watermelon ensures these operations can't affect your host.
 
 ```bash
 cd your-go-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/go-project/.watermelon.toml ./
 watermelon run
 ```
 

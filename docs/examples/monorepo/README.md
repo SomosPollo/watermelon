@@ -6,7 +6,7 @@ Sandbox configuration for full-stack monorepos with multiple languages.
 
 ```bash
 cd your-monorepo
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/monorepo/.watermelon.toml ./
 watermelon run
 ```
 

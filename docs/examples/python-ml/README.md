@@ -6,7 +6,7 @@ Sandbox configuration for ML development with PyTorch, TensorFlow, or JAX.
 
 ```bash
 cd your-ml-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/python-ml/.watermelon.toml ./
 watermelon run
 ```
 

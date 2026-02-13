@@ -15,7 +15,7 @@ Watermelon ensures npm packages can't access your host system.
 
 ```bash
 cd your-hardhat-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/hardhat/.watermelon.toml ./
 watermelon run
 ```
 

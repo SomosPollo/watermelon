@@ -15,7 +15,7 @@ Watermelon ensures build scripts run in isolation.
 
 ```bash
 cd your-rust-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/rust-project/.watermelon.toml ./
 watermelon run
 ```
 

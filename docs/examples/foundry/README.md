@@ -12,19 +12,13 @@ Sandbox configuration for Ethereum smart contract development with Foundry (Forg
 
 ```bash
 cd your-foundry-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/foundry/.watermelon.toml ./
 watermelon run
 ```
 
 ## Inside the sandbox
 
 ```bash
-# Install Foundry (first time)
-curl -L https://foundry.paradigm.xyz | bash
-source ~/.bashrc
-foundryup
-
-# Development workflow
 forge build
 forge test
 anvil  # Start local node on port 8545

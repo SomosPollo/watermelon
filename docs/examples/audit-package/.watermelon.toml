@@ -1,0 +1,20 @@
+[vm]
+image = "ubuntu-22.04"
+
+[network]
+allow = []
+
+[tools]
+"node:20-slim" = ["node", "npm", "npx"]
+"python:3.12-slim" = ["python", "python3", "pip"]
+
+[ports]
+forward = []
+
+[resources]
+memory = "2GB"
+cpus = 1
+disk = "5GB"
+
+[security]
+on_violation = "fail"

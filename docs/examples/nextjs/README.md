@@ -6,7 +6,7 @@ Sandbox configuration for Next.js applications with API routes.
 
 ```bash
 cd your-nextjs-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/nextjs/.watermelon.toml ./
 watermelon run
 ```
 

@@ -10,7 +10,7 @@ AI coding assistants need API access to work, but you want to sandbox `npm insta
 
 ```bash
 cd your-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/ai-coding-assistants/.watermelon.toml ./
 watermelon run
 ```
 

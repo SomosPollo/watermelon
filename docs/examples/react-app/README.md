@@ -6,7 +6,7 @@ Sandbox configuration for React development with Vite.
 
 ```bash
 cd your-react-project
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/react-app/.watermelon.toml ./
 watermelon run
 ```
 

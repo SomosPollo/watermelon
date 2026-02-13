@@ -11,7 +11,7 @@ You want to examine a potentially malicious npm package without risking your sys
 ```bash
 mkdir audit-workspace
 cd audit-workspace
-cp .watermelon.toml ./
+cp /path/to/watermelon/docs/examples/audit-package/.watermelon.toml ./
 ```
 
 ## Download the package offline first

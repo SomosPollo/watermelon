@@ -1,0 +1,23 @@
+[vm]
+image = "ubuntu-22.04"
+
+[network]
+allow = [
+    "registry.npmjs.org",
+    "registry-1.docker.io",
+    "auth.docker.io",
+    "production.cloudflare.docker.com",
+    "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
+]
+
+[tools]
+"node:20-slim" = ["node", "npm", "npx"]
+
+[provision]
+npm = ["pnpm"]
+
+[ports]
+forward = [3000, 5173]
+
+[security]
+on_violation = "log"
