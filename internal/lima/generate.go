@@ -12,6 +12,9 @@ import (
 // shellMetacharacters contains characters that could be used for shell injection
 const shellMetacharacters = ";|&$`\\"
 
+// packageNameDangerous contains characters that are invalid in package names
+const packageNameDangerous = ";|&$`\\(){}!~'\" \t\n"
+
 // validateDomain checks that a domain string doesn't contain shell metacharacters
 func validateDomain(domain string) error {
 	if domain == "" {
@@ -21,6 +24,29 @@ func validateDomain(domain string) error {
 		return fmt.Errorf("domain %q contains invalid characters", domain)
 	}
 	return nil
+}
+
+// validatePackageName checks that a package name doesn't contain shell metacharacters
+func validatePackageName(name string) error {
+	if name == "" {
+		return fmt.Errorf("package name cannot be empty")
+	}
+	if strings.ContainsAny(name, packageNameDangerous) {
+		return fmt.Errorf("package name %q contains invalid characters", name)
+	}
+	return nil
+}
+
+// findImageForCommand returns the container image that provides a given command
+func findImageForCommand(tools map[string][]string, cmd string) string {
+	for image, cmds := range tools {
+		for _, c := range cmds {
+			if c == cmd {
+				return image
+			}
+		}
+	}
+	return ""
 }
 
 // validatePort checks that a port is within the valid range 1-65535
@@ -59,6 +85,15 @@ provision:
     script: |
       set -e
       export DEBIAN_FRONTEND=noninteractive
+{{- if .ProvisionBuilds }}
+      # Build custom container images with provisioned packages
+{{- range .ProvisionBuilds }}
+      nerdctl rm -f {{ .CustomTag }}-build 2>/dev/null || true
+      nerdctl run --name {{ .CustomTag }}-build {{ .BaseImage }} sh -c '{{ .InstallCmd }} {{ join .Packages " " }}'
+      nerdctl commit {{ .CustomTag }}-build {{ .CustomTag }}
+      nerdctl rm {{ .CustomTag }}-build
+{{- end }}
+{{- end }}
 {{- if .Tools }}
       # Create wrapper scripts for containerized tools
 {{- range $image, $cmds := .Tools }}
@@ -68,39 +103,17 @@ provision:
 {{- end }}
 {{- end }}
 {{- end }}
-{{- if .Provision.Npm }}
-      # Install npm global packages
-      command -v npm >/dev/null 2>&1 || { echo "Error: npm not found. Add a node image to [tools]"; exit 1; }
-{{- range .Provision.Npm }}
-      npm install -g {{ . }}
-{{- end }}
-{{- end }}
-{{- if .Provision.Pip }}
-      # Install pip packages
-      command -v pip >/dev/null 2>&1 || { echo "Error: pip not found. Add a python image to [tools]"; exit 1; }
-{{- range .Provision.Pip }}
-      pip install {{ . }}
-{{- end }}
-{{- end }}
-{{- if .Provision.Cargo }}
-      # Install cargo packages
-      command -v cargo >/dev/null 2>&1 || { echo "Error: cargo not found. Add a rust image to [tools]"; exit 1; }
-{{- range .Provision.Cargo }}
-      cargo install {{ . }}
-{{- end }}
-{{- end }}
-{{- if .Provision.Go }}
-      # Install go packages
-      command -v go >/dev/null 2>&1 || { echo "Error: go not found. Add a go image to [tools]"; exit 1; }
-{{- range .Provision.Go }}
-      go install {{ . }}
-{{- end }}
-{{- end }}
-{{- if .Provision.Gem }}
-      # Install gem packages
-      command -v gem >/dev/null 2>&1 || { echo "Error: gem not found. Add a ruby image to [tools]"; exit 1; }
-{{- range .Provision.Gem }}
-      gem install {{ . }}
+{{- if .ProvisionBuilds }}
+      # Discover and create wrapper scripts for binaries installed by provisioned packages
+{{- range .ProvisionBuilds }}
+      _WM_BASE_BINS=$(nerdctl run --rm {{ .BaseImage }} sh -c 'ls {{ .BinDirs }} 2>/dev/null' | sort)
+      _WM_CUSTOM_BINS=$(nerdctl run --rm {{ .CustomTag }} sh -c 'ls {{ .BinDirs }} 2>/dev/null' | sort)
+      echo "$_WM_BASE_BINS" > /tmp/_wm_base_bins.txt
+      for _bin in $(echo "$_WM_CUSTOM_BINS" | grep -vxFf /tmp/_wm_base_bins.txt 2>/dev/null || true); do
+        [ -f "/usr/local/bin/$_bin" ] && continue
+        printf '%s\n' '#!/bin/bash' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'else' '    exec nerdctl run --rm --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'fi' > "/usr/local/bin/$_bin"
+        chmod +x "/usr/local/bin/$_bin"
+      done
 {{- end }}
 {{- end }}
       # Network restrictions via iptables
@@ -221,23 +234,25 @@ portForwards:
     guestPortRange: [1, 65535]
 `
 
+type provisionBuild struct {
+	BaseImage  string
+	CustomTag  string
+	InstallCmd string
+	Packages   []string
+	BinDirs    string
+}
+
 type templateData struct {
-	CPUs           int
-	Memory         string
-	Disk           string
-	ProjectDir     string
-	ToolsDir       string
-	NetworkAllow   []string
-	NetworkProcess map[string][]string
-	PortForwards   []int
-	Tools          map[string][]string
-	Provision      struct {
-		Npm   []string
-		Pip   []string
-		Cargo []string
-		Go    []string
-		Gem   []string
-	}
+	CPUs            int
+	Memory          string
+	Disk            string
+	ProjectDir      string
+	ToolsDir        string
+	NetworkAllow    []string
+	NetworkProcess  map[string][]string
+	PortForwards    []int
+	Tools           map[string][]string
+	ProvisionBuilds []provisionBuild
 }
 
 // GenerateConfig creates Lima YAML from watermelon config
@@ -271,6 +286,58 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		}
 	}
 
+	// Build provision data: custom images and tool image overrides
+	type provSpec struct {
+		pkgs       []string
+		cmd        string
+		installCmd string
+		tag        string
+		binDirs    string
+	}
+	specs := []provSpec{
+		{cfg.Provision.Npm, "npm", "npm install -g", "watermelon-npm", "/usr/local/bin"},
+		{cfg.Provision.Pip, "pip", "pip install", "watermelon-pip", "/usr/local/bin"},
+		{cfg.Provision.Cargo, "cargo", "cargo install", "watermelon-cargo", "/usr/local/cargo/bin /usr/local/bin"},
+		{cfg.Provision.Go, "go", "go install", "watermelon-go", "/go/bin /usr/local/bin"},
+		{cfg.Provision.Gem, "gem", "gem install", "watermelon-gem", "/usr/local/bin"},
+	}
+
+	var provisionBuilds []provisionBuild
+	imageOverrides := make(map[string]string)
+
+	for _, spec := range specs {
+		if len(spec.pkgs) == 0 {
+			continue
+		}
+		for _, pkg := range spec.pkgs {
+			if err := validatePackageName(pkg); err != nil {
+				return "", fmt.Errorf("invalid %s package: %w", spec.cmd, err)
+			}
+		}
+		img := findImageForCommand(cfg.Tools, spec.cmd)
+		if img == "" {
+			return "", fmt.Errorf("provision.%s requires %s in [tools]; add a container image that provides %s", spec.cmd, spec.cmd, spec.cmd)
+		}
+		imageOverrides[img] = spec.tag
+		provisionBuilds = append(provisionBuilds, provisionBuild{
+			BaseImage:  img,
+			CustomTag:  spec.tag,
+			InstallCmd: spec.installCmd,
+			Packages:   spec.pkgs,
+			BinDirs:    spec.binDirs,
+		})
+	}
+
+	// Apply image overrides so tool wrappers use custom images with packages pre-installed
+	tools := make(map[string][]string)
+	for image, cmds := range cfg.Tools {
+		if override, ok := imageOverrides[image]; ok {
+			tools[override] = cmds
+		} else {
+			tools[image] = cmds
+		}
+	}
+
 	funcMap := template.FuncMap{
 		"add": func(a, b int) int { return a + b },
 		"isWildcard": func(s string) bool {
@@ -279,6 +346,7 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		"baseDomain": func(s string) string {
 			return strings.TrimPrefix(s, "*.")
 		},
+		"join": strings.Join,
 	}
 	tmpl, err := template.New("lima").Funcs(funcMap).Parse(limaTemplate)
 	if err != nil {
@@ -286,21 +354,17 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 	}
 
 	data := templateData{
-		CPUs:           cfg.Resources.CPUs,
-		Memory:         convertMemory(cfg.Resources.Memory),
-		Disk:           convertDisk(cfg.Resources.Disk),
-		ProjectDir:     projectDir,
-		ToolsDir:       "",
-		NetworkAllow:   cfg.Network.Allow,
-		NetworkProcess: cfg.Network.Process,
-		PortForwards:   cfg.Ports.Forward,
-		Tools:          cfg.Tools,
+		CPUs:            cfg.Resources.CPUs,
+		Memory:          convertMemory(cfg.Resources.Memory),
+		Disk:            convertDisk(cfg.Resources.Disk),
+		ProjectDir:      projectDir,
+		ToolsDir:        "",
+		NetworkAllow:    cfg.Network.Allow,
+		NetworkProcess:  cfg.Network.Process,
+		PortForwards:    cfg.Ports.Forward,
+		Tools:           tools,
+		ProvisionBuilds: provisionBuilds,
 	}
-	data.Provision.Npm = cfg.Provision.Npm
-	data.Provision.Pip = cfg.Provision.Pip
-	data.Provision.Cargo = cfg.Provision.Cargo
-	data.Provision.Go = cfg.Provision.Go
-	data.Provision.Gem = cfg.Provision.Gem
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {

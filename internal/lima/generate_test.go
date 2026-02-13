@@ -300,17 +300,36 @@ func TestGenerateConfigWithProvision(t *testing.T) {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	// Check npm install commands
-	if !strings.Contains(yaml, "npm install -g @anthropic-ai/claude-code") {
-		t.Error("expected yaml to contain npm install command for claude-code")
+	// Check custom image build for npm
+	if !strings.Contains(yaml, "nerdctl run --name watermelon-npm-build node:20-slim") {
+		t.Error("expected yaml to build custom npm image from base image")
 	}
-	if !strings.Contains(yaml, "npm install -g typescript") {
-		t.Error("expected yaml to contain npm install command for typescript")
+	if !strings.Contains(yaml, "npm install -g @anthropic-ai/claude-code typescript") {
+		t.Error("expected yaml to install npm packages in custom image")
+	}
+	if !strings.Contains(yaml, "nerdctl commit watermelon-npm-build watermelon-npm") {
+		t.Error("expected yaml to commit custom npm image")
 	}
 
-	// Check pip install commands
+	// Check custom image build for pip
+	if !strings.Contains(yaml, "nerdctl run --name watermelon-pip-build python:3.12-slim") {
+		t.Error("expected yaml to build custom pip image from base image")
+	}
 	if !strings.Contains(yaml, "pip install aider-chat") {
-		t.Error("expected yaml to contain pip install command for aider-chat")
+		t.Error("expected yaml to install pip packages in custom image")
+	}
+
+	// Check tool wrappers use custom images
+	if !strings.Contains(yaml, "watermelon-npm npm") {
+		t.Error("expected npm wrapper to use custom watermelon-npm image")
+	}
+	if !strings.Contains(yaml, "watermelon-pip pip") {
+		t.Error("expected pip wrapper to use custom watermelon-pip image")
+	}
+
+	// Check binary discovery section exists
+	if !strings.Contains(yaml, "grep -vxFf") {
+		t.Error("expected yaml to contain binary discovery logic")
 	}
 }
 
@@ -324,21 +343,21 @@ func TestGenerateConfigEmptyProvision(t *testing.T) {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	// Should NOT contain any provision install commands
-	if strings.Contains(yaml, "npm install -g") {
-		t.Error("expected yaml to NOT contain npm install when Provision.Npm is empty")
+	// Should NOT contain any custom image builds or provision commands
+	if strings.Contains(yaml, "watermelon-npm") {
+		t.Error("expected yaml to NOT contain watermelon-npm when Provision.Npm is empty")
 	}
-	if strings.Contains(yaml, "pip install") {
-		t.Error("expected yaml to NOT contain pip install when Provision.Pip is empty")
+	if strings.Contains(yaml, "watermelon-pip") {
+		t.Error("expected yaml to NOT contain watermelon-pip when Provision.Pip is empty")
 	}
-	if strings.Contains(yaml, "cargo install") {
-		t.Error("expected yaml to NOT contain cargo install when Provision.Cargo is empty")
+	if strings.Contains(yaml, "watermelon-cargo") {
+		t.Error("expected yaml to NOT contain watermelon-cargo when Provision.Cargo is empty")
 	}
-	if strings.Contains(yaml, "go install") {
-		t.Error("expected yaml to NOT contain go install when Provision.Go is empty")
+	if strings.Contains(yaml, "watermelon-go") {
+		t.Error("expected yaml to NOT contain watermelon-go when Provision.Go is empty")
 	}
-	if strings.Contains(yaml, "gem install") {
-		t.Error("expected yaml to NOT contain gem install when Provision.Gem is empty")
+	if strings.Contains(yaml, "watermelon-gem") {
+		t.Error("expected yaml to NOT contain watermelon-gem when Provision.Gem is empty")
 	}
 }
 
@@ -354,11 +373,15 @@ func TestGenerateConfigWithCargoProvision(t *testing.T) {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	if !strings.Contains(yaml, "cargo install ripgrep") {
-		t.Error("expected yaml to contain cargo install ripgrep")
+	if !strings.Contains(yaml, "cargo install ripgrep fd-find") {
+		t.Error("expected yaml to install cargo packages in custom image")
 	}
-	if !strings.Contains(yaml, "cargo install fd-find") {
-		t.Error("expected yaml to contain cargo install fd-find")
+	if !strings.Contains(yaml, "nerdctl commit watermelon-cargo-build watermelon-cargo") {
+		t.Error("expected yaml to commit custom cargo image")
+	}
+	// Tool wrappers should use custom image
+	if !strings.Contains(yaml, "watermelon-cargo cargo") {
+		t.Error("expected cargo wrapper to use custom watermelon-cargo image")
 	}
 }
 
@@ -375,7 +398,10 @@ func TestGenerateConfigWithGoProvision(t *testing.T) {
 	}
 
 	if !strings.Contains(yaml, "go install github.com/junegunn/fzf@latest") {
-		t.Error("expected yaml to contain go install command")
+		t.Error("expected yaml to install go packages in custom image")
+	}
+	if !strings.Contains(yaml, "nerdctl commit watermelon-go-build watermelon-go") {
+		t.Error("expected yaml to commit custom go image")
 	}
 }
 
@@ -391,10 +417,40 @@ func TestGenerateConfigWithGemProvision(t *testing.T) {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	if !strings.Contains(yaml, "gem install rails") {
-		t.Error("expected yaml to contain gem install rails")
+	if !strings.Contains(yaml, "gem install rails bundler") {
+		t.Error("expected yaml to install gem packages in custom image")
 	}
-	if !strings.Contains(yaml, "gem install bundler") {
-		t.Error("expected yaml to contain gem install bundler")
+	if !strings.Contains(yaml, "nerdctl commit watermelon-gem-build watermelon-gem") {
+		t.Error("expected yaml to commit custom gem image")
+	}
+}
+
+func TestGenerateConfigProvisionRequiresToolImage(t *testing.T) {
+	cfg := config.NewConfig()
+	// No tools configured, but provision.npm is set
+	cfg.Provision.Npm = []string{"pnpm"}
+
+	_, err := GenerateConfig(cfg, "/test/project")
+	if err == nil {
+		t.Fatal("expected error when provision.npm is set without npm in [tools]")
+	}
+	if !strings.Contains(err.Error(), "provision.npm requires npm") {
+		t.Errorf("expected error about missing npm tool, got: %v", err)
+	}
+}
+
+func TestGenerateConfigProvisionRejectsInvalidPackageName(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Tools = map[string][]string{
+		"node:20-slim": {"node", "npm"},
+	}
+	cfg.Provision.Npm = []string{"pnpm; rm -rf /"}
+
+	_, err := GenerateConfig(cfg, "/test/project")
+	if err == nil {
+		t.Fatal("expected error for invalid package name")
+	}
+	if !strings.Contains(err.Error(), "invalid npm package") {
+		t.Errorf("expected error about invalid package, got: %v", err)
 	}
 }
