@@ -265,6 +265,26 @@ func TestGenerateConfigDnsmasqForWildcards(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigNetworkProcessHeredocIndentation(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Process = map[string][]string{
+		"claude": {"*.anthropic.com"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Heredoc bodies must be indented to remain valid YAML inside script: |
+	if !strings.Contains(yaml, "cat > /etc/watermelon/claude-dns.conf << 'DNSCONF'\n      # dnsmasq config for claude") {
+		t.Error("expected DNS heredoc body to be indented in generated YAML")
+	}
+	if !strings.Contains(yaml, "cat > /usr/local/bin/claude << 'WRAPPER'\n      #!/bin/bash") {
+		t.Error("expected wrapper heredoc body to be indented in generated YAML")
+	}
+}
+
 func TestGenerateConfigEmptyNetworkProcess(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.Network.Allow = []string{"registry.npmjs.org"}

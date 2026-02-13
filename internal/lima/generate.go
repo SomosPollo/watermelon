@@ -252,18 +252,18 @@ provision:
       # Configure dnsmasq for {{ $proc }} wildcard domains
       mkdir -p /etc/watermelon
       cat > /etc/watermelon/{{ $proc }}-dns.conf << 'DNSCONF'
-# dnsmasq config for {{ $proc }}
-port=53
-bind-interfaces
-listen-address=10.200.{{ $netIndex }}.1
-server=8.8.8.8
-server=8.8.4.4
+      # dnsmasq config for {{ $proc }}
+      port=53
+      bind-interfaces
+      listen-address=10.200.{{ $netIndex }}.1
+      server=8.8.8.8
+      server=8.8.4.4
 {{- range $domains }}
 {{- if . | isWildcard }}
-ipset=/{{ . | baseDomain }}/watermelon-{{ $proc }}-allow
+      ipset=/{{ . | baseDomain }}/watermelon-{{ $proc }}-allow
 {{- end }}
 {{- end }}
-DNSCONF
+      DNSCONF
       # Start dnsmasq for this namespace
       dnsmasq --conf-file=/etc/watermelon/{{ $proc }}-dns.conf
       # Configure namespace to use this DNS
@@ -272,15 +272,15 @@ DNSCONF
 
       # Create wrapper script for {{ $proc }}
       cat > /usr/local/bin/{{ $proc }} << 'WRAPPER'
-#!/bin/bash
-# Find the real binary (skip this wrapper)
-REAL_BIN=$(which -a {{ $proc }} 2>/dev/null | grep -v /usr/local/bin/{{ $proc }} | head -1)
-if [ -z "$REAL_BIN" ]; then
-    echo "Error: {{ $proc }} not found in PATH" >&2
-    exit 1
-fi
-exec ip netns exec watermelon-{{ $proc }} "$REAL_BIN" "$@"
-WRAPPER
+      #!/bin/bash
+      # Find the real binary (skip this wrapper)
+      REAL_BIN=$(which -a {{ $proc }} 2>/dev/null | grep -v /usr/local/bin/{{ $proc }} | head -1)
+      if [ -z "$REAL_BIN" ]; then
+          echo "Error: {{ $proc }} not found in PATH" >&2
+          exit 1
+      fi
+      exec ip netns exec watermelon-{{ $proc }} "$REAL_BIN" "$@"
+      WRAPPER
       chmod +x /usr/local/bin/{{ $proc }}
 {{- $netIndex = add $netIndex 1 }}
 {{- end }}
