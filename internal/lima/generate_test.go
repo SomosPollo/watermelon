@@ -524,6 +524,54 @@ func TestGenerateConfigProvisionRejectsInvalidPackageName(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigNetworkProcessWithContainerizedTool(t *testing.T) {
+	// Reproduces the flip-to-survive config: claude is installed via npm provision
+	// and also has a network.process entry. The nerdctl wrapper must use
+	// --network=ns:/var/run/netns/watermelon-claude instead of --network=host,
+	// because --network=host always uses the root namespace (where containerd runs),
+	// ignoring ip netns exec context.
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org"}
+	cfg.Network.Process = map[string][]string{
+		"claude": {"*.anthropic.com"},
+	}
+	cfg.Tools = map[string][]string{
+		"node:20-slim": {"node", "npm", "npx"},
+	}
+	cfg.Provision.Npm = []string{"pnpm", "@anthropic-ai/claude-code"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// The wrapper should patch --network=host to use the process namespace
+	if !strings.Contains(yaml, `--network=host/--network=ns:\/var\/run\/netns\/watermelon-claude`) {
+		// Check the sed command is present
+		if !strings.Contains(yaml, "sed") || !strings.Contains(yaml, "watermelon-claude") {
+			t.Error("expected yaml to contain sed command patching --network=host for claude")
+		}
+	}
+
+	// The inner wrapper should be saved before overwriting
+	if !strings.Contains(yaml, ".watermelon-claude-inner") {
+		t.Error("expected yaml to save existing wrapper as .watermelon-claude-inner")
+	}
+
+	// apt-get install must appear BEFORE iptables lockdown
+	aptGetPos := strings.Index(yaml, "apt-get update && apt-get install -y dnsmasq ipset")
+	iptablesRejectPos := strings.Index(yaml, "iptables -A OUTPUT -j REJECT")
+	if aptGetPos < 0 {
+		t.Fatal("expected yaml to contain apt-get install for dnsmasq")
+	}
+	if iptablesRejectPos < 0 {
+		t.Fatal("expected yaml to contain iptables REJECT rule")
+	}
+	if aptGetPos > iptablesRejectPos {
+		t.Error("apt-get install must appear BEFORE iptables REJECT rule to avoid being blocked by firewall")
+	}
+}
+
 func TestGenerateConfigSmartWrappers(t *testing.T) {
 	t.Run("npm wrapper detects -g/--global", func(t *testing.T) {
 		cfg := config.NewConfig()

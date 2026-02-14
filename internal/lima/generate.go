@@ -274,9 +274,15 @@ provision:
       echo "nameserver 10.200.{{ $netIndex }}.1" > /etc/netns/watermelon-{{ $proc }}/resolv.conf
 
       # Create wrapper script for {{ $proc }}
-      # Save existing wrapper (e.g., nerdctl tool wrapper) so we can chain to it
       if [ -f "/usr/local/bin/{{ $proc }}" ]; then
-        mv "/usr/local/bin/{{ $proc }}" "/usr/local/bin/.watermelon-{{ $proc }}-inner"
+        # Existing wrapper found (e.g., nerdctl tool wrapper).
+        # Patch --network=host to use the process-specific namespace directly,
+        # because --network=host always uses the root namespace regardless of
+        # ip netns exec context.
+        sed 's/--network=host/--network=ns:\/var\/run\/netns\/watermelon-{{ $proc }}/g' \
+            "/usr/local/bin/{{ $proc }}" > "/usr/local/bin/.watermelon-{{ $proc }}-inner"
+        chmod +x "/usr/local/bin/.watermelon-{{ $proc }}-inner"
+        rm "/usr/local/bin/{{ $proc }}"
       fi
       cat > /usr/local/bin/{{ $proc }} << 'WRAPPER'
       #!/bin/bash
