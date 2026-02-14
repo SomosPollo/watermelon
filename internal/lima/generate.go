@@ -189,6 +189,10 @@ provision:
       WATERMELON_SMART_WRAPPER_{{ .Cmd }}
       chmod +x /usr/local/bin/{{ .Cmd }}
 {{- end }}
+{{- if .NetworkProcess }}
+      # Install dependencies for per-process network namespaces (must happen before iptables lockdown)
+      apt-get update && apt-get install -y dnsmasq ipset
+{{- end }}
       # Network restrictions via iptables
 {{- range .NetworkAllow }}
 {{- if not (. | isWildcard) }}
@@ -204,7 +208,6 @@ provision:
 {{- end }}
 {{- if .NetworkProcess }}
       # Per-process network namespaces
-      apt-get update && apt-get install -y dnsmasq ipset
 {{- $netIndex := 1 }}
 {{- range $proc, $domains := .NetworkProcess }}
       # Setup namespace for {{ $proc }}
@@ -271,11 +274,18 @@ provision:
       echo "nameserver 10.200.{{ $netIndex }}.1" > /etc/netns/watermelon-{{ $proc }}/resolv.conf
 
       # Create wrapper script for {{ $proc }}
+      # Save existing wrapper (e.g., nerdctl tool wrapper) so we can chain to it
+      if [ -f "/usr/local/bin/{{ $proc }}" ]; then
+        mv "/usr/local/bin/{{ $proc }}" "/usr/local/bin/.watermelon-{{ $proc }}-inner"
+      fi
       cat > /usr/local/bin/{{ $proc }} << 'WRAPPER'
       #!/bin/bash
-      # Find the real binary (skip this wrapper)
-      REAL_BIN=$(which -a {{ $proc }} 2>/dev/null | grep -v /usr/local/bin/{{ $proc }} | head -1)
-      if [ -z "$REAL_BIN" ]; then
+      # Run inside the per-process network namespace
+      REAL_BIN="/usr/local/bin/.watermelon-{{ $proc }}-inner"
+      if [ ! -x "$REAL_BIN" ]; then
+          REAL_BIN=$(which -a {{ $proc }} 2>/dev/null | grep -v /usr/local/bin/{{ $proc }} | head -1)
+      fi
+      if [ -z "$REAL_BIN" ] || [ ! -x "$REAL_BIN" ]; then
           echo "Error: {{ $proc }} not found in PATH" >&2
           exit 1
       fi
