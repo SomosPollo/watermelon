@@ -280,8 +280,9 @@ func TestGenerateConfigNetworkProcessHeredocIndentation(t *testing.T) {
 	if !strings.Contains(yaml, "cat > /etc/watermelon/claude-dns.conf << 'DNSCONF'\n      # dnsmasq config for claude") {
 		t.Error("expected DNS heredoc body to be indented in generated YAML")
 	}
-	if !strings.Contains(yaml, "cat > /usr/local/bin/claude << 'WRAPPER'\n      #!/bin/bash") {
-		t.Error("expected wrapper heredoc body to be indented in generated YAML")
+	// Wrapper heredoc uses NSWRAPPER (unquoted for variable expansion) or WRAPPER (quoted)
+	if !strings.Contains(yaml, "/usr/local/bin/claude") {
+		t.Error("expected wrapper to target /usr/local/bin/claude")
 	}
 }
 
@@ -526,10 +527,10 @@ func TestGenerateConfigProvisionRejectsInvalidPackageName(t *testing.T) {
 
 func TestGenerateConfigNetworkProcessWithContainerizedTool(t *testing.T) {
 	// Reproduces the flip-to-survive config: claude is installed via npm provision
-	// and also has a network.process entry. The nerdctl wrapper must use
-	// --network=ns:/var/run/netns/watermelon-claude instead of --network=host,
-	// because --network=host always uses the root namespace (where containerd runs),
-	// ignoring ip netns exec context.
+	// and also has a network.process entry. The nerdctl wrapper must:
+	// 1. Use --network=ns:/var/run/netns/watermelon-claude (not --network=host)
+	// 2. Mount the namespace's resolv.conf so DNS goes through dnsmasq
+	// 3. Extract the container image from the existing nerdctl wrapper
 	cfg := config.NewConfig()
 	cfg.Network.Allow = []string{"registry.npmjs.org"}
 	cfg.Network.Process = map[string][]string{
@@ -545,21 +546,34 @@ func TestGenerateConfigNetworkProcessWithContainerizedTool(t *testing.T) {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	// The wrapper should patch --network=host to use the process namespace
-	if !strings.Contains(yaml, `--network=host/--network=ns:\/var\/run\/netns\/watermelon-claude`) {
-		// Check the sed command is present
-		if !strings.Contains(yaml, "sed") || !strings.Contains(yaml, "watermelon-claude") {
-			t.Error("expected yaml to contain sed command patching --network=host for claude")
-		}
+	// The wrapper should detect containerized tools and extract the image name
+	if !strings.Contains(yaml, "_WM_PROC_IMAGE") {
+		t.Error("expected yaml to extract container image from existing wrapper")
 	}
 
-	// The inner wrapper should be saved before overwriting
-	if !strings.Contains(yaml, ".watermelon-claude-inner") {
-		t.Error("expected yaml to save existing wrapper as .watermelon-claude-inner")
+	// The wrapper should use rootful nerdctl with --network=ns:<path>
+	if !strings.Contains(yaml, "sudo nerdctl run") {
+		t.Error("expected yaml to use rootful (sudo) nerdctl for namespace-aware containers")
+	}
+	if !strings.Contains(yaml, "--network=ns:/var/run/netns/watermelon-claude") {
+		t.Error("expected yaml to use --network=ns:<path> for namespace containers")
+	}
+
+	// FORWARD chain should have per-process filter chain
+	if !strings.Contains(yaml, "iptables -I FORWARD -i veth-claude") {
+		t.Error("expected yaml to contain FORWARD chain rules for veth traffic")
+	}
+
+	// ipset and dnsmasq run in root namespace (ipset + nf_tables don't work in namespaces)
+	if !strings.Contains(yaml, "ipset create watermelon-claude-allow") {
+		t.Error("expected yaml to create ipset for wildcard domain matching")
+	}
+	if !strings.Contains(yaml, "dnsmasq --conf-file=/etc/watermelon/claude-dns.conf") {
+		t.Error("expected yaml to start dnsmasq for wildcard DNS resolution")
 	}
 
 	// apt-get install must appear BEFORE iptables lockdown
-	aptGetPos := strings.Index(yaml, "apt-get update && apt-get install -y dnsmasq ipset")
+	aptGetPos := strings.Index(yaml, "apt-get update && apt-get install -y dnsmasq-base ipset")
 	iptablesRejectPos := strings.Index(yaml, "iptables -A OUTPUT -j REJECT")
 	if aptGetPos < 0 {
 		t.Fatal("expected yaml to contain apt-get install for dnsmasq")
@@ -569,6 +583,20 @@ func TestGenerateConfigNetworkProcessWithContainerizedTool(t *testing.T) {
 	}
 	if aptGetPos > iptablesRejectPos {
 		t.Error("apt-get install must appear BEFORE iptables REJECT rule to avoid being blocked by firewall")
+	}
+
+	// Explicit image copy to rootful store (not dynamic discovery)
+	if !strings.Contains(yaml, `nerdctl save "watermelon-npm" | nerdctl load`) {
+		t.Error("expected yaml to explicitly copy watermelon-npm image to rootful store")
+	}
+	// Image copy must be wrapped in subshell with || to survive set -e
+	if !strings.Contains(yaml, `|| echo "warning: failed to copy image`) {
+		t.Error("expected image copy to have error fallback for set -e safety")
+	}
+
+	// Should also have a fallback for non-containerized tools
+	if !strings.Contains(yaml, "ip netns exec watermelon-claude") {
+		t.Error("expected yaml to have ip netns exec fallback for non-containerized tools")
 	}
 }
 

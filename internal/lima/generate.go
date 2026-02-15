@@ -3,6 +3,7 @@ package lima
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -191,8 +192,26 @@ provision:
 {{- end }}
 {{- if .NetworkProcess }}
       # Install dependencies for per-process network namespaces (must happen before iptables lockdown)
-      apt-get update && apt-get install -y dnsmasq ipset
+      # Use dnsmasq-base (not dnsmasq) to avoid installing a systemd service that
+      # conflicts with systemd-resolved on port 53 and breaks system DNS.
+      apt-get update && apt-get install -y dnsmasq-base ipset
+      # Enable rootful containerd for namespace-aware containers.
+      # Rootless containerd uses slirp4netns (bypasses VM iptables), so we need
+      # rootful mode to use --network=ns:<path> for per-process namespaces.
+      systemctl enable --now containerd
+      # Copy container images from rootless to rootful store.
+      # Uses explicit image list (determined at config time) instead of dynamic
+      # discovery to avoid fragile nerdctl format/save/load pipelines under set -e.
+{{- if .UniqueImages }}
+      _WM_COPY_USER=$(awk -F: '$3 >= 500 && $1 != "nobody" {print $1; exit}' /etc/passwd)
+      _WM_COPY_UID=$(id -u "$_WM_COPY_USER")
+{{- range .UniqueImages }}
+      (sudo -iu "$_WM_COPY_USER" XDG_RUNTIME_DIR="/run/user/$_WM_COPY_UID" nerdctl save "{{ . }}" | nerdctl load) 2>&1 || echo "warning: failed to copy image {{ . }} to rootful store"
 {{- end }}
+{{- end }}
+{{- end }}
+      # Wait for DNS to be ready before iptables rules that resolve hostnames
+      for _i in $(seq 1 30); do getent hosts dns.google >/dev/null 2>&1 && break; sleep 1; done
       # Network restrictions via iptables
 {{- range .NetworkAllow }}
 {{- if not (. | isWildcard) }}
@@ -231,28 +250,13 @@ provision:
       iptables -t nat -A POSTROUTING -s 10.200.{{ $netIndex }}.0/24 -j MASQUERADE
       echo 1 > /proc/sys/net/ipv4/ip_forward
 
-      # Create ipset for wildcard domains
+      # Create ipset for wildcard domains in ROOT namespace (ipset + nf_tables
+      # don't work together inside network namespaces on Ubuntu 22.04)
       ipset create watermelon-{{ $proc }}-allow hash:ip
 
-      # Apply iptables rules in namespace (general + process-specific)
-{{- range $.NetworkAllow }}
-{{- if not (. | isWildcard) }}
-      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -d {{ . }} -j ACCEPT
-{{- end }}
-{{- end }}
-{{- range $domains }}
-{{- if not (. | isWildcard) }}
-      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -d {{ . }} -j ACCEPT
-{{- end }}
-{{- end }}
-      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -m set --match-set watermelon-{{ $proc }}-allow dst -j ACCEPT
-      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
-      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -o lo -j ACCEPT
-      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-      ip netns exec watermelon-{{ $proc }} iptables -A OUTPUT -j REJECT
-
-      # Configure dnsmasq for {{ $proc }} wildcard domains
+      # Configure dnsmasq for {{ $proc }} wildcard domains.
+      # Runs in ROOT namespace on the host side of the veth (10.200.{{ $netIndex }}.1).
+      # Populates the root namespace's ipset when resolving wildcard domains.
       mkdir -p /etc/watermelon
       cat > /etc/watermelon/{{ $proc }}-dns.conf << 'DNSCONF'
       # dnsmasq config for {{ $proc }}
@@ -267,37 +271,62 @@ provision:
 {{- end }}
 {{- end }}
       DNSCONF
-      # Start dnsmasq for this namespace
       dnsmasq --conf-file=/etc/watermelon/{{ $proc }}-dns.conf
-      # Configure namespace to use this DNS
       mkdir -p /etc/netns/watermelon-{{ $proc }}
       echo "nameserver 10.200.{{ $netIndex }}.1" > /etc/netns/watermelon-{{ $proc }}/resolv.conf
 
+      # Filter traffic in root FORWARD chain (where ipset works correctly).
+      # Create a per-process chain for clean separation.
+      iptables -N wm-fwd-{{ $proc }}
+      iptables -A wm-fwd-{{ $proc }} -p tcp --dport 53 -j ACCEPT
+      iptables -A wm-fwd-{{ $proc }} -p udp --dport 53 -j ACCEPT
+      iptables -A wm-fwd-{{ $proc }} -m set --match-set watermelon-{{ $proc }}-allow dst -j ACCEPT
+{{- range $.NetworkAllow }}
+{{- if not (. | isWildcard) }}
+      iptables -A wm-fwd-{{ $proc }} -d {{ . }} -j ACCEPT
+{{- end }}
+{{- end }}
+{{- range $domains }}
+{{- if not (. | isWildcard) }}
+      iptables -A wm-fwd-{{ $proc }} -d {{ . }} -j ACCEPT
+{{- end }}
+{{- end }}
+      iptables -A wm-fwd-{{ $proc }} -j REJECT
+      # Route outbound traffic from this namespace through the filter chain;
+      # allow return traffic unconditionally.
+      iptables -I FORWARD -i veth-{{ $proc }} -j wm-fwd-{{ $proc }}
+      iptables -I FORWARD -o veth-{{ $proc }} -m state --state ESTABLISHED,RELATED -j ACCEPT
+
       # Create wrapper script for {{ $proc }}
-      if [ -f "/usr/local/bin/{{ $proc }}" ]; then
-        # Existing wrapper found (e.g., nerdctl tool wrapper).
-        # Patch --network=host to use the process-specific namespace directly,
-        # because --network=host always uses the root namespace regardless of
-        # ip netns exec context.
-        sed 's/--network=host/--network=ns:\/var\/run\/netns\/watermelon-{{ $proc }}/g' \
-            "/usr/local/bin/{{ $proc }}" > "/usr/local/bin/.watermelon-{{ $proc }}-inner"
-        chmod +x "/usr/local/bin/.watermelon-{{ $proc }}-inner"
-        rm "/usr/local/bin/{{ $proc }}"
+{{- $procImage := index $.NetworkProcessImages $proc }}
+      # Prefer image known at config time; otherwise detect from existing wrapper.
+      _WM_PROC_IMAGE="{{ $procImage }}"
+      if [ -z "$_WM_PROC_IMAGE" ] && [ -f "/usr/local/bin/{{ $proc }}" ]; then
+        _WM_PROC_IMAGE=$(grep -m1 'nerdctl run' "/usr/local/bin/{{ $proc }}" | sed 's/.*-w \/project //' | cut -d' ' -f1)
       fi
-      cat > /usr/local/bin/{{ $proc }} << 'WRAPPER'
+      if [ -n "$_WM_PROC_IMAGE" ]; then
+        cat > /usr/local/bin/{{ $proc }} << NSWRAPPER
       #!/bin/bash
-      # Run inside the per-process network namespace
-      REAL_BIN="/usr/local/bin/.watermelon-{{ $proc }}-inner"
-      if [ ! -x "$REAL_BIN" ]; then
-          REAL_BIN=$(which -a {{ $proc }} 2>/dev/null | grep -v /usr/local/bin/{{ $proc }} | head -1)
+      if [ -t 0 ]; then
+          exec sudo nerdctl run --rm -it --network=ns:/var/run/netns/watermelon-{{ $proc }} --dns 10.200.{{ $netIndex }}.1 -v /project:/project -w /project $_WM_PROC_IMAGE {{ $proc }} "\$@"
+      else
+          exec sudo nerdctl run --rm --network=ns:/var/run/netns/watermelon-{{ $proc }} --dns 10.200.{{ $netIndex }}.1 -v /project:/project -w /project $_WM_PROC_IMAGE {{ $proc }} "\$@"
       fi
-      if [ -z "$REAL_BIN" ] || [ ! -x "$REAL_BIN" ]; then
+      NSWRAPPER
+        chmod +x /usr/local/bin/{{ $proc }}
+      else
+        # Non-containerized tool: use ip netns exec directly
+        cat > /usr/local/bin/{{ $proc }} << 'WRAPPER'
+      #!/bin/bash
+      REAL_BIN=$(which -a {{ $proc }} 2>/dev/null | grep -v /usr/local/bin/{{ $proc }} | head -1)
+      if [ -z "$REAL_BIN" ]; then
           echo "Error: {{ $proc }} not found in PATH" >&2
           exit 1
       fi
       exec ip netns exec watermelon-{{ $proc }} "$REAL_BIN" "$@"
       WRAPPER
-      chmod +x /usr/local/bin/{{ $proc }}
+        chmod +x /usr/local/bin/{{ $proc }}
+      fi
 {{- $netIndex = add $netIndex 1 }}
 {{- end }}
 {{- end }}
@@ -341,17 +370,19 @@ type smartWrapper struct {
 }
 
 type templateData struct {
-	CPUs            int
-	Memory          string
-	Disk            string
-	ProjectDir      string
-	ToolsDir        string
-	NetworkAllow    []string
-	NetworkProcess  map[string][]string
-	PortForwards    []int
-	Tools           map[string][]string
-	ProvisionBuilds []provisionBuild
-	SmartWrappers   []smartWrapper
+	CPUs                 int
+	Memory               string
+	Disk                 string
+	ProjectDir           string
+	ToolsDir             string
+	NetworkAllow         []string
+	NetworkProcess       map[string][]string
+	NetworkProcessImages map[string]string // process name → container image (when known at config time)
+	PortForwards         []int
+	Tools                map[string][]string
+	ProvisionBuilds      []provisionBuild
+	SmartWrappers        []smartWrapper
+	UniqueImages         []string // all container images that need to be in rootful store
 }
 
 // GenerateConfig creates Lima YAML from watermelon config
@@ -490,18 +521,29 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		}
 	}
 
+	networkProcessImages := buildNetworkProcessImages(tools, cfg.Network.Process)
+
+	// Collect container images that need to be copied to rootful store
+	// when network process namespaces are in use.
+	var uniqueImages []string
+	if len(cfg.Network.Process) > 0 {
+		uniqueImages = collectUniqueImages(tools)
+	}
+
 	data := templateData{
-		CPUs:            cfg.Resources.CPUs,
-		Memory:          convertMemory(cfg.Resources.Memory),
-		Disk:            convertDisk(cfg.Resources.Disk),
-		ProjectDir:      projectDir,
-		ToolsDir:        "",
-		NetworkAllow:    cfg.Network.Allow,
-		NetworkProcess:  cfg.Network.Process,
-		PortForwards:    cfg.Ports.Forward,
-		Tools:           tools,
-		ProvisionBuilds: provisionBuilds,
-		SmartWrappers:   smartWrappers,
+		CPUs:                 cfg.Resources.CPUs,
+		Memory:               convertMemory(cfg.Resources.Memory),
+		Disk:                 convertDisk(cfg.Resources.Disk),
+		ProjectDir:           projectDir,
+		ToolsDir:             "",
+		NetworkAllow:         cfg.Network.Allow,
+		NetworkProcess:       cfg.Network.Process,
+		NetworkProcessImages: networkProcessImages,
+		PortForwards:         cfg.Ports.Forward,
+		Tools:                tools,
+		ProvisionBuilds:      provisionBuilds,
+		SmartWrappers:        smartWrappers,
+		UniqueImages:         uniqueImages,
 	}
 
 	var buf bytes.Buffer
@@ -571,4 +613,23 @@ func convertMemory(mem string) string {
 // convertDisk converts "20GB" to "20GiB" for Lima
 func convertDisk(disk string) string {
 	return strings.Replace(disk, "GB", "GiB", 1)
+}
+
+func buildNetworkProcessImages(tools map[string][]string, processes map[string][]string) map[string]string {
+	images := make(map[string]string)
+	for proc := range processes {
+		if img := findImageForCommand(tools, proc); img != "" {
+			images[proc] = img
+		}
+	}
+	return images
+}
+
+func collectUniqueImages(tools map[string][]string) []string {
+	images := make([]string, 0, len(tools))
+	for image := range tools {
+		images = append(images, image)
+	}
+	sort.Strings(images)
+	return images
 }
