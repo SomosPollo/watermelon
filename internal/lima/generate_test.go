@@ -801,6 +801,106 @@ func TestGenerateConfigAskMode(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigGlobalWildcardDomains(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org", "*.anthropic.com", "*.openai.com"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Should create a global ipset
+	if !strings.Contains(yaml, "ipset create watermelon-global-allow hash:ip") {
+		t.Error("expected yaml to create global ipset for wildcard matching")
+	}
+
+	// Should configure dnsmasq with ipset rules for each wildcard
+	if !strings.Contains(yaml, "ipset=/anthropic.com/watermelon-global-allow") {
+		t.Error("expected yaml to configure dnsmasq ipset for anthropic.com wildcard")
+	}
+	if !strings.Contains(yaml, "ipset=/openai.com/watermelon-global-allow") {
+		t.Error("expected yaml to configure dnsmasq ipset for openai.com wildcard")
+	}
+
+	// Should have iptables rule matching ipset
+	if !strings.Contains(yaml, "iptables -A OUTPUT -m set --match-set watermelon-global-allow dst -j ACCEPT") {
+		t.Error("expected yaml to have iptables ipset match rule for global wildcards")
+	}
+
+	// Non-wildcard domains should still be direct iptables rules
+	if !strings.Contains(yaml, "iptables -A OUTPUT -d registry.npmjs.org -j ACCEPT") {
+		t.Error("expected non-wildcard domains to still use direct iptables rules")
+	}
+
+	// Should install dnsmasq-base when no NetworkProcess
+	if !strings.Contains(yaml, "apt-get update && apt-get install -y dnsmasq-base ipset") {
+		t.Error("expected yaml to install dnsmasq-base and ipset for global wildcard domains")
+	}
+}
+
+func TestGenerateConfigNoGlobalWildcardWithoutWildcards(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org", "github.com"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Should NOT set up global ipset when no wildcard domains exist
+	if strings.Contains(yaml, "watermelon-global-allow") {
+		t.Error("expected yaml to NOT set up global ipset when no wildcard domains exist")
+	}
+}
+
+func TestGenerateConfigGlobalWildcardsInProcessChains(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org", "*.example.com"}
+	cfg.Network.Process = map[string][]string{
+		"claude": {"api.anthropic.com"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Per-process dnsmasq should include global wildcard domains
+	if !strings.Contains(yaml, "ipset=/example.com/watermelon-claude-allow") {
+		t.Error("expected per-process dnsmasq to include global wildcard domain *.example.com")
+	}
+
+	// Non-wildcard global allows should still appear as direct iptables rules in FORWARD chain
+	if !strings.Contains(yaml, "iptables -A wm-fwd-claude -d registry.npmjs.org -j ACCEPT") {
+		t.Error("expected per-process FORWARD chain to include non-wildcard global allow")
+	}
+}
+
+func TestGenerateConfigDeterministicSubnets(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"registry.npmjs.org"}
+	cfg.Network.Process = map[string][]string{
+		"aider":  {"api.openai.com"},
+		"claude": {"api.anthropic.com"},
+		"codex":  {"api.openai.com"},
+	}
+
+	// Generate twice and compare
+	yaml1, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("first generate: %v", err)
+	}
+	yaml2, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("second generate: %v", err)
+	}
+
+	if yaml1 != yaml2 {
+		t.Error("expected two generations of the same config to produce identical output")
+	}
+}
+
 func TestGenerateConfigNonAskModeNoNFQUEUE(t *testing.T) {
 	for _, mode := range []string{"log", "fail", "silent"} {
 		t.Run(mode, func(t *testing.T) {

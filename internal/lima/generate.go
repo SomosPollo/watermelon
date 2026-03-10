@@ -216,11 +216,45 @@ provision:
 {{- end }}
       # Wait for DNS to be ready before iptables rules that resolve hostnames
       for _i in $(seq 1 30); do getent hosts dns.google >/dev/null 2>&1 && break; sleep 1; done
+{{- if .GlobalWildcards }}
+      # Install dependencies for global wildcard domain matching
+{{- if not .NetworkProcess }}
+      apt-get update && apt-get install -y dnsmasq-base ipset
+{{- end }}
+
+      # Global ipset for wildcard domains resolved via dnsmasq
+      ipset create watermelon-global-allow hash:ip
+
+      # Configure dnsmasq to populate ipset on wildcard DNS resolution
+      mkdir -p /etc/watermelon
+      cat > /etc/watermelon/global-dns.conf << 'DNSCONF'
+      port=5354
+      bind-interfaces
+      listen-address=127.0.0.1
+      server=8.8.8.8
+      server=8.8.4.4
+{{- range .GlobalWildcards }}
+      ipset=/{{ . | baseDomain }}/watermelon-global-allow
+{{- end }}
+      DNSCONF
+      dnsmasq --conf-file=/etc/watermelon/global-dns.conf
+
+      # Point system DNS through our dnsmasq for wildcard resolution
+      mkdir -p /etc/systemd/resolved.conf.d
+      cat > /etc/systemd/resolved.conf.d/watermelon.conf << 'RESOLVEDCONF'
+      [Resolve]
+      DNS=127.0.0.1:5354
+      RESOLVEDCONF
+      systemctl restart systemd-resolved
+{{- end }}
       # Network restrictions via iptables
 {{- range .NetworkAllow }}
 {{- if not (. | isWildcard) }}
       iptables -A OUTPUT -d {{ . }} -j ACCEPT
 {{- end }}
+{{- end }}
+{{- if .GlobalWildcards }}
+      iptables -A OUTPUT -m set --match-set watermelon-global-allow dst -j ACCEPT
 {{- end }}
 {{- if .NetworkAllow }}
       iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
@@ -232,6 +266,8 @@ provision:
       _WM_GW=$(ip route | awk '/default/{print $3}')
       iptables -A OUTPUT -p tcp -d "$_WM_GW" --dport {{ .VerdictServerPort }} -j ACCEPT
       iptables -A OUTPUT -p tcp --syn -j NFQUEUE --queue-num 0
+      # Queue inbound DNS responses for domain snooping
+      iptables -A INPUT -p udp --sport 53 -j NFQUEUE --queue-num 1
       iptables -A OUTPUT -j REJECT
 {{- else }}
       iptables -A OUTPUT -j REJECT
@@ -261,7 +297,8 @@ provision:
 {{- if .NetworkProcess }}
       # Per-process network namespaces
 {{- $netIndex := 1 }}
-{{- range $proc, $domains := .NetworkProcess }}
+{{- range $proc := .SortedProcessNames }}
+{{- $domains := index $.NetworkProcess $proc }}
       # Setup namespace for {{ $proc }}
       ip netns add watermelon-{{ $proc }}
 
@@ -302,6 +339,9 @@ provision:
 {{- if . | isWildcard }}
       ipset=/{{ . | baseDomain }}/watermelon-{{ $proc }}-allow
 {{- end }}
+{{- end }}
+{{- range $.GlobalWildcards }}
+      ipset=/{{ . | baseDomain }}/watermelon-{{ $proc }}-allow
 {{- end }}
       DNSCONF
       dnsmasq --conf-file=/etc/watermelon/{{ $proc }}-dns.conf
@@ -415,10 +455,12 @@ type templateData struct {
 	Tools                map[string][]string
 	ProvisionBuilds      []provisionBuild
 	SmartWrappers        []smartWrapper
+	SortedProcessNames   []string // process names sorted alphabetically
 	UniqueImages         []string // all container images that need to be in rootful store
 	Enforcement          string
 	VerdictServerPort    int
 	NfqdBinaryPath       string
+	GlobalWildcards      []string // wildcard domains from NetworkAllow (e.g., "*.anthropic.com")
 }
 
 // GenerateConfig creates Lima YAML from watermelon config
@@ -578,6 +620,19 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		nfqdPath = "/project/.watermelon/bin/watermelon-nfqd"
 	}
 
+	var globalWildcards []string
+	for _, d := range cfg.Network.Allow {
+		if strings.HasPrefix(d, "*.") {
+			globalWildcards = append(globalWildcards, d)
+		}
+	}
+
+	sortedProcessNames := make([]string, 0, len(cfg.Network.Process))
+	for proc := range cfg.Network.Process {
+		sortedProcessNames = append(sortedProcessNames, proc)
+	}
+	sort.Strings(sortedProcessNames)
+
 	data := templateData{
 		CPUs:                 cfg.Resources.CPUs,
 		Memory:               convertMemory(cfg.Resources.Memory),
@@ -587,6 +642,7 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		NetworkAllow:         cfg.Network.Allow,
 		NetworkProcess:       cfg.Network.Process,
 		NetworkProcessImages: networkProcessImages,
+		SortedProcessNames:   sortedProcessNames,
 		PortForwards:         cfg.Ports.Forward,
 		Tools:                tools,
 		ProvisionBuilds:      provisionBuilds,
@@ -595,6 +651,7 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		Enforcement:          cfg.Security.Enforcement,
 		VerdictServerPort:    verdictPort,
 		NfqdBinaryPath:       nfqdPath,
+		GlobalWildcards:      globalWildcards,
 	}
 
 	var buf bytes.Buffer
