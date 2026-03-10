@@ -64,15 +64,17 @@ func (s *Server) getVerdict(req VerdictRequest) string {
 		domain = req.IP
 	}
 
+	cacheKey := fmt.Sprintf("%s:%d", domain, req.Port)
+
 	// Check cache first
-	if v, ok := s.cache.Get(domain); ok {
+	if v, ok := s.cache.Get(cacheKey); ok {
 		return v
 	}
 
-	// Check if another goroutine is already showing a dialog for this domain
-	if ch := s.cache.MarkPending(domain); ch != nil {
+	// Check if another goroutine is already showing a dialog for this domain:port
+	if ch := s.cache.MarkPending(cacheKey); ch != nil {
 		<-ch // wait for the other dialog to complete
-		if v, ok := s.cache.Get(domain); ok {
+		if v, ok := s.cache.Get(cacheKey); ok {
 			return v
 		}
 		// Not cached (e.g. allow-once) — re-enter to prompt again
@@ -86,12 +88,12 @@ func (s *Server) getVerdict(req VerdictRequest) string {
 
 	// Cache block and always-allow for the session; allow-once is not cached
 	if verdict == VerdictAllowOnce {
-		s.cache.Resolve(domain) // unblock waiters without caching
+		s.cache.Resolve(cacheKey) // unblock waiters without caching
 	} else {
-		s.cache.Set(domain, verdict)
+		s.cache.Set(cacheKey, verdict)
 	}
 
-	// For always-allow, persist to TOML
+	// For always-allow, persist to TOML (still by domain, not port)
 	if verdict == VerdictAlwaysAllow && s.configPath != "" {
 		if err := AddDomainToConfig(s.configPath, domain); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not update config: %v\n", err)

@@ -176,6 +176,41 @@ func TestServerSequentialDialogs(t *testing.T) {
 	}
 }
 
+func TestServerDifferentPortsGetSeparateVerdicts(t *testing.T) {
+	callCount := 0
+	mockDialog := func(process, domain string, port int, project string) string {
+		callCount++
+		return VerdictBlock
+	}
+
+	srv := NewServer("test-project", "", mockDialog)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go srv.Serve(listener)
+
+	// Block domain on port 443
+	conn, _ := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	req := VerdictRequest{Domain: "example.com", Port: 443, Process: "npm"}
+	json.NewEncoder(conn).Encode(req)
+	var resp VerdictResponse
+	json.NewDecoder(conn).Decode(&resp)
+	conn.Close()
+
+	// Same domain, different port should show a new dialog
+	conn, _ = net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	req = VerdictRequest{Domain: "example.com", Port: 80, Process: "npm"}
+	json.NewEncoder(conn).Encode(req)
+	json.NewDecoder(conn).Decode(&resp)
+	conn.Close()
+
+	if callCount != 2 {
+		t.Errorf("dialog shown %d times, expected 2 (different ports get separate verdicts)", callCount)
+	}
+}
+
 func TestServerFallsBackToIPWhenNoDomain(t *testing.T) {
 	var receivedDomain string
 	mockDialog := func(process, domain string, port int, project string) string {

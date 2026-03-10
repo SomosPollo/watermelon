@@ -2,6 +2,7 @@ package ask
 
 import (
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"github.com/BurntSushi/toml"
@@ -39,12 +40,24 @@ func AddDomainToConfig(configPath string, domain string) error {
 
 	cfg.Network.Allow = append(cfg.Network.Allow, domain)
 
-	f, err := os.Create(configPath)
+	// Write to temp file then rename for atomic update
+	dir := filepath.Dir(configPath)
+	tmp, err := os.CreateTemp(dir, ".watermelon.toml.tmp*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	tmpPath := tmp.Name()
 
-	encoder := toml.NewEncoder(f)
-	return encoder.Encode(cfg)
+	encoder := toml.NewEncoder(tmp)
+	if err := encoder.Encode(cfg); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	return os.Rename(tmpPath, configPath)
 }

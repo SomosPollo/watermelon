@@ -100,3 +100,44 @@ disk = "10GB"
 		t.Error("expected config to contain 'new-domain.com'")
 	}
 }
+
+func TestAddDomainToConfigAtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".watermelon.toml")
+
+	initial := `[network]
+allow = ["registry.npmjs.org"]
+
+[security]
+enforcement = "ask"
+
+[resources]
+memory = "2GB"
+cpus = 1
+disk = "10GB"
+`
+	if err := os.WriteFile(configPath, []byte(initial), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddDomainToConfig(configPath, "new.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify no temp files left behind
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".watermelon.toml.tmp") {
+			t.Errorf("temp file %q left behind after successful write", e.Name())
+		}
+	}
+
+	// Verify content is correct
+	data, _ := os.ReadFile(configPath)
+	if !strings.Contains(string(data), "new.com") {
+		t.Error("expected config to contain new domain")
+	}
+	if !strings.Contains(string(data), "registry.npmjs.org") {
+		t.Error("expected config to still contain original domain")
+	}
+}
