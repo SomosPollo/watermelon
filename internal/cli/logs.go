@@ -4,16 +4,16 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/saeta-eth/watermelon/internal/violations"
+	"github.com/saeta-eth/watermelon/internal/logs"
 	"github.com/spf13/cobra"
 )
 
-func NewViolationsCmd() *cobra.Command {
+func NewLogsCmd() *cobra.Command {
 	var clear bool
 
 	cmd := &cobra.Command{
-		Use:   "violations",
-		Short: "Show network policy violations",
+		Use:   "logs",
+		Short: "Show network policy logs",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir, err := os.Getwd()
 			if err != nil {
@@ -21,16 +21,16 @@ func NewViolationsCmd() *cobra.Command {
 			}
 
 			if clear {
-				return violations.Clear(dir)
+				return logs.Clear(dir)
 			}
 
-			lines, err := violations.Read(dir)
+			lines, err := logs.Read(dir)
 			if err != nil {
 				return err
 			}
 
 			if len(lines) == 0 {
-				fmt.Println("No violations recorded")
+				fmt.Println("No logs recorded")
 				return nil
 			}
 
@@ -41,6 +41,6 @@ func NewViolationsCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&clear, "clear", false, "Clear the violations log")
+	cmd.Flags().BoolVar(&clear, "clear", false, "Clear the log")
 	return cmd
 }

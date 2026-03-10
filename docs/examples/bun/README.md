@@ -28,5 +28,5 @@ Visit your app from the host using the forwarded port (for example `http://local
 If installs fail, check blocked domains and add only what you need:
 
 ```bash
-watermelon violations
+watermelon logs
 ```

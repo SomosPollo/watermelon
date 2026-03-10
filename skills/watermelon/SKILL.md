@@ -36,7 +36,7 @@ watermelon exec "npm install && npm run build && npm test"
 - Use `watermelon exec` for discrete commands (default)
 - Use `watermelon run` only when the user explicitly asks for an interactive shell
 - Never call `watermelon stop` or `watermelon destroy` unless the user asks — VMs persist intentionally so installed packages survive between sessions
-- If `watermelon exec` fails with a network error, run `watermelon violations` to find blocked domains, then help the user add them to `[network].allow`
+- If `watermelon exec` fails with a network error, run `watermelon logs` to find blocked domains, then help the user add them to `[network].allow`
 
 ## CLI Quick Reference
 
@@ -50,7 +50,7 @@ watermelon exec "npm install && npm run build && npm test"
 | `watermelon list` | List all watermelon VMs |
 | `watermelon stop` | Stop VM, preserve state |
 | `watermelon destroy [--force]` | Delete VM permanently |
-| `watermelon violations [--clear]` | Show/clear blocked network requests |
+| `watermelon logs [--clear]` | Show/clear blocked network requests |
 
 **Installation (if not available):**
 ```bash
@@ -72,7 +72,7 @@ cpus = 2         # Default: 1. Minimum: 1
 disk = "20GB"    # Default: 10GB
 
 [security]
-on_violation = "log"  # "log" (allow + log), "fail" (block + log), "silent" (block quietly)
+enforcement = "log"  # "log" (allow + log), "fail" (block + log), "silent" (block quietly)
 
 [ide]
 command = "code"  # "code", "cursor", "codium", "code-insiders"
@@ -196,15 +196,15 @@ memory = "4GB"
 cpus = 2
 
 [security]
-on_violation = "log"
+enforcement = "log"
 ```
 
 ## Troubleshooting
 
 **Network failures after `watermelon exec`:**
-1. Run `watermelon violations` to see blocked domains
+1. Run `watermelon logs` to see blocked domains
 2. Add legitimate domains to `[network].allow` in `.watermelon.toml`
-3. Run `watermelon violations --clear`
+3. Run `watermelon logs --clear`
 4. Destroy and recreate VM: `watermelon destroy --force && watermelon run`
 5. Retry the command
 

@@ -53,13 +53,13 @@ grep -r "eval\|Function(" .
 - Package can't install persistence mechanisms
 - Any violation immediately fails and alerts you
 
-## Checking violations
+## Checking logs
 
 If you see failures:
 
 ```bash
 # On host
-watermelon violations
+watermelon logs
 ```
 
 This shows what the package tried to access.

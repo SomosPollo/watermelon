@@ -1,4 +1,4 @@
-package violations
+package logs
 
 import (
 	"bufio"
@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 )
 
-// LogPath returns the violations log path for a project
+// LogPath returns the log path for a project
 func LogPath(projectDir string) string {
-	return filepath.Join(projectDir, ".watermelon", "violations.log")
+	return filepath.Join(projectDir, ".watermelon", "logs.log")
 }
 
-// Read returns recent violations for a project
+// Read returns recent log entries for a project
 func Read(projectDir string) ([]string, error) {
 	logPath := LogPath(projectDir)
 	file, err := os.Open(logPath)
@@ -32,7 +32,7 @@ func Read(projectDir string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-// Clear removes the violations log
+// Clear removes the log file
 func Clear(projectDir string) error {
 	logPath := LogPath(projectDir)
 	if err := os.Remove(logPath); os.IsNotExist(err) {
@@ -40,6 +40,6 @@ func Clear(projectDir string) error {
 	} else if err != nil {
 		return err
 	}
-	fmt.Println("Violations log cleared")
+	fmt.Println("Log cleared")
 	return nil
 }

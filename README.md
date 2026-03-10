@@ -61,7 +61,7 @@ go install github.com/saeta-eth/watermelon/cmd/watermelon@latest
 | `watermelon destroy` | Delete VM and all state |
 | `watermelon status` | Show VM status |
 | `watermelon list` | List all watermelon VMs |
-| `watermelon violations` | Show blocked network requests |
+| `watermelon logs` | Show blocked network requests |
 
 See [docs/COMMANDS.md](./docs/COMMANDS.md) for detailed usage.
 

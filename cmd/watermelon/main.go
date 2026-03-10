@@ -27,7 +27,7 @@ func init() {
 	rootCmd.AddCommand(cli.NewStatusCmd())
 	rootCmd.AddCommand(cli.NewExecCmd())
 	rootCmd.AddCommand(cli.NewListCmd())
-	rootCmd.AddCommand(cli.NewViolationsCmd())
+	rootCmd.AddCommand(cli.NewLogsCmd())
 	rootCmd.AddCommand(cli.NewCodeCmd())
 }
 

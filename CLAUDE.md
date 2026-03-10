@@ -28,10 +28,10 @@ Watermelon is a sandbox tool that isolates developer commands (npm install, pip 
 ### Package Structure
 
 - **cmd/watermelon/** - Cobra CLI entry point
-- **internal/cli/** - Command implementations (init, run, exec, stop, destroy, status, list, violations)
+- **internal/cli/** - Command implementations (init, run, exec, stop, destroy, status, list, logs)
 - **internal/config/** - `.watermelon.toml` parsing, defaults, and validation
 - **internal/lima/** - Lima VM lifecycle management and YAML config generation
-- **internal/violations/** - Network policy violation logging
+- **internal/logs/** - Network policy logging
 
 ### Core Flow
 
@@ -56,4 +56,4 @@ Input validation is critical - the `internal/lima` package validates all user-pr
 ### Config Defaults
 
 - Memory: 2GB, CPUs: 1, Disk: 10GB
-- OnViolation: "log" (options: "log", "fail", "silent")
+- Enforcement: "log" (options: "log", "fail", "silent")

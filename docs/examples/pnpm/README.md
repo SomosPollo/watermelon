@@ -40,5 +40,5 @@ This uses `npm install -g ...` during provisioning.
 If installs fail, check blocked domains and add only what you need:
 
 ```bash
-watermelon violations
+watermelon logs
 ```

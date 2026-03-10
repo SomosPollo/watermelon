@@ -179,13 +179,13 @@ watermelon-other-e5f6g7h8     Stopped
 
 ---
 
-## `watermelon violations`
+## `watermelon logs`
 
 Shows network requests that were blocked by the firewall.
 
 ```bash
-watermelon violations          # Show all violations
-watermelon violations --clear  # Clear the log
+watermelon logs          # Show all logs
+watermelon logs --clear  # Clear the log
 ```
 
 **Example output:**
@@ -195,13 +195,13 @@ watermelon violations --clear  # Clear the log
 ```
 
 **Behavior:**
-- Reads from `.watermelon/violations.log` in the project directory
+- Reads from `.watermelon/logs.log` in the project directory
 - Useful for discovering which domains a package needs
 - Add legitimate domains to `[network].allow` in your config
 
 **Workflow for discovering needed domains:**
-1. Set `on_violation = "log"` in config
+1. Set `enforcement = "log"` in config
 2. Run your command: `watermelon exec "npm install"`
-3. Check violations: `watermelon violations`
+3. Check logs: `watermelon logs`
 4. Add needed domains to config
 5. Retry

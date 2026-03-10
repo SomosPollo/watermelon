@@ -49,7 +49,7 @@ iptables -A OUTPUT -j REJECT
 
 ### Violation Handling
 
-When a blocked request occurs, behavior depends on `[security].on_violation`:
+When a blocked request occurs, behavior depends on `[security].enforcement`:
 
 | Setting | Behavior |
 |---------|----------|
@@ -57,7 +57,7 @@ When a blocked request occurs, behavior depends on `[security].on_violation`:
 | `"fail"` | Block and log error |
 | `"silent"` | Block silently |
 
-Violations are logged to `.watermelon/violations.log`.
+Violations are logged to `.watermelon/logs.log`.
 
 ## Filesystem Isolation
 
@@ -103,7 +103,7 @@ For inspecting suspicious packages, use maximum restriction:
 allow = []
 
 [security]
-on_violation = "fail"
+enforcement = "fail"
 ```
 
 ## Architecture

@@ -80,9 +80,9 @@ watermelon run
 1. Network request to blocked domain
 2. Waiting for input (use `watermelon exec` for non-interactive)
 
-**Check violations:**
+**Check logs:**
 ```bash
-watermelon violations
+watermelon logs
 ```
 
 ---
@@ -93,7 +93,7 @@ watermelon violations
 
 **Check what's being blocked:**
 ```bash
-watermelon violations
+watermelon logs
 ```
 
 **Add the domain to config:**
@@ -199,7 +199,7 @@ memory = "8GB"  # Increase if needed
 
 ## Getting Help
 
-1. Check violations: `watermelon violations`
+1. Check logs: `watermelon logs`
 2. Check VM status: `watermelon status`
 3. Check Lima: `limactl list`
 4. Review config: `cat .watermelon.toml`
