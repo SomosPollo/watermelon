@@ -210,6 +210,10 @@ provision:
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if eq .Enforcement "ask" }}
+      # Install NFQUEUE userspace library (before iptables lockdown)
+      apt-get update && apt-get install -y libnetfilter-queue1
+{{- end }}
       # Wait for DNS to be ready before iptables rules that resolve hostnames
       for _i in $(seq 1 30); do getent hosts dns.google >/dev/null 2>&1 && break; sleep 1; done
       # Network restrictions via iptables
@@ -223,7 +227,36 @@ provision:
       iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
       iptables -A OUTPUT -o lo -j ACCEPT
       iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+{{- if eq .Enforcement "ask" }}
+      # Ask mode: queue unknown TCP SYN packets for interactive verdict
+      _WM_GW=$(ip route | awk '/default/{print $3}')
+      iptables -A OUTPUT -p tcp -d "$_WM_GW" --dport {{ .VerdictServerPort }} -j ACCEPT
+      iptables -A OUTPUT -p tcp --syn -j NFQUEUE --queue-num 0
       iptables -A OUTPUT -j REJECT
+{{- else }}
+      iptables -A OUTPUT -j REJECT
+{{- end }}
+{{- end }}
+{{- if eq .Enforcement "ask" }}
+      # Set up NFQUEUE verdict daemon
+      cp {{ .NfqdBinaryPath }} /usr/local/bin/watermelon-nfqd
+      chmod +x /usr/local/bin/watermelon-nfqd
+      _WM_GW=$(ip route | awk '/default/{print $3}')
+      cat > /etc/systemd/system/watermelon-nfqd.service << NFQDEOF
+      [Unit]
+      Description=Watermelon NFQUEUE Verdict Daemon
+      After=network.target
+
+      [Service]
+      ExecStart=/usr/local/bin/watermelon-nfqd -server ${_WM_GW}:{{ .VerdictServerPort }}
+      Restart=on-failure
+      RestartSec=1
+
+      [Install]
+      WantedBy=multi-user.target
+      NFQDEOF
+      systemctl daemon-reload
+      systemctl enable --now watermelon-nfqd
 {{- end }}
 {{- if .NetworkProcess }}
       # Per-process network namespaces
@@ -383,10 +416,13 @@ type templateData struct {
 	ProvisionBuilds      []provisionBuild
 	SmartWrappers        []smartWrapper
 	UniqueImages         []string // all container images that need to be in rootful store
+	Enforcement          string
+	VerdictServerPort    int
+	NfqdBinaryPath       string
 }
 
 // GenerateConfig creates Lima YAML from watermelon config
-func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
+func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...int) (string, error) {
 	// Validate network allow domains
 	for _, domain := range cfg.Network.Allow {
 		if err := validateDomain(domain); err != nil {
@@ -530,6 +566,18 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		uniqueImages = collectUniqueImages(tools)
 	}
 
+	verdictPort := 0
+	nfqdPath := ""
+	if cfg.Security.Enforcement == "ask" {
+		if len(verdictServerPort) > 0 && verdictServerPort[0] > 0 {
+			verdictPort = verdictServerPort[0]
+		}
+		if verdictPort == 0 {
+			verdictPort = 39285 // fallback
+		}
+		nfqdPath = "/project/.watermelon/bin/watermelon-nfqd"
+	}
+
 	data := templateData{
 		CPUs:                 cfg.Resources.CPUs,
 		Memory:               convertMemory(cfg.Resources.Memory),
@@ -544,6 +592,9 @@ func GenerateConfig(cfg *config.Config, projectDir string) (string, error) {
 		ProvisionBuilds:      provisionBuilds,
 		SmartWrappers:        smartWrappers,
 		UniqueImages:         uniqueImages,
+		Enforcement:          cfg.Security.Enforcement,
+		VerdictServerPort:    verdictPort,
+		NfqdBinaryPath:       nfqdPath,
 	}
 
 	var buf bytes.Buffer

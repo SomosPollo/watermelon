@@ -759,3 +759,66 @@ func TestGenerateConfigNoSmartWrapperWithoutPackageManagers(t *testing.T) {
 		t.Error("expected yaml to NOT contain smart wrappers when no package managers are in tools")
 	}
 }
+
+func TestGenerateConfigAskMode(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Security.Enforcement = "ask"
+	cfg.Network.Allow = []string{"registry.npmjs.org"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Should use NFQUEUE for TCP SYN catch-all
+	if !strings.Contains(yaml, "NFQUEUE") {
+		t.Error("expected yaml to contain NFQUEUE rules for ask mode")
+	}
+
+	// Should still ACCEPT allowed domains
+	if !strings.Contains(yaml, "registry.npmjs.org") {
+		t.Error("expected yaml to still accept allowed domains")
+	}
+
+	// Should install libnetfilter-queue
+	if !strings.Contains(yaml, "libnetfilter-queue") {
+		t.Error("expected yaml to install libnetfilter-queue package")
+	}
+
+	// Should set up nfqd systemd service
+	if !strings.Contains(yaml, "watermelon-nfqd") {
+		t.Error("expected yaml to set up watermelon-nfqd service")
+	}
+
+	// Should allow traffic to verdict server on gateway (fallback port)
+	if !strings.Contains(yaml, "39285") {
+		t.Error("expected yaml to allow traffic to verdict server port (fallback)")
+	}
+
+	// Should copy the nfqd binary
+	if !strings.Contains(yaml, "/project/.watermelon/bin/watermelon-nfqd") {
+		t.Error("expected yaml to copy nfqd binary from project mount")
+	}
+}
+
+func TestGenerateConfigNonAskModeNoNFQUEUE(t *testing.T) {
+	for _, mode := range []string{"log", "fail", "silent"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := config.NewConfig()
+			cfg.Security.Enforcement = mode
+			cfg.Network.Allow = []string{"registry.npmjs.org"}
+
+			yaml, err := GenerateConfig(cfg, "/test/project")
+			if err != nil {
+				t.Fatalf("failed to generate: %v", err)
+			}
+
+			if strings.Contains(yaml, "NFQUEUE") {
+				t.Errorf("expected yaml to NOT contain NFQUEUE for %q enforcement", mode)
+			}
+			if strings.Contains(yaml, "libnetfilter-queue") {
+				t.Errorf("expected yaml to NOT install nfqueue packages for %q enforcement", mode)
+			}
+		})
+	}
+}
