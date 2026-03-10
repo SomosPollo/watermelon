@@ -40,8 +40,8 @@ cpus = 1
 disk = "10GB"
 
 [security]
-# What to do on policy violations: "log", "fail", or "silent"
-on_violation = "log"
+# How to enforce network policy: "log", "fail", or "silent"
+enforcement = "log"
 
 [ide]
 # IDE command for 'watermelon code' (e.g., "code", "cursor", "codium")

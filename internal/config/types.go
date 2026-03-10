@@ -46,7 +46,7 @@ type ResourcesConfig struct {
 }
 
 type SecurityConfig struct {
-	OnViolation string `toml:"on_violation"`
+	Enforcement string `toml:"enforcement"`
 }
 
 type IDEConfig struct {
@@ -81,7 +81,7 @@ func NewConfig() *Config {
 			Disk:   "10GB",
 		},
 		Security: SecurityConfig{
-			OnViolation: "log",
+			Enforcement: "log",
 		},
 		IDE: IDEConfig{
 			Command: "code",

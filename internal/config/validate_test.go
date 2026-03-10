@@ -5,25 +5,25 @@ import (
 	"testing"
 )
 
-func TestValidateOnViolation(t *testing.T) {
+func TestValidateEnforcement(t *testing.T) {
 	cfg := NewConfig()
 
 	// Valid values
 	for _, v := range []string{"log", "fail", "silent"} {
-		cfg.Security.OnViolation = v
+		cfg.Security.Enforcement = v
 		if err := Validate(cfg); err != nil {
 			t.Errorf("expected %q to be valid, got error: %v", v, err)
 		}
 	}
 
 	// Invalid value
-	cfg.Security.OnViolation = "invalid"
+	cfg.Security.Enforcement = "invalid"
 	err := Validate(cfg)
 	if err == nil {
-		t.Error("expected error for invalid on_violation")
+		t.Error("expected error for invalid enforcement")
 	}
-	if !strings.Contains(err.Error(), "on_violation") {
-		t.Errorf("error should mention on_violation: %v", err)
+	if !strings.Contains(err.Error(), "enforcement") {
+		t.Errorf("error should mention enforcement: %v", err)
 	}
 }
 

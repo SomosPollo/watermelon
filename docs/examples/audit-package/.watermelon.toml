@@ -17,4 +17,4 @@ cpus = 1
 disk = "5GB"
 
 [security]
-on_violation = "fail"
+enforcement = "fail"

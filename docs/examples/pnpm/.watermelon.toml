@@ -20,4 +20,4 @@ npm = ["pnpm"]
 forward = [3000, 5173]
 
 [security]
-on_violation = "log"
+enforcement = "log"

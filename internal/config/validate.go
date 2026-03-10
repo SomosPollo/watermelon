@@ -7,12 +7,12 @@ import (
 
 // Validate checks config for errors
 func Validate(cfg *Config) error {
-	// Validate on_violation
-	switch cfg.Security.OnViolation {
+	// Validate enforcement
+	switch cfg.Security.Enforcement {
 	case "log", "fail", "silent":
 		// valid
 	default:
-		return fmt.Errorf("invalid on_violation %q: must be log, fail, or silent", cfg.Security.OnViolation)
+		return fmt.Errorf("invalid enforcement %q: must be log, fail, or silent", cfg.Security.Enforcement)
 	}
 
 	// Validate resources

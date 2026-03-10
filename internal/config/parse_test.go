@@ -29,7 +29,7 @@ memory = "4GB"
 cpus = 2
 
 [security]
-on_violation = "fail"
+enforcement = "fail"
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -52,8 +52,8 @@ on_violation = "fail"
 	if cfg.Resources.Memory != "4GB" {
 		t.Errorf("expected memory 4GB, got %s", cfg.Resources.Memory)
 	}
-	if cfg.Security.OnViolation != "fail" {
-		t.Errorf("expected on_violation fail, got %s", cfg.Security.OnViolation)
+	if cfg.Security.Enforcement != "fail" {
+		t.Errorf("expected enforcement fail, got %s", cfg.Security.Enforcement)
 	}
 }
 
@@ -79,8 +79,8 @@ allow = ["example.com"]
 	if cfg.Resources.Memory != "2GB" {
 		t.Errorf("expected default memory 2GB, got %s", cfg.Resources.Memory)
 	}
-	if cfg.Security.OnViolation != "log" {
-		t.Errorf("expected default on_violation log, got %s", cfg.Security.OnViolation)
+	if cfg.Security.Enforcement != "log" {
+		t.Errorf("expected default enforcement log, got %s", cfg.Security.Enforcement)
 	}
 }
 

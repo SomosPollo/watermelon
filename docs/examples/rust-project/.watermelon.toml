@@ -16,4 +16,4 @@ allow = [
 "rust:1.75" = ["cargo", "rustc", "rustfmt", "clippy-driver"]
 
 [security]
-on_violation = "log"
+enforcement = "log"

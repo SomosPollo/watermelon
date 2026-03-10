@@ -18,4 +18,4 @@ allow = [
 forward = [8000]
 
 [security]
-on_violation = "log"
+enforcement = "log"

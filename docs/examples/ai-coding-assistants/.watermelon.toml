@@ -26,4 +26,4 @@ npm = ["@anthropic-ai/claude-code", "@openai/codex"]
 pip = ["aider-chat"]
 
 [security]
-on_violation = "log"
+enforcement = "log"

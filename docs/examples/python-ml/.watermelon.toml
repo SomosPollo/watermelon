@@ -27,4 +27,4 @@ cpus = 8
 disk = "100GB"
 
 [security]
-on_violation = "log"
+enforcement = "log"

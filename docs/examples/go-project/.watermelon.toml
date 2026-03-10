@@ -16,4 +16,4 @@ allow = [
 "golang:1.22" = ["go", "gofmt"]
 
 [security]
-on_violation = "log"
+enforcement = "log"

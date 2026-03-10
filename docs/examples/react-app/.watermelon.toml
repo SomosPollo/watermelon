@@ -17,4 +17,4 @@ allow = [
 forward = [5173]
 
 [security]
-on_violation = "log"
+enforcement = "log"

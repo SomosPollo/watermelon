@@ -29,7 +29,7 @@ cpus = 2
 disk = "10GB"
 
 [security]
-on_violation = "log"
+enforcement = "log"
 
 [ide]
 command = "code"
@@ -311,9 +311,9 @@ Security policy configuration.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `on_violation` | string | `"log"` | Action when network policy is violated |
+| `enforcement` | string | `"log"` | How to enforce network policy |
 
-**Violation actions:**
+**Enforcement modes:**
 
 | Value | Behavior |
 |-------|----------|
@@ -324,13 +324,13 @@ Security policy configuration.
 ```toml
 [security]
 # Development: see what's being blocked
-on_violation = "log"
+enforcement = "log"
 
 # Production/audit: strict blocking
-on_violation = "fail"
+enforcement = "fail"
 
 # Quiet mode: block without noise
-on_violation = "silent"
+enforcement = "silent"
 ```
 
 ---
@@ -422,7 +422,7 @@ cpus = 4
 disk = "20GB"
 
 [security]
-on_violation = "log"
+enforcement = "log"
 ```
 
 ### Maximum Security (Audit Mode)
@@ -447,7 +447,7 @@ cpus = 1
 disk = "5GB"
 
 [security]
-on_violation = "fail"
+enforcement = "fail"
 ```
 
 ---
@@ -461,7 +461,7 @@ The configuration is validated at VM creation time:
    - `memory` and `disk` must be non-empty
 
 2. **Security:**
-   - `on_violation` must be one of: `log`, `fail`, `silent`
+   - `enforcement` must be one of: `log`, `fail`, `silent`
 
 3. **Network:**
    - Domains cannot contain shell metacharacters: `;|&$\`\`
