@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -44,6 +45,7 @@ func main() {
 	log.Printf("verdict server reachable at %s", *serverAddr)
 
 	var cache sync.Map
+	var dnsCache sync.Map // IP string → domain string
 
 	config := nfqueue.Config{
 		NfQueue:      0,
@@ -78,16 +80,24 @@ func main() {
 			dstPort = int(binary.BigEndian.Uint16(payload[ihl+2 : ihl+4]))
 		}
 
+		srcPort := 0
+		if len(payload) >= ihl+2 {
+			srcPort = int(binary.BigEndian.Uint16(payload[ihl : ihl+2]))
+		}
+
 		ipStr := dstIP.String()
 
-		// Reverse DNS lookup FIRST (before cache check)
+		// Look up domain from DNS snooping cache (preferred) or fall back to reverse DNS
 		domain := ipStr
-		names, err := net.LookupAddr(ipStr)
-		if err == nil && len(names) > 0 {
-			domain = names[0]
-			// Strip trailing dot from FQDN
-			if len(domain) > 0 && domain[len(domain)-1] == '.' {
-				domain = domain[:len(domain)-1]
+		if d, ok := dnsCache.Load(ipStr); ok {
+			domain = d.(string)
+		} else {
+			names, lookupErr := net.LookupAddr(ipStr)
+			if lookupErr == nil && len(names) > 0 {
+				domain = names[0]
+				if len(domain) > 0 && domain[len(domain)-1] == '.' {
+					domain = domain[:len(domain)-1]
+				}
 			}
 		}
 
@@ -103,10 +113,13 @@ func main() {
 			return 0
 		}
 
+		process := resolveProcess(srcPort)
+
 		verdict := askServer(*serverAddr, ask.VerdictRequest{
-			Domain: domain,
-			Port:   dstPort,
-			IP:     ipStr,
+			Domain:  domain,
+			Port:    dstPort,
+			Process: process,
+			IP:      ipStr,
 		})
 
 		// Only cache block and always-allow; allow-once should re-prompt
@@ -132,6 +145,40 @@ func main() {
 		log.Fatalf("register handler: %v", err)
 	}
 
+	// DNS snooping queue (queue 1) — intercept DNS responses to build IP→domain map
+	dnsConfig := nfqueue.Config{
+		NfQueue:      1,
+		MaxPacketLen: 512,
+		MaxQueueLen:  256,
+		Copymode:     nfqueue.NfQnlCopyPacket,
+	}
+	dnsNf, err := nfqueue.Open(&dnsConfig)
+	if err != nil {
+		log.Fatalf("open dns nfqueue: %v", err)
+	}
+	defer dnsNf.Close()
+
+	dnsHook := func(a nfqueue.Attribute) int {
+		if a.Payload == nil || len(*a.Payload) < 28 {
+			if a.PacketID != nil {
+				dnsNf.SetVerdict(*a.PacketID, nfqueue.NfAccept)
+			}
+			return 0
+		}
+		mappings := parseDNSResponse(*a.Payload)
+		for ip, domain := range mappings {
+			dnsCache.Store(ip, domain)
+		}
+		if a.PacketID != nil {
+			dnsNf.SetVerdict(*a.PacketID, nfqueue.NfAccept)
+		}
+		return 0
+	}
+	err = dnsNf.RegisterWithErrorFunc(ctx, dnsHook, errFunc)
+	if err != nil {
+		log.Fatalf("register dns handler: %v", err)
+	}
+
 	log.Println("watermelon-nfqd running, intercepting TCP SYN packets...")
 
 	// Block until SIGINT or SIGTERM
@@ -140,6 +187,172 @@ func main() {
 	<-sigCh
 	log.Println("shutting down...")
 	cancel()
+}
+
+// resolveProcess attempts to find the process name that owns the TCP connection
+// with the given source port by reading /proc/net/tcp.
+func resolveProcess(srcPort int) string {
+	data, err := os.ReadFile("/proc/net/tcp")
+	if err != nil {
+		return ""
+	}
+
+	// /proc/net/tcp format: sl local_address rem_address st ... inode
+	// local_address is hex IP:PORT
+	hexPort := fmt.Sprintf("%04X", srcPort)
+	var inode string
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 {
+			continue
+		}
+		localAddr := fields[1]
+		parts := strings.Split(localAddr, ":")
+		if len(parts) == 2 && parts[1] == hexPort {
+			inode = fields[9]
+			break
+		}
+	}
+	if inode == "" || inode == "0" {
+		return ""
+	}
+
+	// Search /proc/*/fd/* for socket with matching inode
+	socketLink := fmt.Sprintf("socket:[%s]", inode)
+	procs, err := os.ReadDir("/proc")
+	if err != nil {
+		return ""
+	}
+	for _, p := range procs {
+		if !p.IsDir() {
+			continue
+		}
+		pid := p.Name()
+		if pid[0] < '0' || pid[0] > '9' {
+			continue
+		}
+		fdDir := fmt.Sprintf("/proc/%s/fd", pid)
+		fds, err := os.ReadDir(fdDir)
+		if err != nil {
+			continue
+		}
+		for _, fd := range fds {
+			link, err := os.Readlink(fmt.Sprintf("%s/%s", fdDir, fd.Name()))
+			if err != nil {
+				continue
+			}
+			if link == socketLink {
+				comm, err := os.ReadFile(fmt.Sprintf("/proc/%s/comm", pid))
+				if err != nil {
+					return ""
+				}
+				return strings.TrimSpace(string(comm))
+			}
+		}
+	}
+
+	return ""
+}
+
+// parseDNSResponse extracts IP→domain mappings from a raw DNS response packet.
+// The packet starts at the IP header.
+func parseDNSResponse(payload []byte) map[string]string {
+	result := make(map[string]string)
+
+	ihl := int(payload[0]&0x0f) * 4
+	if len(payload) < ihl+8 {
+		return result
+	}
+	// UDP header is 8 bytes; DNS starts after
+	dns := payload[ihl+8:]
+	if len(dns) < 12 {
+		return result
+	}
+
+	// DNS header: QDCOUNT at 4-5; ANCOUNT at 6-7
+	anCount := int(binary.BigEndian.Uint16(dns[6:8]))
+	if anCount == 0 {
+		return result
+	}
+
+	// Skip questions section
+	offset := 12
+	qdCount := int(binary.BigEndian.Uint16(dns[4:6]))
+	for i := 0; i < qdCount && offset < len(dns); i++ {
+		offset = skipDNSName(dns, offset)
+		if offset < 0 || offset+4 > len(dns) {
+			return result
+		}
+		offset += 4 // QTYPE + QCLASS
+	}
+
+	// Parse answers
+	for i := 0; i < anCount && offset < len(dns); i++ {
+		name := readDNSName(dns, offset)
+		offset = skipDNSName(dns, offset)
+		if offset < 0 || offset+10 > len(dns) {
+			return result
+		}
+		qtype := binary.BigEndian.Uint16(dns[offset : offset+2])
+		rdLength := int(binary.BigEndian.Uint16(dns[offset+8 : offset+10]))
+		offset += 10
+		if offset+rdLength > len(dns) {
+			return result
+		}
+		if qtype == 1 && rdLength == 4 { // A record
+			ip := fmt.Sprintf("%d.%d.%d.%d", dns[offset], dns[offset+1], dns[offset+2], dns[offset+3])
+			if name != "" {
+				result[ip] = name
+			}
+		}
+		offset += rdLength
+	}
+
+	return result
+}
+
+func skipDNSName(dns []byte, offset int) int {
+	for offset < len(dns) {
+		length := int(dns[offset])
+		if length == 0 {
+			return offset + 1
+		}
+		if length&0xC0 == 0xC0 { // pointer
+			return offset + 2
+		}
+		offset += 1 + length
+	}
+	return -1
+}
+
+func readDNSName(dns []byte, offset int) string {
+	var parts []string
+	seen := make(map[int]bool)
+	for offset < len(dns) {
+		if seen[offset] {
+			return ""
+		}
+		seen[offset] = true
+		length := int(dns[offset])
+		if length == 0 {
+			break
+		}
+		if length&0xC0 == 0xC0 { // pointer
+			if offset+1 >= len(dns) {
+				return ""
+			}
+			ptr := int(binary.BigEndian.Uint16(dns[offset:offset+2])) & 0x3FFF
+			offset = ptr
+			continue
+		}
+		offset++
+		if offset+length > len(dns) {
+			return ""
+		}
+		parts = append(parts, string(dns[offset:offset+length]))
+		offset += length
+	}
+	return strings.Join(parts, ".")
 }
 
 func askServer(addr string, req ask.VerdictRequest) string {
