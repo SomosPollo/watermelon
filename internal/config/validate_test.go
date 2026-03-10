@@ -9,7 +9,7 @@ func TestValidateEnforcement(t *testing.T) {
 	cfg := NewConfig()
 
 	// Valid values
-	for _, v := range []string{"log", "fail", "silent"} {
+	for _, v := range []string{"log", "fail", "silent", "ask"} {
 		cfg.Security.Enforcement = v
 		if err := Validate(cfg); err != nil {
 			t.Errorf("expected %q to be valid, got error: %v", v, err)

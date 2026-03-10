@@ -9,10 +9,10 @@ import (
 func Validate(cfg *Config) error {
 	// Validate enforcement
 	switch cfg.Security.Enforcement {
-	case "log", "fail", "silent":
+	case "log", "fail", "silent", "ask":
 		// valid
 	default:
-		return fmt.Errorf("invalid enforcement %q: must be log, fail, or silent", cfg.Security.Enforcement)
+		return fmt.Errorf("invalid enforcement %q: must be log, fail, silent, or ask", cfg.Security.Enforcement)
 	}
 
 	// Validate resources
