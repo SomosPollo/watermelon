@@ -35,6 +35,9 @@ Thumbs.db
 # Binary output
 # (covered by /watermelon above)
 
+# Cross-compiled VM binaries
+.watermelon/bin/
+
 # Config toml example
 .watermelon.toml
 !docs/examples/**/.watermelon.toml
