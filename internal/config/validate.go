@@ -34,6 +34,13 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("IDE command contains invalid characters")
 	}
 
+	// Validate network allow domains
+	for _, domain := range cfg.Network.Allow {
+		if err := validateDomain(domain); err != nil {
+			return fmt.Errorf("invalid network allow domain: %w", err)
+		}
+	}
+
 	// Validate network process names and domains
 	for processName, domains := range cfg.Network.Process {
 		if err := validateProcessName(processName); err != nil {

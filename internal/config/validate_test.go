@@ -92,6 +92,33 @@ func TestValidateIDECommand(t *testing.T) {
 	}
 }
 
+func TestValidateNetworkAllowDomains(t *testing.T) {
+	tests := []struct {
+		name    string
+		allow   []string
+		wantErr bool
+	}{
+		{"valid domains", []string{"registry.npmjs.org", "github.com"}, false},
+		{"valid wildcard", []string{"*.anthropic.com"}, false},
+		{"valid IP", []string{"192.168.1.1"}, false},
+		{"empty list", []string{}, false},
+		{"injection in domain", []string{"evil.com; rm -rf /"}, true},
+		{"empty domain in list", []string{"good.com", ""}, true},
+		{"backtick injection", []string{"evil.com`whoami`"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Network.Allow = tt.allow
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with allow %v error = %v, wantErr %v", tt.allow, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateNetworkProcessNames(t *testing.T) {
 	tests := []struct {
 		name        string
