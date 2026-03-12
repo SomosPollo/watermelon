@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"os/exec"
 	"strings"
 )
 
@@ -16,7 +15,7 @@ type VMInfo struct {
 
 // ListWatermelonVMs returns all VMs created by watermelon
 func ListWatermelonVMs() ([]VMInfo, error) {
-	cmd := exec.Command("limactl", "list", "--json")
+	cmd := execCommand("limactl", "list", "--json")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

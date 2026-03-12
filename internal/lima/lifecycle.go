@@ -44,7 +44,7 @@ func VMNameFromPath(projectPath string) string {
 
 // GetStatus returns the status of a VM
 func GetStatus(vmName string) VMStatus {
-	cmd := exec.Command("limactl", "list", "--format", "{{.Status}}", vmName)
+	cmd := execCommand("limactl", "list", "--format", "{{.Status}}", vmName)
 	out, err := cmd.Output()
 	if err != nil {
 		return StatusNotFound
@@ -71,13 +71,13 @@ func Start(vmName, configPath string) error {
 	case StatusRunning:
 		return nil // already running
 	case StatusStopped:
-		cmd := exec.Command("limactl", "start", vmName)
+		cmd := execCommand("limactl", "start", vmName)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	default:
 		// Create new VM
-		cmd := exec.Command("limactl", "start", "--name", vmName, configPath)
+		cmd := execCommand("limactl", "start", "--name", vmName, configPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
@@ -86,7 +86,7 @@ func Start(vmName, configPath string) error {
 
 // Stop stops a VM
 func Stop(vmName string) error {
-	cmd := exec.Command("limactl", "stop", vmName)
+	cmd := execCommand("limactl", "stop", vmName)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -94,7 +94,7 @@ func Stop(vmName string) error {
 
 // Delete deletes a VM
 func Delete(vmName string) error {
-	cmd := exec.Command("limactl", "delete", "--force", vmName)
+	cmd := execCommand("limactl", "delete", "--force", vmName)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -102,7 +102,7 @@ func Delete(vmName string) error {
 
 // Shell opens an interactive shell in the VM
 func Shell(vmName string) error {
-	cmd := exec.Command("limactl", "shell", "--workdir", "/project", vmName)
+	cmd := execCommand("limactl", "shell", "--workdir", "/project", vmName)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -121,7 +121,7 @@ func Shell(vmName string) error {
 func Exec(vmName string, args []string) error {
 	cmdArgs := []string{"shell", "--workdir", "/project", vmName, "--"}
 	cmdArgs = append(cmdArgs, args...)
-	cmd := exec.Command("limactl", cmdArgs...)
+	cmd := execCommand("limactl", cmdArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
