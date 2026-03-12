@@ -10,34 +10,6 @@ import (
 	"github.com/saeta-eth/watermelon/internal/config"
 )
 
-// shellMetacharacters contains characters that could be used for shell injection
-const shellMetacharacters = ";|&$`\\"
-
-// packageNameDangerous contains characters that are invalid in package names
-const packageNameDangerous = ";|&$`\\(){}!~'\" \t\n"
-
-// validateDomain checks that a domain string doesn't contain shell metacharacters
-func validateDomain(domain string) error {
-	if domain == "" {
-		return fmt.Errorf("domain cannot be empty")
-	}
-	if strings.ContainsAny(domain, shellMetacharacters) {
-		return fmt.Errorf("domain %q contains invalid characters", domain)
-	}
-	return nil
-}
-
-// validatePackageName checks that a package name doesn't contain shell metacharacters
-func validatePackageName(name string) error {
-	if name == "" {
-		return fmt.Errorf("package name cannot be empty")
-	}
-	if strings.ContainsAny(name, packageNameDangerous) {
-		return fmt.Errorf("package name %q contains invalid characters", name)
-	}
-	return nil
-}
-
 // findImageForCommand returns the container image that provides a given command
 func findImageForCommand(tools map[string][]string, cmd string) string {
 	for image, cmds := range tools {
@@ -467,7 +439,7 @@ type templateData struct {
 func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...int) (string, error) {
 	// Validate network allow domains
 	for _, domain := range cfg.Network.Allow {
-		if err := validateDomain(domain); err != nil {
+		if err := config.ValidateDomain(domain); err != nil {
 			return "", fmt.Errorf("invalid network allow domain: %w", err)
 		}
 	}
@@ -477,11 +449,11 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		if processName == "" {
 			return "", fmt.Errorf("process name cannot be empty")
 		}
-		if strings.ContainsAny(processName, shellMetacharacters+" /") {
+		if strings.ContainsAny(processName, config.ShellMetacharacters+" /") {
 			return "", fmt.Errorf("invalid process name %q: contains invalid characters", processName)
 		}
 		for _, domain := range domains {
-			if err := validateDomain(domain); err != nil {
+			if err := config.ValidateDomain(domain); err != nil {
 				return "", fmt.Errorf("invalid domain for process %q: %w", processName, err)
 			}
 		}
@@ -518,7 +490,7 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 			continue
 		}
 		for _, pkg := range spec.pkgs {
-			if err := validatePackageName(pkg); err != nil {
+			if err := config.ValidatePackageName(pkg); err != nil {
 				return "", fmt.Errorf("invalid %s package: %w", spec.cmd, err)
 			}
 		}
@@ -707,7 +679,7 @@ func npmPackageToCommand(pkg string) string {
 	if name == "" {
 		return ""
 	}
-	if strings.ContainsAny(name, shellMetacharacters+" /") {
+	if strings.ContainsAny(name, config.ShellMetacharacters+" /") {
 		return ""
 	}
 	return name

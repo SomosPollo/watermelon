@@ -196,6 +196,12 @@ func TestValidateProvisionPackageNames(t *testing.T) {
 		{"ampersand injection", []string{"pkg && evil"}, true},
 		{"dollar injection", []string{"pkg$HOME"}, true},
 		{"backtick injection", []string{"pkg`whoami`"}, true},
+		{"parentheses injection", []string{"pkg(evil)"}, true},
+		{"braces injection", []string{"pkg{evil}"}, true},
+		{"quote injection", []string{"pkg\"evil"}, true},
+		{"single quote injection", []string{"pkg'evil"}, true},
+		{"space in name", []string{"pkg name"}, true},
+		{"tab in name", []string{"pkg\tname"}, true},
 	}
 
 	for _, tt := range tests {

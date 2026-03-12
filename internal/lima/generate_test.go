@@ -7,35 +7,6 @@ import (
 	"github.com/saeta-eth/watermelon/internal/config"
 )
 
-func TestValidateDomain(t *testing.T) {
-	tests := []struct {
-		name    string
-		domain  string
-		wantErr bool
-	}{
-		{"valid domain", "github.com", false},
-		{"valid subdomain", "registry.npmjs.org", false},
-		{"valid with port", "example.com:443", false},
-		{"valid IP", "192.168.1.1", false},
-		{"empty domain", "", true},
-		{"semicolon injection", "github.com; rm -rf /", true},
-		{"pipe injection", "github.com | cat /etc/passwd", true},
-		{"ampersand injection", "github.com && malicious", true},
-		{"dollar injection", "github.com$HOME", true},
-		{"backtick injection", "github.com`whoami`", true},
-		{"backslash injection", "github.com\\test", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateDomain(tt.domain)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateDomain(%q) error = %v, wantErr %v", tt.domain, err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestValidatePort(t *testing.T) {
 	tests := []struct {
 		name    string

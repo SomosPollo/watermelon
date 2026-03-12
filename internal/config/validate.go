@@ -30,13 +30,13 @@ func Validate(cfg *Config) error {
 	if cfg.IDE.Command == "" {
 		return fmt.Errorf("IDE command cannot be empty")
 	}
-	if strings.ContainsAny(cfg.IDE.Command, ";|&$`\\") {
+	if strings.ContainsAny(cfg.IDE.Command, ShellMetacharacters) {
 		return fmt.Errorf("IDE command contains invalid characters")
 	}
 
 	// Validate network allow domains
 	for _, domain := range cfg.Network.Allow {
-		if err := validateDomain(domain); err != nil {
+		if err := ValidateDomain(domain); err != nil {
 			return fmt.Errorf("invalid network allow domain: %w", err)
 		}
 	}
@@ -47,7 +47,7 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("invalid network process: %w", err)
 		}
 		for _, domain := range domains {
-			if err := validateDomain(domain); err != nil {
+			if err := ValidateDomain(domain); err != nil {
 				return fmt.Errorf("invalid domain for process %q: %w", processName, err)
 			}
 		}
@@ -55,27 +55,27 @@ func Validate(cfg *Config) error {
 
 	// Validate provision package names
 	for _, pkg := range cfg.Provision.Npm {
-		if err := validatePackageName(pkg); err != nil {
+		if err := ValidatePackageName(pkg); err != nil {
 			return fmt.Errorf("invalid npm package: %w", err)
 		}
 	}
 	for _, pkg := range cfg.Provision.Pip {
-		if err := validatePackageName(pkg); err != nil {
+		if err := ValidatePackageName(pkg); err != nil {
 			return fmt.Errorf("invalid pip package: %w", err)
 		}
 	}
 	for _, pkg := range cfg.Provision.Cargo {
-		if err := validatePackageName(pkg); err != nil {
+		if err := ValidatePackageName(pkg); err != nil {
 			return fmt.Errorf("invalid cargo package: %w", err)
 		}
 	}
 	for _, pkg := range cfg.Provision.Go {
-		if err := validatePackageName(pkg); err != nil {
+		if err := ValidatePackageName(pkg); err != nil {
 			return fmt.Errorf("invalid go package: %w", err)
 		}
 	}
 	for _, pkg := range cfg.Provision.Gem {
-		if err := validatePackageName(pkg); err != nil {
+		if err := ValidatePackageName(pkg); err != nil {
 			return fmt.Errorf("invalid gem package: %w", err)
 		}
 	}
@@ -112,26 +112,29 @@ func validateProcessName(name string) error {
 	return nil
 }
 
-// shellMetacharacters contains characters that could be used for shell injection
-const shellMetacharacters = ";|&$`\\"
+// ShellMetacharacters contains characters that could be used for shell injection
+const ShellMetacharacters = ";|&$`\\"
 
-// validateDomain checks that a domain string doesn't contain shell metacharacters
-func validateDomain(domain string) error {
+// PackageNameDangerous contains characters that are invalid in package names
+const PackageNameDangerous = ";|&$`\\(){}!~'\" \t\n"
+
+// ValidateDomain checks that a domain string doesn't contain shell metacharacters
+func ValidateDomain(domain string) error {
 	if domain == "" {
 		return fmt.Errorf("domain cannot be empty")
 	}
-	if strings.ContainsAny(domain, shellMetacharacters) {
+	if strings.ContainsAny(domain, ShellMetacharacters) {
 		return fmt.Errorf("domain %q contains invalid characters", domain)
 	}
 	return nil
 }
 
-// validatePackageName checks that a package name doesn't contain shell metacharacters
-func validatePackageName(pkg string) error {
+// ValidatePackageName checks that a package name doesn't contain dangerous characters
+func ValidatePackageName(pkg string) error {
 	if pkg == "" {
 		return fmt.Errorf("package name cannot be empty")
 	}
-	if strings.ContainsAny(pkg, shellMetacharacters) {
+	if strings.ContainsAny(pkg, PackageNameDangerous) {
 		return fmt.Errorf("package name %q contains invalid characters", pkg)
 	}
 	return nil
