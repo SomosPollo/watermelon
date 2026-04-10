@@ -59,3 +59,18 @@ func TestRunPrintsSSHHost(t *testing.T) {
 		t.Errorf("expected SSH host %q, got %q", expectedHost, host)
 	}
 }
+
+func TestSaveAndReadPort(t *testing.T) {
+	dir := t.TempDir()
+
+	port := readSavedPort(dir)
+	if port != 0 {
+		t.Errorf("readSavedPort() = %d, want 0 for non-existent file", port)
+	}
+
+	savePort(dir, 39285)
+	port = readSavedPort(dir)
+	if port != 39285 {
+		t.Errorf("readSavedPort() = %d, want 39285", port)
+	}
+}
