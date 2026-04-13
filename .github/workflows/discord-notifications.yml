@@ -1,0 +1,16 @@
+name: Discord PR Notifications
+
+on:
+  pull_request:
+    types: [opened, review_requested, closed]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify:
+    uses: SomosPollo/.github/.github/workflows/discord-notifications.yml@main
+    secrets: inherit
