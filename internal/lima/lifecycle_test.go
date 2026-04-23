@@ -101,6 +101,124 @@ func TestDeleteCallsLimactl(t *testing.T) {
 	}
 }
 
+func TestShellPassesWorkdir(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	Shell("watermelon-test-12345678", "/custom/workdir")
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(captured))
+	}
+	want := "limactl shell --workdir /custom/workdir watermelon-test-12345678"
+	if captured[0] != want {
+		t.Errorf("Shell() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestShellOmitsWorkdirWhenEmpty(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	Shell("watermelon-test-12345678", "")
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(captured))
+	}
+	want := "limactl shell watermelon-test-12345678"
+	if captured[0] != want {
+		t.Errorf("Shell() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestExecPassesWorkdir(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	Exec("watermelon-test-12345678", []string{"docker", "ps"}, "/custom/workdir")
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(captured))
+	}
+	want := "limactl shell --workdir /custom/workdir watermelon-test-12345678 -- docker ps"
+	if captured[0] != want {
+		t.Errorf("Exec() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestExecOmitsWorkdirWhenEmpty(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	Exec("watermelon-test-12345678", []string{"docker", "ps"}, "")
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(captured))
+	}
+	want := "limactl shell watermelon-test-12345678 -- docker ps"
+	if captured[0] != want {
+		t.Errorf("Exec() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestCopyHostToVM(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	err := Copy("./file.txt", "somospollo-vm:/tmp/", false)
+	if err != nil {
+		t.Fatalf("Copy() error = %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(captured))
+	}
+	want := "limactl copy ./file.txt somospollo-vm:/tmp/"
+	if captured[0] != want {
+		t.Errorf("Copy() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestCopyRecursive(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	err := Copy("./dir/", "somospollo-vm:/tmp/", true)
+	if err != nil {
+		t.Fatalf("Copy() error = %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(captured))
+	}
+	want := "limactl copy --recursive ./dir/ somospollo-vm:/tmp/"
+	if captured[0] != want {
+		t.Errorf("Copy() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestCopyVMToHost(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	err := Copy("somospollo-vm:/tmp/output.log", "./", false)
+	if err != nil {
+		t.Fatalf("Copy() error = %v", err)
+	}
+	want := "limactl copy somospollo-vm:/tmp/output.log ./"
+	if captured[0] != want {
+		t.Errorf("Copy() command = %q, want %q", captured[0], want)
+	}
+}
+
 func TestVMStatusString(t *testing.T) {
 	tests := []struct {
 		status VMStatus

@@ -13,7 +13,9 @@ import (
 )
 
 func NewExecCmd() *cobra.Command {
-	return &cobra.Command{
+	var name string
+
+	cmd := &cobra.Command{
 		Use:   "exec [command] [args...]",
 		Short: "Run a command in the sandbox without interactive shell",
 		Args:  cobra.MinimumNArgs(1),
@@ -23,9 +25,15 @@ func NewExecCmd() *cobra.Command {
 				return err
 			}
 
+			configIsDefault := false
 			cfg, err := loadProjectConfig(dir)
 			if err != nil {
-				return err
+				if name != "" {
+					cfg = config.NewConfig()
+					configIsDefault = true
+				} else {
+					return err
+				}
 			}
 
 			if err := config.Validate(cfg); err != nil {
@@ -59,7 +67,7 @@ func NewExecCmd() *cobra.Command {
 				fmt.Println("Verdict server listening for network policy prompts...")
 			}
 
-			vmName := lima.VMNameFromPath(dir)
+			vmName := resolveVMNameFromConfig(name, cfg.VM.Name, dir)
 			status := lima.GetStatus(vmName)
 
 			if status == lima.StatusNotFound {
@@ -73,7 +81,18 @@ func NewExecCmd() *cobra.Command {
 				}
 			}
 
-			return lima.Exec(vmName, args)
+			var effectiveWorkdir string
+			if !configIsDefault {
+				effectiveWorkdir = cfg.IDE.Workdir
+				if effectiveWorkdir == "" {
+					effectiveWorkdir = config.DefaultWorkdir(cfg)
+				}
+			}
+
+			return lima.Exec(vmName, args, effectiveWorkdir)
 		},
 	}
+
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides path-derived name and vm.name config)")
+	return cmd
 }

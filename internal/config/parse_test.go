@@ -144,6 +144,97 @@ codex = ["api.openai.com"]
 	}
 }
 
+func TestParseVMName(t *testing.T) {
+	tomlData := `
+[vm]
+name = "somospollo-vm"
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if cfg.VM.Name != "somospollo-vm" {
+		t.Errorf("expected VM.Name = 'somospollo-vm', got %q", cfg.VM.Name)
+	}
+}
+
+func TestParseVMMountProjectFalse(t *testing.T) {
+	tomlData := `
+[vm]
+mount_project = false
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if MountProjectEnabled(&cfg.VM) {
+		t.Error("expected MountProjectEnabled to be false when mount_project = false")
+	}
+}
+
+func TestParseVMMountProjectTrue(t *testing.T) {
+	tomlData := `
+[vm]
+mount_project = true
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if !MountProjectEnabled(&cfg.VM) {
+		t.Error("expected MountProjectEnabled to be true when mount_project = true")
+	}
+}
+
+func TestParseVMMountProjectDefault(t *testing.T) {
+	// When mount_project is absent, should default to true via nil pointer
+	tomlData := `
+[network]
+allow = []
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if !MountProjectEnabled(&cfg.VM) {
+		t.Error("expected MountProjectEnabled to be true by default (absent key)")
+	}
+}
+
+func TestParseIDEWorkdir(t *testing.T) {
+	tomlData := `
+[ide]
+workdir = "/home/user/SomosPollo"
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if cfg.IDE.Workdir != "/home/user/SomosPollo" {
+		t.Errorf("expected IDE.Workdir = '/home/user/SomosPollo', got %q", cfg.IDE.Workdir)
+	}
+}
+
+func TestParseProvisionScripts(t *testing.T) {
+	tomlData := `
+[provision]
+scripts = ["./vm/src/setup.sh", "/absolute/path.sh"]
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if len(cfg.Provision.Scripts) != 2 {
+		t.Fatalf("expected 2 scripts, got %d", len(cfg.Provision.Scripts))
+	}
+	if cfg.Provision.Scripts[0] != "./vm/src/setup.sh" {
+		t.Errorf("expected first script './vm/src/setup.sh', got %q", cfg.Provision.Scripts[0])
+	}
+	if cfg.Provision.Scripts[1] != "/absolute/path.sh" {
+		t.Errorf("expected second script '/absolute/path.sh', got %q", cfg.Provision.Scripts[1])
+	}
+}
+
 func TestParseConfigWithProvision(t *testing.T) {
 	tomlContent := `
 [vm]

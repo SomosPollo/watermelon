@@ -16,25 +16,37 @@ import (
 )
 
 func NewRunCmd() *cobra.Command {
-	return &cobra.Command{
+	var name, workdir string
+
+	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Enter the project sandbox VM",
 		Long:  "Start the project VM (creating it if needed) and open an interactive shell.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRun()
+			return runRun(name, workdir)
 		},
 	}
+
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides path-derived name and vm.name config)")
+	cmd.Flags().StringVar(&workdir, "workdir", "", "Working directory inside VM (overrides config)")
+	return cmd
 }
 
-func runRun() error {
+func runRun(name, workdir string) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 
+	configIsDefault := false
 	cfg, err := loadProjectConfig(dir)
 	if err != nil {
-		return err
+		if name != "" {
+			cfg = config.NewConfig()
+			configIsDefault = true
+		} else {
+			return err
+		}
 	}
 
 	if err := config.Validate(cfg); err != nil {
@@ -49,7 +61,6 @@ func runRun() error {
 			return fmt.Errorf("building nfqd: %w", err)
 		}
 
-		// Try to read saved port (from previous VM creation)
 		verdictPort = readSavedPort(dir)
 
 		listenAddr := fmt.Sprintf("0.0.0.0:%d", verdictPort) // 0 if no saved port
@@ -69,18 +80,16 @@ func runRun() error {
 		fmt.Printf("Verdict server listening on port %d...\n", verdictPort)
 	}
 
-	vmName := lima.VMNameFromPath(dir)
+	vmName := resolveVMNameFromConfig(name, cfg.VM.Name, dir)
 	status := lima.GetStatus(vmName)
 
 	if status == lima.StatusNotFound {
 		fmt.Println("Creating sandbox VM...")
 
-		// Save verdict port for future sessions
 		if verdictPort > 0 {
 			savePort(dir, verdictPort)
 		}
 
-		// Setup SSH config for IDE access
 		if err := lima.EnsureSSHConfig(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not configure SSH: %v\n", err)
 		}
@@ -90,7 +99,6 @@ func runRun() error {
 			return fmt.Errorf("generating Lima config: %w", err)
 		}
 
-		// Write temp Lima config
 		tmpFile, err := os.CreateTemp("", "watermelon-*.yaml")
 		if err != nil {
 			return fmt.Errorf("creating temp config file: %w", err)
@@ -117,7 +125,15 @@ func runRun() error {
 	fmt.Printf("IDE: connect to %s\n", sshHost)
 	fmt.Println()
 
-	return lima.Shell(vmName)
+	effectiveWorkdir := workdir
+	if effectiveWorkdir == "" && !configIsDefault {
+		effectiveWorkdir = cfg.IDE.Workdir
+		if effectiveWorkdir == "" {
+			effectiveWorkdir = config.DefaultWorkdir(cfg)
+		}
+	}
+
+	return lima.Shell(vmName, effectiveWorkdir)
 }
 
 func loadProjectConfig(dir string) (*config.Config, error) {

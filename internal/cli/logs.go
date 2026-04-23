@@ -10,6 +10,7 @@ import (
 
 func NewLogsCmd() *cobra.Command {
 	var clear bool
+	var name string // accepted for consistency with other commands; log files are project-dir-based
 
 	cmd := &cobra.Command{
 		Use:   "logs",
@@ -42,5 +43,6 @@ func NewLogsCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&clear, "clear", false, "Clear the log")
+	cmd.Flags().StringVar(&name, "name", "", "VM name (accepted for consistency; log files are project-dir-based)")
 	return cmd
 }

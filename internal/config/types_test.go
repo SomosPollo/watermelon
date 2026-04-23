@@ -54,4 +54,53 @@ func TestNewConfigHasEmptyProvision(t *testing.T) {
 	if cfg.Provision.Gem == nil {
 		t.Error("expected Provision.Gem to be initialized, got nil")
 	}
+	if cfg.Provision.Scripts == nil {
+		t.Error("expected Provision.Scripts to be initialized, got nil")
+	}
+	if len(cfg.Provision.Scripts) != 0 {
+		t.Errorf("expected Provision.Scripts to be empty, got %d entries", len(cfg.Provision.Scripts))
+	}
+}
+
+func TestNewConfigMountProjectDefault(t *testing.T) {
+	cfg := NewConfig()
+	if !MountProjectEnabled(&cfg.VM) {
+		t.Error("expected MountProjectEnabled to be true by default")
+	}
+}
+
+func TestMountProjectEnabled(t *testing.T) {
+	trueVal := true
+	falseVal := false
+
+	tests := []struct {
+		name string
+		vm   VMConfig
+		want bool
+	}{
+		{"nil pointer defaults to true", VMConfig{MountProject: nil}, true},
+		{"explicit true", VMConfig{MountProject: &trueVal}, true},
+		{"explicit false", VMConfig{MountProject: &falseVal}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MountProjectEnabled(&tt.vm); got != tt.want {
+				t.Errorf("MountProjectEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultWorkdir(t *testing.T) {
+	falseVal := false
+
+	cfg := NewConfig()
+	if got := DefaultWorkdir(cfg); got != "/project" {
+		t.Errorf("DefaultWorkdir() = %q, want /project for default config", got)
+	}
+
+	cfg.VM.MountProject = &falseVal
+	if got := DefaultWorkdir(cfg); got != "" {
+		t.Errorf("DefaultWorkdir() = %q, want empty string when mount_project=false", got)
+	}
 }

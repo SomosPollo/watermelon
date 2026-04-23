@@ -12,6 +12,7 @@ import (
 
 func NewDestroyCmd() *cobra.Command {
 	var force bool
+	var name string
 
 	cmd := &cobra.Command{
 		Use:   "destroy",
@@ -22,7 +23,7 @@ func NewDestroyCmd() *cobra.Command {
 				return err
 			}
 
-			vmName := lima.VMNameFromPath(dir)
+			vmName := resolveVMName(name, dir)
 			status := lima.GetStatus(vmName)
 
 			if status == lima.StatusNotFound {
@@ -47,5 +48,6 @@ func NewDestroyCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation prompt")
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides path-derived name and vm.name config)")
 	return cmd
 }

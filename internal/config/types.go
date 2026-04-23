@@ -14,7 +14,9 @@ type Config struct {
 }
 
 type VMConfig struct {
-	Image string `toml:"image"`
+	Name         string `toml:"name"`
+	Image        string `toml:"image"`
+	MountProject *bool  `toml:"mount_project"`
 }
 
 type NetworkConfig struct {
@@ -23,11 +25,12 @@ type NetworkConfig struct {
 }
 
 type ProvisionConfig struct {
-	Npm   []string `toml:"npm"`
-	Pip   []string `toml:"pip"`
-	Cargo []string `toml:"cargo"`
-	Go    []string `toml:"go"`
-	Gem   []string `toml:"gem"`
+	Npm     []string `toml:"npm"`
+	Pip     []string `toml:"pip"`
+	Cargo   []string `toml:"cargo"`
+	Go      []string `toml:"go"`
+	Gem     []string `toml:"gem"`
+	Scripts []string `toml:"scripts"`
 }
 
 type Mount struct {
@@ -51,26 +54,30 @@ type SecurityConfig struct {
 
 type IDEConfig struct {
 	Command string `toml:"command"`
+	Workdir string `toml:"workdir"`
 }
 
 // NewConfig returns a Config with default values
 func NewConfig() *Config {
+	defaultTrue := true
 	return &Config{
 		VM: VMConfig{
-			Image: "ubuntu-22.04",
+			Image:        "ubuntu-22.04",
+			MountProject: &defaultTrue,
 		},
 		Network: NetworkConfig{
 			Allow:   []string{},
 			Process: map[string][]string{},
 		},
 		Provision: ProvisionConfig{
-			Npm:   []string{},
-			Pip:   []string{},
-			Cargo: []string{},
-			Go:    []string{},
-			Gem:   []string{},
+			Npm:     []string{},
+			Pip:     []string{},
+			Cargo:   []string{},
+			Go:      []string{},
+			Gem:     []string{},
+			Scripts: []string{},
 		},
-		Tools: map[string][]string{},
+		Tools:  map[string][]string{},
 		Mounts: map[string]Mount{},
 		Ports: PortsConfig{
 			Forward: []int{},
@@ -87,4 +94,18 @@ func NewConfig() *Config {
 			Command: "code",
 		},
 	}
+}
+
+// MountProjectEnabled reports whether the project directory should be bind-mounted.
+func MountProjectEnabled(vm *VMConfig) bool {
+	return vm.MountProject == nil || *vm.MountProject
+}
+
+// DefaultWorkdir returns the default working directory inside the VM.
+// Returns "/project" when mount_project is enabled, empty string otherwise.
+func DefaultWorkdir(cfg *Config) string {
+	if MountProjectEnabled(&cfg.VM) {
+		return "/project"
+	}
+	return ""
 }

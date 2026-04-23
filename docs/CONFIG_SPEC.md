@@ -45,14 +45,23 @@ Configures the base virtual machine.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `name` | string | auto-derived | Fixed VM name (overrides the hash-based default) |
 | `image` | string | `"ubuntu-22.04"` | Base OS image for the VM |
+| `mount_project` | bool | `true` | Whether to mount the project directory into the VM at `/project` |
 
 **Supported images:**
-- `ubuntu-22.04` (recommended)
+- `ubuntu-22.04` (default)
+- `ubuntu-24.04`
+
+**`name`:** When set, the VM uses exactly this name instead of the auto-derived `watermelon-{project}-{hash}` name. Useful for shared or fixed-name VMs. Must contain only alphanumeric characters and dashes.
+
+**`mount_project`:** When `false`, the project directory is not mounted into the VM and no default `/project` workdir is set. Use this when the VM is itself the environment (e.g. a Docker host VM where projects live inside containers). Defaults to `true`.
 
 ```toml
 [vm]
-image = "ubuntu-22.04"
+image = "ubuntu-24.04"
+name = "my-dev-vm"
+mount_project = false
 ```
 
 ---
@@ -71,7 +80,7 @@ Controls network access from the sandbox. By default, all outbound network acces
 - Domain with port: `"example.com:443"`
 - IP address: `"192.168.1.1"`
 
-**Security:** Domains cannot contain shell metacharacters (`;|&$\`\`).
+**Security:** Domains cannot contain shell metacharacters (`;|&$\`\``).
 
 ```toml
 [network]
@@ -129,7 +138,7 @@ aider = ["api.anthropic.com", "api.openai.com"]
 
 ### `[provision]`
 
-Packages to install during VM provisioning. Each key corresponds to a package manager.
+Packages to install and scripts to run during VM provisioning. Each package manager key installs globally; `scripts` runs arbitrary setup scripts.
 
 | Field | Type | Requires Tool | Install Command |
 |-------|------|---------------|-----------------|
@@ -138,8 +147,9 @@ Packages to install during VM provisioning. Each key corresponds to a package ma
 | `cargo` | string[] | `rust` image | `cargo install <pkg>` |
 | `go` | string[] | `go` or `golang` image | `go install <pkg>` |
 | `gem` | string[] | `ruby` image | `gem install <pkg>` |
+| `scripts` | string[] | — | Shell scripts to run as root |
 
-**Validation:**
+**Package validation:**
 - Package names cannot contain shell metacharacters (`;|&$\`\``)
 - Each package manager requires a matching tool image in `[tools]`
 - If the package manager command is not found at provision time, provisioning fails
@@ -154,6 +164,18 @@ npm = ["@anthropic-ai/claude-code", "typescript"]
 pip = ["aider-chat", "black"]
 ```
 
+**`scripts`:** Paths to shell scripts that run as root during provisioning. Paths can be relative to the project directory or absolute. Scripts are embedded into the Lima config at VM creation time, so changes require reprovisioning.
+
+```toml
+[provision]
+scripts = [
+    "./vm/setup.sh",          # Relative to project root
+    "/absolute/path/init.sh", # Absolute path on host
+]
+```
+
+**Script security:** Script paths cannot be empty or contain shell metacharacters (`;|&$\``).
+
 **Use case:** Install AI coding assistants and development tools automatically:
 
 ```toml
@@ -161,6 +183,7 @@ pip = ["aider-chat", "black"]
 npm = ["@anthropic-ai/claude-code"]  # Claude Code CLI
 pip = ["aider-chat"]                  # Aider AI assistant
 cargo = ["ripgrep", "fd-find"]        # Fast search tools
+scripts = ["./vm/setup.sh"]           # Custom setup
 ```
 
 ---
@@ -235,7 +258,7 @@ Additional host paths to mount into the VM (beyond the project directory).
 "~/.cache/huggingface" = { target = "/home/dev/.cache/huggingface", mode = "rw" }
 ```
 
-**Note:** The project directory is always mounted at `/project` with read-write access.
+**Note:** The project directory is mounted at `/project` with read-write access when `mount_project = true` (the default).
 
 ---
 
@@ -320,6 +343,7 @@ Security policy configuration.
 | `"log"` | Log the violation and allow the request |
 | `"fail"` | Block the request and log an error |
 | `"silent"` | Block the request silently |
+| `"ask"` | Prompt interactively before allowing |
 
 ```toml
 [security]
@@ -342,6 +366,7 @@ Configures the IDE for the `watermelon code` command.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `command` | string | `"code"` | IDE command to launch |
+| `workdir` | string | `""` | Remote directory to open (overrides default) |
 
 **Supported IDE commands:**
 
@@ -352,26 +377,24 @@ Configures the IDE for the `watermelon code` command.
 | VSCodium | `codium` |
 | VS Code Insiders | `code-insiders` |
 
+**`workdir`:** When set, `watermelon code` opens the IDE at this path inside the VM instead of the default (which is `/project` when the project is mounted, or the VM home directory otherwise).
+
 ```toml
 [ide]
 # VS Code (default)
 command = "code"
 
-# Cursor
+# Cursor with a custom remote directory
 command = "cursor"
-
-# VSCodium
-command = "codium"
+workdir = "/home/user/project"
 ```
 
 **How it works:**
 
 When you run `watermelon code`, it executes:
 ```bash
-<command> --remote ssh-remote+lima-<vmname> /project
+<command> --remote ssh-remote+lima-<vmname> <workdir>
 ```
-
-This opens your IDE connected to the sandbox VM via SSH Remote, directly in the `/project` directory.
 
 **Security:** The IDE command is validated to prevent shell injection (no metacharacters allowed).
 
@@ -425,6 +448,35 @@ disk = "20GB"
 enforcement = "log"
 ```
 
+### Fixed-Name VM (No Project Mount)
+
+Use this pattern when the VM is itself the environment — for example, a Docker host VM where projects live inside containers, not bind-mounted from the host.
+
+```toml
+[vm]
+name = "my-dev-vm"
+image = "ubuntu-24.04"
+mount_project = false
+
+[resources]
+memory = "8GB"
+cpus = 4
+disk = "50GB"
+
+[provision]
+scripts = ["./vm/setup.sh"]
+
+[ide]
+command = "cursor"
+workdir = "/home/user"
+```
+
+Run commands against this VM from any directory:
+```bash
+watermelon run --name my-dev-vm
+watermelon exec --name my-dev-vm "docker ps"
+```
+
 ### Maximum Security (Audit Mode)
 
 ```toml
@@ -456,21 +508,38 @@ enforcement = "fail"
 
 The configuration is validated at VM creation time:
 
-1. **Resources:**
+1. **VM:**
+   - `name` must contain only alphanumeric characters, dashes, and underscores (no spaces, slashes, or shell metacharacters)
+   - `image` must be one of the supported values (`ubuntu-22.04`, `ubuntu-24.04`) or empty (uses default)
+
+2. **Resources:**
    - `cpus` must be ≥ 1
    - `memory` and `disk` must be non-empty
 
-2. **Security:**
-   - `enforcement` must be one of: `log`, `fail`, `silent`
+3. **Security:**
+   - `enforcement` must be one of: `log`, `fail`, `silent`, `ask`
 
-3. **Network:**
-   - Domains cannot contain shell metacharacters: `;|&$\`\`
+4. **Network:**
+   - Domains cannot contain shell metacharacters: `;|&$\`\``
+   - Process names cannot contain shell metacharacters or spaces/slashes
 
-4. **Ports:**
+5. **Ports:**
    - Each port must be in range 1-65535
+
+6. **IDE:**
+   - `command` must be non-empty and contain only alphanumeric characters and dashes
+
+7. **Provision:**
+   - Package names cannot contain shell metacharacters or spaces
+   - Script paths cannot be empty or contain shell metacharacters (`;|&$\``)
+   - Each package manager (`npm`, `pip`, `cargo`, `go`, `gem`) requires a matching tool image in `[tools]`
 
 ---
 
 ## File Location
 
-Watermelon looks for `.watermelon.toml` in the current working directory when running commands. The VM name is derived from the project path to ensure consistent naming across sessions.
+Watermelon looks for `.watermelon.toml` in the current working directory when running commands. VM names are determined in this order:
+
+1. `--name` CLI flag
+2. `[vm] name` in `.watermelon.toml`
+3. Auto-derived: `watermelon-{project}-{8char-hash}` based on the absolute project path

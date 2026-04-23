@@ -9,7 +9,9 @@ import (
 )
 
 func NewStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var name string
+
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show sandbox VM status for current project",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -18,7 +20,7 @@ func NewStatusCmd() *cobra.Command {
 				return err
 			}
 
-			vmName := lima.VMNameFromPath(dir)
+			vmName := resolveVMName(name, dir)
 			status := lima.GetStatus(vmName)
 
 			fmt.Printf("Project: %s\n", dir)
@@ -28,4 +30,7 @@ func NewStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides path-derived name and vm.name config)")
+	return cmd
 }

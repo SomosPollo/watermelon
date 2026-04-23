@@ -100,9 +100,16 @@ func Delete(vmName string) error {
 	return cmd.Run()
 }
 
-// Shell opens an interactive shell in the VM
-func Shell(vmName string) error {
-	cmd := execCommand("limactl", "shell", "--workdir", "/project", vmName)
+// Shell opens an interactive shell in the VM.
+// When workdir is non-empty, it is passed as --workdir to limactl.
+func Shell(vmName, workdir string) error {
+	var cmdArgs []string
+	if workdir != "" {
+		cmdArgs = []string{"shell", "--workdir", workdir, vmName}
+	} else {
+		cmdArgs = []string{"shell", vmName}
+	}
+	cmd := execCommand("limactl", cmdArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -117,12 +124,32 @@ func Shell(vmName string) error {
 	return err
 }
 
-// Exec runs a command in the VM
-func Exec(vmName string, args []string) error {
-	cmdArgs := []string{"shell", "--workdir", "/project", vmName, "--"}
+// Exec runs a command in the VM.
+// When workdir is non-empty, it is passed as --workdir to limactl.
+func Exec(vmName string, args []string, workdir string) error {
+	var cmdArgs []string
+	if workdir != "" {
+		cmdArgs = []string{"shell", "--workdir", workdir, vmName, "--"}
+	} else {
+		cmdArgs = []string{"shell", vmName, "--"}
+	}
 	cmdArgs = append(cmdArgs, args...)
 	cmd := execCommand("limactl", cmdArgs...)
 	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// Copy copies files between the host and a VM using limactl copy.
+// src and dst may use vmname:path syntax for VM paths.
+func Copy(src, dst string, recursive bool) error {
+	args := []string{"copy"}
+	if recursive {
+		args = append(args, "--recursive")
+	}
+	args = append(args, src, dst)
+	cmd := execCommand("limactl", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

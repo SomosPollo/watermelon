@@ -3,6 +3,8 @@ package lima
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
@@ -38,19 +40,32 @@ memory: {{ .Memory }}
 disk: {{ .Disk }}
 
 images:
+{{- if eq .Image "ubuntu-24.04" }}
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: x86_64
+{{- else }}
   - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-arm64.img"
     arch: aarch64
   - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
     arch: x86_64
+{{- end }}
 
+{{- if or .MountProject .ToolsDir }}
 mounts:
+{{- if .MountProject }}
   - location: "{{ .ProjectDir }}"
     mountPoint: /project
     writable: true
+{{- end }}
 {{- if .ToolsDir }}
   - location: "{{ .ToolsDir }}"
     mountPoint: /tools
     writable: false
+{{- end }}
+{{- else }}
+mounts: []
 {{- end }}
 
 provision:
@@ -375,11 +390,18 @@ provision:
 {{- $netIndex = add $netIndex 1 }}
 {{- end }}
 {{- end }}
+{{- if .MountProject }}
   - mode: user
     script: |
       if ! grep -q 'cd /project' ~/.bashrc 2>/dev/null; then
         echo '[ -d /project ] && cd /project' >> ~/.bashrc
       fi
+{{- end }}
+{{- range .ProvisionScripts }}
+  - mode: system
+    script: |
+{{ . | indent 6 }}
+{{- end }}
 
 networks: []
 
@@ -418,6 +440,8 @@ type templateData struct {
 	CPUs                 int
 	Memory               string
 	Disk                 string
+	Image                string
+	MountProject         bool
 	ProjectDir           string
 	ToolsDir             string
 	NetworkAllow         []string
@@ -433,6 +457,25 @@ type templateData struct {
 	VerdictServerPort    int
 	NfqdBinaryPath       string
 	GlobalWildcards      []string // wildcard domains from NetworkAllow (e.g., "*.anthropic.com")
+	ProvisionScripts     []string // contents of user-supplied provision scripts
+}
+
+// readProvisionScripts reads each script file (relative to projectDir or absolute)
+// and returns their contents, trimming trailing whitespace from each.
+func readProvisionScripts(projectDir string, scripts []string) ([]string, error) {
+	contents := make([]string, 0, len(scripts))
+	for _, script := range scripts {
+		p := script
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(projectDir, p)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, fmt.Errorf("reading provision script %q: %w", script, err)
+		}
+		contents = append(contents, strings.TrimRight(string(data), " \t\n\r"))
+	}
+	return contents, nil
 }
 
 // GenerateConfig creates Lima YAML from watermelon config
@@ -580,6 +623,22 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		uniqueImages = collectUniqueImages(tools)
 	}
 
+	image := cfg.VM.Image
+	if image == "" {
+		image = "ubuntu-22.04"
+	}
+
+	mountProject := config.MountProjectEnabled(&cfg.VM)
+
+	var provisionScripts []string
+	if len(cfg.Provision.Scripts) > 0 {
+		var readErr error
+		provisionScripts, readErr = readProvisionScripts(projectDir, cfg.Provision.Scripts)
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+
 	verdictPort := 0
 	nfqdPath := ""
 	if cfg.Security.Enforcement == "ask" {
@@ -609,6 +668,8 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		CPUs:                 cfg.Resources.CPUs,
 		Memory:               convertMemory(cfg.Resources.Memory),
 		Disk:                 convertDisk(cfg.Resources.Disk),
+		Image:                image,
+		MountProject:         mountProject,
 		ProjectDir:           projectDir,
 		ToolsDir:             "",
 		NetworkAllow:         cfg.Network.Allow,
@@ -624,6 +685,7 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		VerdictServerPort:    verdictPort,
 		NfqdBinaryPath:       nfqdPath,
 		GlobalWildcards:      globalWildcards,
+		ProvisionScripts:     provisionScripts,
 	}
 
 	var buf bytes.Buffer
