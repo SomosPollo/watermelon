@@ -1,6 +1,7 @@
 package lima
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -869,6 +870,154 @@ func TestGenerateConfigDeterministicSubnets(t *testing.T) {
 
 	if yaml1 != yaml2 {
 		t.Error("expected two generations of the same config to produce identical output")
+	}
+}
+
+func TestGenerateConfigUbuntu2404(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.VM.Image = "ubuntu-24.04"
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "24.04") {
+		t.Error("expected yaml to contain 24.04 image URL")
+	}
+	if strings.Contains(yaml, "22.04") {
+		t.Error("expected yaml to NOT contain 22.04 image URL when image is ubuntu-24.04")
+	}
+}
+
+func TestGenerateConfigUbuntu2204Default(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.VM.Image = "ubuntu-22.04"
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "22.04") {
+		t.Error("expected yaml to contain 22.04 image URL")
+	}
+	if strings.Contains(yaml, "24.04") {
+		t.Error("expected yaml to NOT contain 24.04 image URL when image is ubuntu-22.04")
+	}
+}
+
+func TestGenerateConfigNoMount(t *testing.T) {
+	falseVal := false
+	cfg := config.NewConfig()
+	cfg.VM.MountProject = &falseVal
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if strings.Contains(yaml, "mountPoint: /project") {
+		t.Error("expected yaml to NOT contain mountPoint: /project when mount_project=false")
+	}
+	if !strings.Contains(yaml, "mounts: []") {
+		t.Error("expected yaml to contain 'mounts: []' when mount_project=false")
+	}
+	if strings.Contains(yaml, "cd /project") {
+		t.Error("expected yaml to NOT contain 'cd /project' when mount_project=false")
+	}
+}
+
+func TestGenerateConfigDefaultMount(t *testing.T) {
+	cfg := config.NewConfig()
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "mountPoint: /project") {
+		t.Error("expected yaml to contain mountPoint: /project with default config")
+	}
+	if strings.Contains(yaml, "mounts: []") {
+		t.Error("expected yaml to NOT contain 'mounts: []' with default config")
+	}
+}
+
+func TestGenerateConfigWithProvisionScripts(t *testing.T) {
+	dir := t.TempDir()
+
+	scriptContent := "#!/bin/bash\nset -e\napt-get install -y docker.io"
+	scriptPath := dir + "/setup.sh"
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.NewConfig()
+	cfg.Provision.Scripts = []string{scriptPath}
+
+	yaml, err := GenerateConfig(cfg, dir)
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "apt-get install -y docker.io") {
+		t.Error("expected yaml to contain provision script content")
+	}
+	if !strings.Contains(yaml, "mode: system") {
+		t.Error("expected provision script block to use mode: system")
+	}
+}
+
+func TestGenerateConfigProvisionScriptRelativePath(t *testing.T) {
+	dir := t.TempDir()
+
+	scriptContent := "#!/bin/bash\necho hello"
+	if err := os.WriteFile(dir+"/run.sh", []byte(scriptContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.NewConfig()
+	cfg.Provision.Scripts = []string{"./run.sh"}
+
+	yaml, err := GenerateConfig(cfg, dir)
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "echo hello") {
+		t.Error("expected yaml to contain relative-path provision script content")
+	}
+}
+
+func TestGenerateConfigProvisionScriptNotFound(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Provision.Scripts = []string{"./nonexistent-script.sh"}
+
+	_, err := GenerateConfig(cfg, "/tmp")
+	if err == nil {
+		t.Fatal("expected error for missing provision script, got nil")
+	}
+	if !strings.Contains(err.Error(), "reading provision script") {
+		t.Errorf("expected error to mention 'reading provision script', got: %v", err)
+	}
+}
+
+func TestGenerateConfigEmptyProvisionScripts(t *testing.T) {
+	cfg := config.NewConfig()
+	// Scripts is empty by default
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	// Should not have extra system provision blocks beyond the existing one
+	// The existing system provision block is always present; user scripts add more
+	firstSystemIdx := strings.Index(yaml, "mode: system")
+	lastSystemIdx := strings.LastIndex(yaml, "mode: system")
+	if firstSystemIdx != lastSystemIdx {
+		t.Error("expected only one 'mode: system' block when provision.scripts is empty")
 	}
 }
 

@@ -7,6 +7,21 @@ import (
 
 // Validate checks config for errors
 func Validate(cfg *Config) error {
+	// Validate vm.name
+	if cfg.VM.Name != "" {
+		if strings.ContainsAny(cfg.VM.Name, ShellMetacharacters+" /") {
+			return fmt.Errorf("invalid vm.name %q: contains invalid characters", cfg.VM.Name)
+		}
+	}
+
+	// Validate vm.image
+	switch cfg.VM.Image {
+	case "ubuntu-22.04", "ubuntu-24.04", "":
+		// valid
+	default:
+		return fmt.Errorf("invalid vm.image %q: must be ubuntu-22.04 or ubuntu-24.04", cfg.VM.Image)
+	}
+
 	// Validate enforcement
 	switch cfg.Security.Enforcement {
 	case "log", "fail", "silent", "ask":
@@ -77,6 +92,16 @@ func Validate(cfg *Config) error {
 	for _, pkg := range cfg.Provision.Gem {
 		if err := ValidatePackageName(pkg); err != nil {
 			return fmt.Errorf("invalid gem package: %w", err)
+		}
+	}
+
+	// Validate provision.scripts
+	for _, script := range cfg.Provision.Scripts {
+		if script == "" {
+			return fmt.Errorf("provision.scripts: script path cannot be empty")
+		}
+		if strings.ContainsAny(script, ShellMetacharacters) {
+			return fmt.Errorf("provision.scripts: script path %q contains invalid characters", script)
 		}
 	}
 

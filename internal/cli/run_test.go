@@ -17,7 +17,7 @@ func TestRunCommandRequiresConfig(t *testing.T) {
 	defer os.Chdir(originalDir)
 	os.Chdir(dir)
 
-	err = runRun()
+	err = runRun("", "")
 	if err == nil {
 		t.Error("expected error when no config exists")
 	}

@@ -9,7 +9,9 @@ import (
 )
 
 func NewStopCmd() *cobra.Command {
-	return &cobra.Command{
+	var name string
+
+	cmd := &cobra.Command{
 		Use:   "stop",
 		Short: "Stop the project sandbox VM",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -18,7 +20,7 @@ func NewStopCmd() *cobra.Command {
 				return err
 			}
 
-			vmName := lima.VMNameFromPath(dir)
+			vmName := resolveVMName(name, dir)
 			status := lima.GetStatus(vmName)
 
 			if status == lima.StatusNotFound {
@@ -34,4 +36,7 @@ func NewStopCmd() *cobra.Command {
 			return lima.Stop(vmName)
 		},
 	}
+
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides path-derived name and vm.name config)")
+	return cmd
 }

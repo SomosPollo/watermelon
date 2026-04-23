@@ -11,17 +11,22 @@ import (
 )
 
 func NewCodeCmd() *cobra.Command {
-	return &cobra.Command{
+	var name string
+
+	cmd := &cobra.Command{
 		Use:   "code",
 		Short: "Open project in IDE (VS Code by default)",
 		Long:  "Launch your IDE connected to the sandbox VM via SSH. Configure with [ide] command in .watermelon.toml",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCode()
+			return runCode(name)
 		},
 	}
+
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides path-derived name and vm.name config)")
+	return cmd
 }
 
-func runCode() error {
+func runCode(name string) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return err
@@ -29,22 +34,24 @@ func runCode() error {
 
 	cfg, err := loadProjectConfig(dir)
 	if err != nil {
-		return err
+		if name != "" {
+			cfg = config.NewConfig()
+		} else {
+			return err
+		}
 	}
 
 	if err := config.Validate(cfg); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	vmName := lima.VMNameFromPath(dir)
+	vmName := resolveVMNameFromConfig(name, cfg.VM.Name, dir)
 	status := lima.GetStatus(vmName)
 
-	// Check VM exists
 	if status == lima.StatusNotFound {
 		return fmt.Errorf("sandbox not found. Run 'watermelon run' first to create it")
 	}
 
-	// Start VM if stopped
 	if status == lima.StatusStopped {
 		fmt.Println("Starting sandbox VM...")
 		if err := lima.Start(vmName, ""); err != nil {
@@ -52,12 +59,10 @@ func runCode() error {
 		}
 	}
 
-	// Ensure SSH config is set up
 	if err := lima.EnsureSSHConfig(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not configure SSH: %v\n", err)
 	}
 
-	// Get IDE command from config (default: "code")
 	ideCmd := cfg.IDE.Command
 	if ideCmd == "" {
 		ideCmd = "code"
@@ -68,12 +73,10 @@ func runCode() error {
 
 	fmt.Printf("Opening %s...\n", ideCmd)
 
-	// Check if IDE command exists
 	if _, err := exec.LookPath(cmd); err != nil {
 		return fmt.Errorf("%s not found. Install it or set ide.command in .watermelon.toml", cmd)
 	}
 
-	// Launch IDE (don't wait for it to exit)
 	execCmd := exec.Command(cmd, args...)
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr

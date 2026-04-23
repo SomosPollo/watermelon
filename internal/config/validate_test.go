@@ -5,6 +5,91 @@ import (
 	"testing"
 )
 
+func TestValidateVMName(t *testing.T) {
+	tests := []struct {
+		name    string
+		vmName  string
+		wantErr bool
+	}{
+		{"empty name is valid", "", false},
+		{"simple name", "somospollo-vm", false},
+		{"alphanumeric with dash", "my-dev-vm", false},
+		{"space in name", "my vm", true},
+		{"slash in name", "my/vm", true},
+		{"semicolon injection", "vm;evil", true},
+		{"pipe injection", "vm|evil", true},
+		{"dollar injection", "vm$HOME", true},
+		{"backtick injection", "vm`whoami`", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.VM.Name = tt.vmName
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with vm.name=%q error = %v, wantErr %v", tt.vmName, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateVMImage(t *testing.T) {
+	tests := []struct {
+		name    string
+		image   string
+		wantErr bool
+	}{
+		{"ubuntu-22.04 valid", "ubuntu-22.04", false},
+		{"ubuntu-24.04 valid", "ubuntu-24.04", false},
+		{"empty uses default", "", false},
+		{"debian invalid", "debian-12", true},
+		{"arbitrary string invalid", "my-custom-image", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.VM.Image = tt.image
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with vm.image=%q error = %v, wantErr %v", tt.image, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateProvisionScripts(t *testing.T) {
+	tests := []struct {
+		name    string
+		scripts []string
+		wantErr bool
+		errMsg  string
+	}{
+		{"empty list valid", []string{}, false, ""},
+		{"relative path valid", []string{"./vm/src/setup.sh"}, false, ""},
+		{"absolute path valid", []string{"/home/user/setup.sh"}, false, ""},
+		{"empty string invalid", []string{""}, true, "cannot be empty"},
+		{"semicolon injection", []string{"setup.sh; rm -rf /"}, true, "invalid characters"},
+		{"pipe injection", []string{"setup.sh|evil"}, true, "invalid characters"},
+		{"dollar injection", []string{"$HOME/setup.sh"}, true, "invalid characters"},
+		{"multiple valid", []string{"./setup.sh", "./config.sh"}, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Provision.Scripts = tt.scripts
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() with scripts=%v error = %v, wantErr %v", tt.scripts, err, tt.wantErr)
+			}
+			if tt.wantErr && tt.errMsg != "" && err != nil {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateEnforcement(t *testing.T) {
 	cfg := NewConfig()
 

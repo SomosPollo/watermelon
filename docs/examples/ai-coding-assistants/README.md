@@ -26,7 +26,28 @@ npm = ["@anthropic-ai/claude-code", "@openai/codex"]
 pip = ["aider-chat"]
 ```
 
-This runs `npm install -g` and `pip install` automatically when the VM starts.
+This runs `npm install -g` and `pip install` automatically when the VM is first created.
+
+### Custom Setup Scripts
+
+For more complex provisioning — configuring dotfiles, installing system packages, or setting up credentials — use `scripts`:
+
+```toml
+[provision]
+npm = ["@anthropic-ai/claude-code"]
+pip = ["aider-chat"]
+scripts = ["./vm/setup.sh"]  # Runs as root during provisioning
+```
+
+Example `./vm/setup.sh`:
+```bash
+#!/bin/bash
+set -e
+# Install additional system tools
+apt-get install -y ripgrep fd-find
+# Configure git
+git config --system core.editor vim
+```
 
 ### Per-Process Network Access
 
@@ -50,6 +71,47 @@ When you run `claude` inside the sandbox:
 1. A wrapper script routes it through a dedicated network namespace
 2. That namespace allows both general domains AND Claude-specific domains
 3. Build tools like `npm` only get the general domains
+
+## Full Example Config
+
+```toml
+[vm]
+image = "ubuntu-24.04"
+
+[network]
+allow = [
+    "registry.npmjs.org",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "github.com",
+    "*.githubusercontent.com",
+]
+
+[network.process]
+claude = ["api.anthropic.com", "*.anthropic.com"]
+codex  = ["api.openai.com"]
+aider  = ["api.anthropic.com", "api.openai.com"]
+
+[tools]
+"node:20-slim"    = ["node", "npm", "npx"]
+"python:3.12-slim" = ["python", "python3", "pip"]
+
+[provision]
+npm = ["@anthropic-ai/claude-code"]
+pip = ["aider-chat"]
+scripts = ["./vm/setup.sh"]
+
+[resources]
+memory = "4GB"
+cpus = 2
+disk = "20GB"
+
+[security]
+enforcement = "log"
+
+[ide]
+command = "cursor"
+```
 
 ## Inside the Sandbox
 
