@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -119,6 +121,9 @@ func runRunWithOptions(opts runOptions) error {
 
 		if err := lima.Start(vmName, tmpFile.Name()); err != nil {
 			return fmt.Errorf("starting VM: %w", err)
+		}
+		if err := saveConfigDigest(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not save config snapshot: %v\n", err)
 		}
 	} else if status == lima.StatusStopped {
 		fmt.Println("Starting sandbox VM...")
@@ -263,4 +268,37 @@ func savePort(dir string, port int) {
 	portPath := filepath.Join(dir, ".watermelon", "verdict-port")
 	os.MkdirAll(filepath.Dir(portPath), 0755)
 	os.WriteFile(portPath, []byte(strconv.Itoa(port)), 0644)
+}
+
+func configDigestPath(dir string) string {
+	return filepath.Join(dir, ".watermelon", "config.sha256")
+}
+
+func readConfigDigest(dir string) (string, error) {
+	data, err := os.ReadFile(configDigestPath(dir))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func currentConfigDigest(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, ".watermelon.toml"))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func saveConfigDigest(dir string) error {
+	digest, err := currentConfigDigest(dir)
+	if err != nil {
+		return err
+	}
+	path := configDigestPath(dir)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(digest+"\n"), 0644)
 }

@@ -74,3 +74,27 @@ func TestSaveAndReadPort(t *testing.T) {
 		t.Errorf("readSavedPort() = %d, want 39285", port)
 	}
 }
+
+func TestSaveAndReadConfigDigest(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".watermelon.toml")
+	if err := os.WriteFile(configPath, []byte("[network]\nallow = []\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := saveConfigDigest(dir); err != nil {
+		t.Fatalf("saveConfigDigest() error = %v", err)
+	}
+
+	saved, err := readConfigDigest(dir)
+	if err != nil {
+		t.Fatalf("readConfigDigest() error = %v", err)
+	}
+	current, err := currentConfigDigest(dir)
+	if err != nil {
+		t.Fatalf("currentConfigDigest() error = %v", err)
+	}
+	if saved != current {
+		t.Errorf("saved digest = %q, current digest = %q", saved, current)
+	}
+}

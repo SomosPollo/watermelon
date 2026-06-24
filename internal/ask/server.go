@@ -98,6 +98,8 @@ func (s *Server) getVerdict(req VerdictRequest) string {
 	if verdict == VerdictAlwaysAllow && s.configPath != "" {
 		if err := AddDomainToConfig(s.configPath, domain); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not update config: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "Saved network allow rule for %s in %s\n", domain, s.configPath)
 		}
 	}
 

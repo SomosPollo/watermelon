@@ -13,9 +13,10 @@ func TestBuildAppleScript(t *testing.T) {
 		`"npm"`,
 		"evil.com:443",
 		"my-app",
-		"Block",
+		"Block for Session",
 		"Allow Once",
-		"Always Allow",
+		"Always Allow and Save",
+		"Always Allow saves this domain",
 		"default button",
 	}
 	for _, check := range checks {
@@ -118,7 +119,7 @@ func TestReadTerminalPrompt(t *testing.T) {
 				t.Errorf("readTerminalPrompt() = %q, want %q", got, tt.want)
 			}
 			rendered := out.String()
-			for _, want := range []string{"Watermelon network prompt", "npm", "example.com:443", "Project: app"} {
+			for _, want := range []string{"Watermelon network prompt", "npm", "example.com:443", "Project: app", "block for session", "always allow and save"} {
 				if !strings.Contains(rendered, want) {
 					t.Errorf("terminal prompt missing %q:\n%s", want, rendered)
 				}

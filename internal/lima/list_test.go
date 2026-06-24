@@ -1,6 +1,8 @@
 package lima
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -26,6 +28,35 @@ func TestListWatermelonVMs(t *testing.T) {
 	}
 	if vms[1].Name != "watermelon-proj2-e5f6g7h8" {
 		t.Errorf("vms[1].Name = %q, want %q", vms[1].Name, "watermelon-proj2-e5f6g7h8")
+	}
+}
+
+func TestParseProjectDirFromLimaConfig(t *testing.T) {
+	data := `mounts:
+  - location: "/Users/dev/my app"
+    mountPoint: /project
+  - location: "/Users/dev/.gitconfig"
+    mountPoint: /home/dev/.gitconfig
+`
+
+	got := parseProjectDirFromLimaConfig(data)
+	if got != "/Users/dev/my app" {
+		t.Errorf("parseProjectDirFromLimaConfig() = %q, want %q", got, "/Users/dev/my app")
+	}
+}
+
+func TestProjectDirFromInstanceDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lima.yaml"), []byte(`mounts:
+  - location: /tmp/project
+    mountPoint: /project
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := projectDirFromInstanceDir(dir)
+	if got != "/tmp/project" {
+		t.Errorf("projectDirFromInstanceDir() = %q, want %q", got, "/tmp/project")
 	}
 }
 
