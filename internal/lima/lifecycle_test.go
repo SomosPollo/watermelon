@@ -141,6 +141,46 @@ func TestDeleteCallsLimactl(t *testing.T) {
 	}
 }
 
+func TestExecPassesArgvCommandDirectly(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	err := Exec("watermelon-test-12345678", []string{"npm", "install"})
+	if err != nil {
+		t.Fatalf("Exec() error = %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(captured))
+	}
+
+	want := "limactl shell --workdir /project watermelon-test-12345678 -- npm install"
+	if captured[0] != want {
+		t.Errorf("Exec() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestExecRunsCompoundSingleStringThroughShell(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	err := Exec("watermelon-test-12345678", []string{"npm install && npm test"})
+	if err != nil {
+		t.Fatalf("Exec() error = %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(captured))
+	}
+
+	want := "limactl shell --workdir /project watermelon-test-12345678 -- sh -lc npm install && npm test"
+	if captured[0] != want {
+		t.Errorf("Exec() command = %q, want %q", captured[0], want)
+	}
+}
+
 func TestVMStatusString(t *testing.T) {
 	tests := []struct {
 		status VMStatus

@@ -48,7 +48,7 @@ Configures the base virtual machine.
 | `image` | string | `"ubuntu-22.04"` | Base OS image for the VM |
 
 **Supported images:**
-- `ubuntu-22.04` (recommended)
+- `ubuntu-22.04`
 
 ```toml
 [vm]
@@ -59,7 +59,7 @@ image = "ubuntu-22.04"
 
 ### `[network]`
 
-Controls network access from the sandbox. By default, all outbound network access is blocked.
+Controls network access from the sandbox. Unknown outbound network behavior depends on `[security].enforcement`: discovery mode logs and allows, while strict modes block.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -71,7 +71,7 @@ Controls network access from the sandbox. By default, all outbound network acces
 - Domain with port: `"example.com:443"`
 - IP address: `"192.168.1.1"`
 
-**Security:** Domains cannot contain shell metacharacters (`;|&$\`\`).
+**Security:** Domains are parsed before rendering. Supported values are plain domains, wildcard subdomains without ports, IPv4 addresses, and plain domains or IPv4 addresses with TCP ports.
 
 ```toml
 [network]
@@ -90,10 +90,13 @@ allow = [
 ]
 ```
 
-**To completely block network access:**
+**To completely block non-DNS network access, use an empty allow list with strict enforcement:**
 ```toml
 [network]
 allow = []
+
+[security]
+enforcement = "fail"
 ```
 
 #### `[network.process]`
@@ -320,6 +323,7 @@ Security policy configuration.
 | `"log"` | Log the violation and allow the request |
 | `"fail"` | Block the request and log an error |
 | `"silent"` | Block the request silently |
+| `"ask"` | Prompt for unknown TCP connections and persist always-allow choices |
 
 ```toml
 [security]
@@ -331,6 +335,9 @@ enforcement = "fail"
 
 # Quiet mode: block without noise
 enforcement = "silent"
+
+# Interactive mode: prompt on unknown TCP connections
+enforcement = "ask"
 ```
 
 ---
@@ -461,10 +468,11 @@ The configuration is validated at VM creation time:
    - `memory` and `disk` must be non-empty
 
 2. **Security:**
-   - `enforcement` must be one of: `log`, `fail`, `silent`
+   - `enforcement` must be one of: `log`, `fail`, `silent`, `ask`
 
 3. **Network:**
-   - Domains cannot contain shell metacharacters: `;|&$\`\`
+   - Domains are parsed as plain hosts, wildcard subdomains, IPv4 addresses, or host/IP plus TCP port
+   - Wildcard domains cannot include ports
 
 4. **Ports:**
    - Each port must be in range 1-65535

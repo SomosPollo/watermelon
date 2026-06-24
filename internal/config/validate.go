@@ -2,8 +2,18 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
+	"strconv"
 	"strings"
 )
+
+// NetworkRule is a validated network allow-list entry.
+type NetworkRule struct {
+	Raw      string
+	Host     string
+	Port     int
+	Wildcard bool
+}
 
 // Validate checks config for errors
 func Validate(cfg *Config) error {
@@ -13,6 +23,10 @@ func Validate(cfg *Config) error {
 		// valid
 	default:
 		return fmt.Errorf("invalid enforcement %q: must be log, fail, silent, or ask", cfg.Security.Enforcement)
+	}
+
+	if cfg.VM.Image != "ubuntu-22.04" {
+		return fmt.Errorf("unsupported vm.image %q: only ubuntu-22.04 is supported", cfg.VM.Image)
 	}
 
 	// Validate resources
@@ -32,6 +46,32 @@ func Validate(cfg *Config) error {
 	}
 	if strings.ContainsAny(cfg.IDE.Command, ShellMetacharacters) {
 		return fmt.Errorf("IDE command contains invalid characters")
+	}
+
+	for image, commands := range cfg.Tools {
+		if err := ValidateToolImage(image); err != nil {
+			return fmt.Errorf("invalid tool image: %w", err)
+		}
+		for _, command := range commands {
+			if err := ValidateCommandName(command); err != nil {
+				return fmt.Errorf("invalid tool command for image %q: %w", image, err)
+			}
+		}
+	}
+
+	for source, mount := range cfg.Mounts {
+		if err := ValidateMountSource(source); err != nil {
+			return fmt.Errorf("invalid mount source: %w", err)
+		}
+		if err := ValidateMountTarget(mount.Target); err != nil {
+			return fmt.Errorf("invalid mount target for %q: %w", source, err)
+		}
+		switch mount.Mode {
+		case "", "ro", "rw":
+			// valid; empty defaults to read-only
+		default:
+			return fmt.Errorf("invalid mount mode %q for %q: must be ro or rw", mount.Mode, source)
+		}
 	}
 
 	// Validate network allow domains
@@ -115,18 +155,15 @@ func validateProcessName(name string) error {
 // ShellMetacharacters contains characters that could be used for shell injection
 const ShellMetacharacters = ";|&$`\\"
 
+const safePathDisallowed = ShellMetacharacters + "\"'\n\r\t"
+
 // PackageNameDangerous contains characters that are invalid in package names
 const PackageNameDangerous = ";|&$`\\(){}!~'\" \t\n"
 
-// ValidateDomain checks that a domain string doesn't contain shell metacharacters
+// ValidateDomain checks that a network rule is syntactically valid and safe for rendering.
 func ValidateDomain(domain string) error {
-	if domain == "" {
-		return fmt.Errorf("domain cannot be empty")
-	}
-	if strings.ContainsAny(domain, ShellMetacharacters) {
-		return fmt.Errorf("domain %q contains invalid characters", domain)
-	}
-	return nil
+	_, err := ParseNetworkRule(domain)
+	return err
 }
 
 // ValidatePackageName checks that a package name doesn't contain dangerous characters
@@ -148,4 +185,162 @@ func hasToolImage(tools map[string][]string, substr string) bool {
 		}
 	}
 	return false
+}
+
+// ParseNetworkRule validates and normalizes a network allow-list entry.
+func ParseNetworkRule(input string) (NetworkRule, error) {
+	raw := strings.TrimSpace(input)
+	if raw == "" {
+		return NetworkRule{}, fmt.Errorf("domain cannot be empty")
+	}
+	if raw != input {
+		return NetworkRule{}, fmt.Errorf("domain %q contains leading or trailing whitespace", input)
+	}
+	for _, r := range raw {
+		if !(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') &&
+			r != '.' && r != '-' && r != '*' && r != ':' {
+			return NetworkRule{}, fmt.Errorf("domain %q contains invalid character %q", input, r)
+		}
+	}
+
+	host := raw
+	port := 0
+	if colon := strings.LastIndex(raw, ":"); colon >= 0 {
+		if strings.Count(raw, ":") > 1 {
+			return NetworkRule{}, fmt.Errorf("domain %q contains unsupported IPv6 or multiple ports", input)
+		}
+		host = raw[:colon]
+		portText := raw[colon+1:]
+		if host == "" || portText == "" {
+			return NetworkRule{}, fmt.Errorf("domain %q has invalid host or port", input)
+		}
+		parsedPort, err := strconv.Atoi(portText)
+		if err != nil || parsedPort < 1 || parsedPort > 65535 {
+			return NetworkRule{}, fmt.Errorf("domain %q has invalid port", input)
+		}
+		port = parsedPort
+	}
+
+	wildcard := false
+	if strings.Contains(host, "*") {
+		if !strings.HasPrefix(host, "*.") || strings.Count(host, "*") != 1 {
+			return NetworkRule{}, fmt.Errorf("domain %q has invalid wildcard placement", input)
+		}
+		if port != 0 {
+			return NetworkRule{}, fmt.Errorf("wildcard domain %q cannot include a port", input)
+		}
+		wildcard = true
+		host = strings.TrimPrefix(host, "*.")
+	}
+
+	if err := validateHost(host); err != nil {
+		return NetworkRule{}, err
+	}
+
+	return NetworkRule{
+		Raw:      raw,
+		Host:     strings.ToLower(host),
+		Port:     port,
+		Wildcard: wildcard,
+	}, nil
+}
+
+func validateHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("domain cannot be empty")
+	}
+	if strings.Contains(host, "..") || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
+		return fmt.Errorf("domain %q is malformed", host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if !addr.Is4() {
+			return fmt.Errorf("domain %q uses unsupported IPv6 address", host)
+		}
+		return nil
+	}
+
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if label == "" {
+			return fmt.Errorf("domain %q has an empty label", host)
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return fmt.Errorf("domain %q has a label starting or ending with '-'", host)
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z') &&
+				!(r >= 'A' && r <= 'Z') &&
+				!(r >= '0' && r <= '9') &&
+				r != '-' {
+				return fmt.Errorf("domain %q contains invalid character %q", host, r)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateToolImage checks that a container image reference is safe for shell rendering.
+func ValidateToolImage(image string) error {
+	if image == "" {
+		return fmt.Errorf("image cannot be empty")
+	}
+	for _, r := range image {
+		if !(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') &&
+			r != '.' && r != '_' && r != '-' && r != '/' && r != ':' && r != '@' {
+			return fmt.Errorf("image %q contains invalid character %q", image, r)
+		}
+	}
+	return nil
+}
+
+// ValidateCommandName checks that a tool command can safely become /usr/local/bin/<command>.
+func ValidateCommandName(command string) error {
+	if command == "" {
+		return fmt.Errorf("command cannot be empty")
+	}
+	if command == "." || command == ".." {
+		return fmt.Errorf("command %q is invalid", command)
+	}
+	for _, r := range command {
+		if !(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') &&
+			r != '.' && r != '_' && r != '-' && r != '+' {
+			return fmt.Errorf("command %q contains invalid character %q", command, r)
+		}
+	}
+	return nil
+}
+
+func ValidateMountSource(source string) error {
+	if source == "" {
+		return fmt.Errorf("source cannot be empty")
+	}
+	if strings.ContainsAny(source, safePathDisallowed) {
+		return fmt.Errorf("source %q contains invalid characters", source)
+	}
+	if source != "~" && !strings.HasPrefix(source, "/") && !strings.HasPrefix(source, "~/") {
+		return fmt.Errorf("source %q must be absolute or start with ~/", source)
+	}
+	return nil
+}
+
+func ValidateMountTarget(target string) error {
+	if target == "" {
+		return fmt.Errorf("target cannot be empty")
+	}
+	if strings.ContainsAny(target, safePathDisallowed) {
+		return fmt.Errorf("target %q contains invalid characters", target)
+	}
+	if !strings.HasPrefix(target, "/") {
+		return fmt.Errorf("target %q must be absolute", target)
+	}
+	if target == "/project" || strings.HasPrefix(target, "/project/") {
+		return fmt.Errorf("target %q conflicts with project mount", target)
+	}
+	return nil
 }

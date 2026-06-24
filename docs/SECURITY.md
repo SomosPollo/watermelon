@@ -9,7 +9,7 @@ Watermelon protects against malicious packages that attempt to:
 | Threat | Attack Vector | Protection |
 |--------|---------------|------------|
 | **Credential theft** | Reading `~/.ssh`, `~/.aws`, `~/.gnupg` | Host filesystem is not mounted |
-| **Data exfiltration** | Sending data to attacker servers | Network allowlist blocks unknown domains |
+| **Data exfiltration** | Sending data to attacker servers | Strict network modes block unknown domains |
 | **Persistent access** | Cron jobs, launch agents, shell profiles | No access to host system directories |
 | **Lateral movement** | Accessing other projects, `.env` files | Only current project is mounted |
 | **Resource exhaustion** | Fork bombs, disk filling | VM resource limits enforced |
@@ -43,7 +43,7 @@ iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
 # Allow responses to established connections
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-# Block everything else
+# Block everything else in fail/silent modes
 iptables -A OUTPUT -j REJECT
 ```
 
@@ -56,8 +56,9 @@ When a blocked request occurs, behavior depends on `[security].enforcement`:
 | `"log"` | Log and allow (useful for discovery) |
 | `"fail"` | Block and log error |
 | `"silent"` | Block silently |
+| `"ask"` | Prompt for unknown TCP connections |
 
-Violations are logged to `.watermelon/logs.log`.
+In `log` and `fail` modes, violations are written to `.watermelon/logs.log` via a VM-side firewall log writer.
 
 ## Filesystem Isolation
 
@@ -110,19 +111,19 @@ enforcement = "fail"
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Host (macOS)                           │
+│                    Host (macOS/Linux)                       │
 │                                                             │
 │   Watermelon CLI ──────► Lima (limactl)                     │
 │                                │                            │
 │                                │ manages                    │
 │                                ▼                            │
 │   ┌─────────────────────────────────────────────────────┐   │
-│   │                    QEMU VM                          │   │
+│   │              Lima VM (VZ or QEMU)                   │   │
 │   │                                                     │   │
 │   │   Ubuntu 22.04                                      │   │
 │   │   ├── iptables (network firewall)                   │   │
 │   │   ├── nerdctl (container runtime)                   │   │
-│   │   └── /project (virtiofs mount)                     │   │
+│   │   └── /project (Lima mount)                         │   │
 │   │                                                     │   │
 │   └─────────────────────────────────────────────────────┘   │
 │                                                             │

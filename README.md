@@ -126,8 +126,10 @@ See [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) for common issues.
 ```bash
 go build -o watermelon ./cmd/watermelon
 go test ./...
-go test -tags=e2e ./test/...  # Requires Lima
+go test -tags=e2e ./test/...  # CLI e2e; Linux full VM lifecycle requires usable /dev/kvm
 ```
+
+Set `WATERMELON_E2E_ALLOW_TCG=1` to try the full Linux VM lifecycle under slow QEMU TCG when KVM is unavailable.
 
 ## License
 

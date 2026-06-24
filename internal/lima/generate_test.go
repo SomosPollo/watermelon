@@ -327,6 +327,109 @@ func TestGenerateConfigEmptyNetworkProcess(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigEmptyAllowListStillInstallsDefaultDeny(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Security.Enforcement = "fail"
+	cfg.Network.Allow = []string{}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "-j LOG --log-prefix \"watermelon-net \"") {
+		t.Error("expected fail mode to log unknown traffic even when allow list is empty")
+	}
+	if !strings.Contains(yaml, "iptables -A OUTPUT -j REJECT") {
+		t.Error("expected empty allow list to still install default-deny REJECT rule")
+	}
+}
+
+func TestGenerateConfigEnforcementModes(t *testing.T) {
+	tests := []struct {
+		mode       string
+		wantLog    bool
+		wantReject bool
+	}{
+		{mode: "log", wantLog: true, wantReject: false},
+		{mode: "fail", wantLog: true, wantReject: true},
+		{mode: "silent", wantLog: false, wantReject: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
+			cfg := config.NewConfig()
+			cfg.Security.Enforcement = tt.mode
+			cfg.Network.Allow = []string{"registry.npmjs.org"}
+
+			yaml, err := GenerateConfig(cfg, "/test/project")
+			if err != nil {
+				t.Fatalf("failed to generate: %v", err)
+			}
+
+			hasLog := strings.Contains(yaml, "-j LOG --log-prefix \"watermelon-net \"")
+			if hasLog != tt.wantLog {
+				t.Errorf("LOG rule presence = %v, want %v", hasLog, tt.wantLog)
+			}
+
+			hasReject := strings.Contains(yaml, "iptables -A OUTPUT -j REJECT")
+			if hasReject != tt.wantReject {
+				t.Errorf("REJECT rule presence = %v, want %v", hasReject, tt.wantReject)
+			}
+
+			hasLogWriter := strings.Contains(yaml, "watermelon-log-writer.service")
+			if hasLogWriter != tt.wantLog {
+				t.Errorf("log writer presence = %v, want %v", hasLogWriter, tt.wantLog)
+			}
+		})
+	}
+}
+
+func TestGenerateConfigDomainWithPort(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Network.Allow = []string{"example.com:443"}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	if !strings.Contains(yaml, "iptables -A OUTPUT -p tcp --dport 443 -d example.com -j ACCEPT") {
+		t.Error("expected domain-with-port to render as tcp dport + domain accept rule")
+	}
+	if strings.Contains(yaml, "-d example.com:443") {
+		t.Error("domain-with-port must not be rendered as a raw iptables destination")
+	}
+}
+
+func TestGenerateConfigMounts(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Mounts = map[string]config.Mount{
+		"/Users/test/.gitconfig": {Target: "/home/dev/.gitconfig"},
+		"/Users/test/cache":      {Target: "/home/dev/.cache", Mode: "rw"},
+	}
+
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("failed to generate: %v", err)
+	}
+
+	checks := []string{
+		`location: "/Users/test/.gitconfig"`,
+		"mountPoint: /home/dev/.gitconfig",
+		"writable: false",
+		`location: "/Users/test/cache"`,
+		"mountPoint: /home/dev/.cache",
+		"writable: true",
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(yaml, check) {
+			t.Errorf("expected yaml to contain %q", check)
+		}
+	}
+}
+
 func TestGenerateConfigWithProvision(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.Tools = map[string][]string{
@@ -524,7 +627,7 @@ func TestGenerateConfigProvisionRequiresToolImage(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when provision.npm is set without npm in [tools]")
 	}
-	if !strings.Contains(err.Error(), "provision.npm requires npm") {
+	if !strings.Contains(err.Error(), "provision.npm requires") {
 		t.Errorf("expected error about missing npm tool, got: %v", err)
 	}
 }
@@ -552,6 +655,7 @@ func TestGenerateConfigNetworkProcessWithContainerizedTool(t *testing.T) {
 	// 2. Mount the namespace's resolv.conf so DNS goes through dnsmasq
 	// 3. Extract the container image from the existing nerdctl wrapper
 	cfg := config.NewConfig()
+	cfg.Security.Enforcement = "fail"
 	cfg.Network.Allow = []string{"registry.npmjs.org"}
 	cfg.Network.Process = map[string][]string{
 		"claude": {"*.anthropic.com"},

@@ -19,17 +19,28 @@ import (
 )
 
 func NewRunCmd() *cobra.Command {
-	return &cobra.Command{
+	var noShell bool
+	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Enter the project sandbox VM",
 		Long:  "Start the project VM (creating it if needed) and open an interactive shell.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRun()
+			return runRunWithOptions(runOptions{OpenShell: !noShell})
 		},
 	}
+	cmd.Flags().BoolVar(&noShell, "no-shell", false, "Start or create the VM without opening an interactive shell")
+	return cmd
+}
+
+type runOptions struct {
+	OpenShell bool
 }
 
 func runRun() error {
+	return runRunWithOptions(runOptions{OpenShell: true})
+}
+
+func runRunWithOptions(opts runOptions) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return err
@@ -120,6 +131,9 @@ func runRun() error {
 	fmt.Printf("IDE: connect to %s\n", sshHost)
 	fmt.Println()
 
+	if !opts.OpenShell {
+		return nil
+	}
 	return lima.Shell(vmName)
 }
 

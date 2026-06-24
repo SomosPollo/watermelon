@@ -3,6 +3,8 @@ package lima
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -48,6 +50,11 @@ mounts:
   - location: "{{ .ProjectDir }}"
     mountPoint: /project
     writable: true
+{{- range .Mounts }}
+  - location: "{{ .Location }}"
+    mountPoint: {{ .Target }}
+    writable: {{ .Writable }}
+{{- end }}
 {{- if .ToolsDir }}
   - location: "{{ .ToolsDir }}"
     mountPoint: /tools
@@ -163,7 +170,7 @@ provision:
       WATERMELON_SMART_WRAPPER_{{ .Cmd }}
       chmod +x /usr/local/bin/{{ .Cmd }}
 {{- end }}
-{{- if .NetworkProcess }}
+{{- if .NetworkProcessRules }}
       # Install dependencies for per-process network namespaces (must happen before iptables lockdown)
       # Use dnsmasq-base (not dnsmasq) to avoid installing a systemd service that
       # conflicts with systemd-resolved on port 53 and breaks system DNS.
@@ -187,11 +194,38 @@ provision:
       # Install NFQUEUE userspace library (before iptables lockdown)
       apt-get update && apt-get install -y libnetfilter-queue1
 {{- end }}
+{{- if .LogUnknown }}
+      # Forward kernel firewall logs into the project-visible watermelon log file.
+      mkdir -p /project/.watermelon
+      touch /project/.watermelon/logs.log
+      cat > /usr/local/bin/watermelon-log-writer << 'LOGWRITER'
+      #!/bin/bash
+      mkdir -p /project/.watermelon
+      touch /project/.watermelon/logs.log
+      exec journalctl -kf -o short-iso | awk '/watermelon-net / { print; fflush(); }' >> /project/.watermelon/logs.log
+      LOGWRITER
+      chmod +x /usr/local/bin/watermelon-log-writer
+      cat > /etc/systemd/system/watermelon-log-writer.service << 'LOGSERVICE'
+      [Unit]
+      Description=Watermelon firewall log writer
+      After=network.target
+
+      [Service]
+      ExecStart=/usr/local/bin/watermelon-log-writer
+      Restart=always
+      RestartSec=1
+
+      [Install]
+      WantedBy=multi-user.target
+      LOGSERVICE
+      systemctl daemon-reload
+      systemctl enable --now watermelon-log-writer.service
+{{- end }}
       # Wait for DNS to be ready before iptables rules that resolve hostnames
       for _i in $(seq 1 30); do getent hosts dns.google >/dev/null 2>&1 && break; sleep 1; done
-{{- if .GlobalWildcards }}
+{{- if .GlobalWildcardRules }}
       # Install dependencies for global wildcard domain matching
-{{- if not .NetworkProcess }}
+{{- if not .NetworkProcessRules }}
       apt-get update && apt-get install -y dnsmasq-base ipset
 {{- end }}
 
@@ -206,8 +240,8 @@ provision:
       listen-address=127.0.0.1
       server=8.8.8.8
       server=8.8.4.4
-{{- range .GlobalWildcards }}
-      ipset=/{{ . | baseDomain }}/watermelon-global-allow
+{{- range .GlobalWildcardRules }}
+      ipset=/{{ .Host }}/watermelon-global-allow
 {{- end }}
       DNSCONF
       dnsmasq --conf-file=/etc/watermelon/global-dns.conf
@@ -221,15 +255,14 @@ provision:
       systemctl restart systemd-resolved
 {{- end }}
       # Network restrictions via iptables
-{{- range .NetworkAllow }}
-{{- if not (. | isWildcard) }}
-      iptables -A OUTPUT -d {{ . }} -j ACCEPT
+{{- range .NetworkRules }}
+{{- if not .Wildcard }}
+      iptables -A OUTPUT {{ if .Port }}-p tcp --dport {{ .Port }} {{ end }}-d {{ .Host }} -j ACCEPT
 {{- end }}
 {{- end }}
-{{- if .GlobalWildcards }}
+{{- if .GlobalWildcardRules }}
       iptables -A OUTPUT -m set --match-set watermelon-global-allow dst -j ACCEPT
 {{- end }}
-{{- if .NetworkAllow }}
       iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
       iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
       iptables -A OUTPUT -o lo -j ACCEPT
@@ -243,6 +276,10 @@ provision:
       iptables -A INPUT -p udp --sport 53 -j NFQUEUE --queue-num 1
       iptables -A OUTPUT -j REJECT
 {{- else }}
+{{- if .LogUnknown }}
+      iptables -A OUTPUT -m limit --limit 30/min -j LOG --log-prefix "watermelon-net " --log-level 4
+{{- end }}
+{{- if .RejectUnknown }}
       iptables -A OUTPUT -j REJECT
 {{- end }}
 {{- end }}
@@ -267,11 +304,11 @@ provision:
       systemctl daemon-reload
       systemctl enable --now watermelon-nfqd
 {{- end }}
-{{- if .NetworkProcess }}
+{{- if .NetworkProcessRules }}
       # Per-process network namespaces
 {{- $netIndex := 1 }}
 {{- range $proc := .SortedProcessNames }}
-{{- $domains := index $.NetworkProcess $proc }}
+{{- $domains := index $.NetworkProcessRules $proc }}
       # Setup namespace for {{ $proc }}
       ip netns add watermelon-{{ $proc }}
 
@@ -309,12 +346,12 @@ provision:
       server=8.8.8.8
       server=8.8.4.4
 {{- range $domains }}
-{{- if . | isWildcard }}
-      ipset=/{{ . | baseDomain }}/watermelon-{{ $proc }}-allow
+{{- if .Wildcard }}
+      ipset=/{{ .Host }}/watermelon-{{ $proc }}-allow
 {{- end }}
 {{- end }}
-{{- range $.GlobalWildcards }}
-      ipset=/{{ . | baseDomain }}/watermelon-{{ $proc }}-allow
+{{- range $.GlobalWildcardRules }}
+      ipset=/{{ .Host }}/watermelon-{{ $proc }}-allow
 {{- end }}
       DNSCONF
       dnsmasq --conf-file=/etc/watermelon/{{ $proc }}-dns.conf
@@ -327,17 +364,22 @@ provision:
       iptables -A wm-fwd-{{ $proc }} -p tcp --dport 53 -j ACCEPT
       iptables -A wm-fwd-{{ $proc }} -p udp --dport 53 -j ACCEPT
       iptables -A wm-fwd-{{ $proc }} -m set --match-set watermelon-{{ $proc }}-allow dst -j ACCEPT
-{{- range $.NetworkAllow }}
-{{- if not (. | isWildcard) }}
-      iptables -A wm-fwd-{{ $proc }} -d {{ . }} -j ACCEPT
+{{- range $.NetworkRules }}
+{{- if not .Wildcard }}
+      iptables -A wm-fwd-{{ $proc }} {{ if .Port }}-p tcp --dport {{ .Port }} {{ end }}-d {{ .Host }} -j ACCEPT
 {{- end }}
 {{- end }}
 {{- range $domains }}
-{{- if not (. | isWildcard) }}
-      iptables -A wm-fwd-{{ $proc }} -d {{ . }} -j ACCEPT
+{{- if not .Wildcard }}
+      iptables -A wm-fwd-{{ $proc }} {{ if .Port }}-p tcp --dport {{ .Port }} {{ end }}-d {{ .Host }} -j ACCEPT
 {{- end }}
 {{- end }}
+{{- if $.LogUnknown }}
+      iptables -A wm-fwd-{{ $proc }} -m limit --limit 30/min -j LOG --log-prefix "watermelon-net " --log-level 4
+{{- end }}
+{{- if $.RejectUnknown }}
       iptables -A wm-fwd-{{ $proc }} -j REJECT
+{{- end }}
       # Route outbound traffic from this namespace through the filter chain;
       # allow return traffic unconditionally.
       iptables -I FORWARD -i veth-{{ $proc }} -j wm-fwd-{{ $proc }}
@@ -415,6 +457,12 @@ type smartWrapper struct {
 	GlobalCheck string // shell snippet setting _wm_global=true
 }
 
+type mountData struct {
+	Location string
+	Target   string
+	Writable bool
+}
+
 type templateData struct {
 	VMType               string
 	CPUs                 int
@@ -422,8 +470,9 @@ type templateData struct {
 	Disk                 string
 	ProjectDir           string
 	ToolsDir             string
-	NetworkAllow         []string
-	NetworkProcess       map[string][]string
+	Mounts               []mountData
+	NetworkRules         []config.NetworkRule
+	NetworkProcessRules  map[string][]config.NetworkRule
 	NetworkProcessImages map[string]string // process name → container image (when known at config time)
 	PortForwards         []int
 	Tools                map[string][]string
@@ -432,35 +481,19 @@ type templateData struct {
 	SortedProcessNames   []string // process names sorted alphabetically
 	UniqueImages         []string // all container images that need to be in rootful store
 	Enforcement          string
+	LogUnknown           bool
+	RejectUnknown        bool
 	VerdictServerPort    int
 	NfqdBinaryPath       string
-	GlobalWildcards      []string // wildcard domains from NetworkAllow (e.g., "*.anthropic.com")
+	GlobalWildcardRules  []config.NetworkRule // wildcard domains from NetworkRules
 }
 
 var hostGOOS = runtime.GOOS
 
 // GenerateConfig creates Lima YAML from watermelon config
 func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...int) (string, error) {
-	// Validate network allow domains
-	for _, domain := range cfg.Network.Allow {
-		if err := config.ValidateDomain(domain); err != nil {
-			return "", fmt.Errorf("invalid network allow domain: %w", err)
-		}
-	}
-
-	// Validate network process names and domains
-	for processName, domains := range cfg.Network.Process {
-		if processName == "" {
-			return "", fmt.Errorf("process name cannot be empty")
-		}
-		if strings.ContainsAny(processName, config.ShellMetacharacters+" /") {
-			return "", fmt.Errorf("invalid process name %q: contains invalid characters", processName)
-		}
-		for _, domain := range domains {
-			if err := config.ValidateDomain(domain); err != nil {
-				return "", fmt.Errorf("invalid domain for process %q: %w", processName, err)
-			}
-		}
+	if err := config.Validate(cfg); err != nil {
+		return "", err
 	}
 
 	// Validate port forwards
@@ -468,6 +501,30 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		if err := validatePort(port); err != nil {
 			return "", fmt.Errorf("invalid port forward: %w", err)
 		}
+	}
+
+	networkRules, globalWildcardRules, err := buildNetworkRules(cfg.Network.Allow)
+	if err != nil {
+		return "", fmt.Errorf("invalid network allow domain: %w", err)
+	}
+
+	networkProcessRules := make(map[string][]config.NetworkRule)
+	for processName, domains := range cfg.Network.Process {
+		rules, _, err := buildNetworkRules(domains)
+		if err != nil {
+			return "", fmt.Errorf("invalid domain for process %q: %w", processName, err)
+		}
+		networkProcessRules[processName] = rules
+	}
+
+	mounts, err := buildMounts(cfg.Mounts)
+	if err != nil {
+		return "", err
+	}
+
+	vmType, err := hostVMType(hostGOOS)
+	if err != nil {
+		return "", err
 	}
 
 	// Build provision data: custom images and tool image overrides
@@ -525,12 +582,6 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 
 	funcMap := template.FuncMap{
 		"add": func(a, b int) int { return a + b },
-		"isWildcard": func(s string) bool {
-			return strings.HasPrefix(s, "*.")
-		},
-		"baseDomain": func(s string) string {
-			return strings.TrimPrefix(s, "*.")
-		},
 		"indent": func(n int, s string) string {
 			pad := strings.Repeat(" ", n)
 			return pad + strings.ReplaceAll(s, "\n", "\n"+pad)
@@ -580,7 +631,7 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 	// Collect container images that need to be copied to rootful store
 	// when network process namespaces are in use.
 	var uniqueImages []string
-	if len(cfg.Network.Process) > 0 {
+	if len(networkProcessRules) > 0 {
 		uniqueImages = collectUniqueImages(tools)
 	}
 
@@ -596,23 +647,14 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		nfqdPath = "/project/.watermelon/bin/watermelon-nfqd"
 	}
 
-	var globalWildcards []string
-	for _, d := range cfg.Network.Allow {
-		if strings.HasPrefix(d, "*.") {
-			globalWildcards = append(globalWildcards, d)
-		}
-	}
-
-	sortedProcessNames := make([]string, 0, len(cfg.Network.Process))
-	for proc := range cfg.Network.Process {
+	sortedProcessNames := make([]string, 0, len(networkProcessRules))
+	for proc := range networkProcessRules {
 		sortedProcessNames = append(sortedProcessNames, proc)
 	}
 	sort.Strings(sortedProcessNames)
 
-	vmType, err := hostVMType(hostGOOS)
-	if err != nil {
-		return "", err
-	}
+	logUnknown := cfg.Security.Enforcement == "log" || cfg.Security.Enforcement == "fail"
+	rejectUnknown := cfg.Security.Enforcement == "fail" || cfg.Security.Enforcement == "silent" || cfg.Security.Enforcement == "ask"
 
 	data := templateData{
 		VMType:               vmType,
@@ -621,8 +663,9 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		Disk:                 convertDisk(cfg.Resources.Disk),
 		ProjectDir:           projectDir,
 		ToolsDir:             "",
-		NetworkAllow:         cfg.Network.Allow,
-		NetworkProcess:       cfg.Network.Process,
+		Mounts:               mounts,
+		NetworkRules:         networkRules,
+		NetworkProcessRules:  networkProcessRules,
 		NetworkProcessImages: networkProcessImages,
 		SortedProcessNames:   sortedProcessNames,
 		PortForwards:         cfg.Ports.Forward,
@@ -631,9 +674,11 @@ func GenerateConfig(cfg *config.Config, projectDir string, verdictServerPort ...
 		SmartWrappers:        smartWrappers,
 		UniqueImages:         uniqueImages,
 		Enforcement:          cfg.Security.Enforcement,
+		LogUnknown:           logUnknown,
+		RejectUnknown:        rejectUnknown,
 		VerdictServerPort:    verdictPort,
 		NfqdBinaryPath:       nfqdPath,
-		GlobalWildcards:      globalWildcards,
+		GlobalWildcardRules:  globalWildcardRules,
 	}
 
 	var buf bytes.Buffer
@@ -653,6 +698,69 @@ func hostVMType(goos string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported host OS %q: watermelon supports macOS and Linux hosts", goos)
 	}
+}
+
+func buildNetworkRules(values []string) ([]config.NetworkRule, []config.NetworkRule, error) {
+	rules := make([]config.NetworkRule, 0, len(values))
+	wildcards := make([]config.NetworkRule, 0)
+	for _, value := range values {
+		rule, err := config.ParseNetworkRule(value)
+		if err != nil {
+			return nil, nil, err
+		}
+		rules = append(rules, rule)
+		if rule.Wildcard {
+			wildcards = append(wildcards, rule)
+		}
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		return rules[i].Raw < rules[j].Raw
+	})
+	sort.Slice(wildcards, func(i, j int) bool {
+		return wildcards[i].Raw < wildcards[j].Raw
+	})
+	return rules, wildcards, nil
+}
+
+func buildMounts(mounts map[string]config.Mount) ([]mountData, error) {
+	sources := make([]string, 0, len(mounts))
+	for source := range mounts {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+
+	result := make([]mountData, 0, len(sources))
+	for _, source := range sources {
+		mount := mounts[source]
+		location, err := expandHostPath(source)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, mountData{
+			Location: location,
+			Target:   mount.Target,
+			Writable: mount.Mode == "rw",
+		})
+	}
+	return result, nil
+}
+
+func expandHostPath(path string) (string, error) {
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expanding %q: %w", path, err)
+		}
+		return home, nil
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expanding %q: %w", path, err)
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	}
+	return path, nil
 }
 
 // provisionExposeBins returns best-effort CLI command names that should get wrappers
