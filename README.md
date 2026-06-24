@@ -1,6 +1,6 @@
 # Watermelon
 
-**Sandbox for development.** Isolates third-party code in a Linux VM so it can't touch your macOS host.
+**Sandbox for development.** Isolates third-party code in a Linux VM so it can't touch your host.
 
 ## Why?
 
@@ -10,21 +10,21 @@ You can't audit it. A typical project has hundreds of dependencies, each with th
 
 The only solution is isolation. Run untrusted code in an environment where it physically cannot access your sensitive data or exfiltrate to arbitrary servers.
 
-Watermelon provides this: a Linux VM where your project runs normally, but the host filesystem is inaccessible and network access is limited to domains you explicitly allow.
+Watermelon provides this: a Linux VM where your project runs normally, but the host filesystem is inaccessible and network access can be limited to domains you explicitly allow.
 
 ## How It Works
 
 ```
 ┌─────────────────────────────────────────┐
-│            Host (macOS)                 │
+│          Host (macOS/Linux)             │
 │  ~/project/.watermelon.toml             │
 └──────────────────┬──────────────────────┘
-                   │ virtiofs mount
+                   │ Lima mount
                    ▼
 ┌─────────────────────────────────────────┐
 │            VM (Linux)                   │
 │  /project/  ← your files (r/w)          │
-│  Network: allowlist only                │
+│  Network: allowlist policy              │
 │  Host filesystem: ISOLATED              │
 └─────────────────────────────────────────┘
 ```
@@ -32,12 +32,15 @@ Watermelon provides this: a Linux VM where your project runs normally, but the h
 ## Quick Start
 
 ```bash
-brew install lima                    # Install dependency
+# Install dependency: limactl from Lima
+# macOS: brew install lima
+# Linux: install Lima with your distro package manager or upstream package
 curl -fsSL https://raw.githubusercontent.com/saeta-eth/watermelon/main/install.sh | sh
 
 cd your-project
 watermelon init                      # Create .watermelon.toml
 # Edit config: add network.allow = ["registry.npmjs.org"]
+# Use security.enforcement = "fail" for strict blocking
 
 watermelon run                       # Enter sandbox
 npm install                          # Safe!

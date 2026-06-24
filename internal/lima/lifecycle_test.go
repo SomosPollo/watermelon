@@ -65,6 +65,46 @@ func TestGetStatusNotFound(t *testing.T) {
 	}
 }
 
+func TestStartCreatesVMWithTimeout(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	err := Start("watermelon-test-12345678", "/tmp/watermelon.yaml")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("expected status check and start command, got %d commands", len(captured))
+	}
+
+	want := "limactl start --timeout=30m --name watermelon-test-12345678 /tmp/watermelon.yaml"
+	if captured[1] != want {
+		t.Errorf("Start() command = %q, want %q", captured[1], want)
+	}
+}
+
+func TestStartRestartsStoppedVMWithTimeout(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "Stopped")
+	t.Cleanup(func() { execCommand = old })
+
+	err := Start("watermelon-test-12345678", "")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("expected status check and start command, got %d commands", len(captured))
+	}
+
+	want := "limactl start --timeout=30m watermelon-test-12345678"
+	if captured[1] != want {
+		t.Errorf("Start() command = %q, want %q", captured[1], want)
+	}
+}
+
 func TestStopCallsLimactl(t *testing.T) {
 	var captured []string
 	old := execCommand

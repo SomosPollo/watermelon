@@ -20,7 +20,8 @@ type Server struct {
 // NewServer creates a verdict server.
 // project is the project name shown in dialogs.
 // configPath is the path to .watermelon.toml (for always-allow writes). Empty string disables TOML writes.
-// dialog is the function to show the verdict dialog. Pass nil to use the real macOS dialog.
+// dialog is the function to show the verdict dialog. Pass nil to use the
+// default host prompt.
 func NewServer(project, configPath string, dialog DialogFunc) *Server {
 	if dialog == nil {
 		dialog = ShowDialog

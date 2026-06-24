@@ -10,7 +10,11 @@ Common issues and solutions.
 
 **Solution:**
 ```bash
+# macOS
 brew install lima
+
+# Linux
+# Install Lima with your distro package manager or upstream package.
 ```
 
 ### Go not installed
@@ -19,6 +23,7 @@ brew install lima
 
 **Solution:**
 ```bash
+# macOS
 brew install go
 ```
 
