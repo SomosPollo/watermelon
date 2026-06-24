@@ -4,13 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 type VMInfo struct {
-	Name   string
-	Status string
-	Dir    string
+	Name       string
+	Status     string
+	Dir        string
+	ProjectDir string
 }
 
 // ListWatermelonVMs returns all VMs created by watermelon
@@ -47,9 +51,10 @@ func ListWatermelonVMs() ([]VMInfo, error) {
 
 		if strings.HasPrefix(vm.Name, "watermelon-") {
 			result = append(result, VMInfo{
-				Name:   vm.Name,
-				Status: vm.Status,
-				Dir:    vm.Dir,
+				Name:       vm.Name,
+				Status:     vm.Status,
+				Dir:        vm.Dir,
+				ProjectDir: projectDirFromInstanceDir(vm.Dir),
 			})
 		}
 	}
@@ -59,4 +64,44 @@ func ListWatermelonVMs() ([]VMInfo, error) {
 	}
 
 	return result, nil
+}
+
+func projectDirFromInstanceDir(instanceDir string) string {
+	for _, name := range []string{"lima.yaml", "lima.yml"} {
+		data, err := os.ReadFile(filepath.Join(instanceDir, name))
+		if err == nil {
+			return parseProjectDirFromLimaConfig(string(data))
+		}
+	}
+	return ""
+}
+
+func parseProjectDirFromLimaConfig(data string) string {
+	scanner := bufio.NewScanner(strings.NewReader(data))
+	location := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimSpace(strings.TrimPrefix(line, "- "))
+		if strings.HasPrefix(line, "location:") {
+			location = parseYAMLScalar(strings.TrimSpace(strings.TrimPrefix(line, "location:")))
+			continue
+		}
+		if strings.HasPrefix(line, "mountPoint:") {
+			mountPoint := parseYAMLScalar(strings.TrimSpace(strings.TrimPrefix(line, "mountPoint:")))
+			if mountPoint == "/project" {
+				return location
+			}
+		}
+	}
+	return ""
+}
+
+func parseYAMLScalar(value string) string {
+	if value == "" {
+		return ""
+	}
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		return unquoted
+	}
+	return strings.Trim(value, `"'`)
 }

@@ -25,9 +25,13 @@ func NewListCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tSTATUS")
+			fmt.Fprintln(w, "NAME\tSTATUS\tPROJECT")
 			for _, vm := range vms {
-				fmt.Fprintf(w, "%s\t%s\n", vm.Name, vm.Status)
+				projectDir := vm.ProjectDir
+				if projectDir == "" {
+					projectDir = "-"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\n", vm.Name, vm.Status, projectDir)
 			}
 			w.Flush()
 

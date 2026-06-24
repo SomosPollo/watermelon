@@ -61,7 +61,7 @@ func readTerminalPrompt(in io.Reader, out io.Writer, process, domain string, por
 	if project != "" {
 		fmt.Fprintf(out, "Project: %s\n", project)
 	}
-	fmt.Fprint(out, "Choose: [b]lock, allow [o]nce, [a]lways allow: ")
+	fmt.Fprint(out, "Choose: block for session [b], allow once [o], always allow and save [a]: ")
 
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
@@ -100,10 +100,10 @@ func buildAppleScript(process, domain string, port int, project string) string {
 	project = escapeAppleScript(project)
 
 	return fmt.Sprintf(
-		`display dialog (quote & "%s" & quote & " is trying to connect to\n%s:%d\n\nProject: %s") `+
+		`display dialog (quote & "%s" & quote & " is trying to connect to\n%s:%d\n\nProject: %s\n\nBlock is remembered for this session.\nAlways Allow saves this domain to .watermelon.toml.") `+
 			`with title "Watermelon" `+
-			`buttons {"Block", "Allow Once", "Always Allow"} `+
-			`default button "Block" `+
+			`buttons {"Block for Session", "Allow Once", "Always Allow and Save"} `+
+			`default button "Block for Session" `+
 			`with icon caution`,
 		process, domain, port, project,
 	)
