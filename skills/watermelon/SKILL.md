@@ -7,7 +7,7 @@ description: Use when a .watermelon.toml file exists in the project, when asked 
 
 ## Overview
 
-Watermelon sandboxes developer commands inside a Lima-managed Linux VM on macOS, protecting the host from untrusted packages. All commands (npm, pip, cargo, etc.) run isolated — host credentials, system files, and network access are shielded.
+Watermelon sandboxes developer commands inside a Lima-managed Linux VM on macOS or Linux, protecting the host from untrusted packages. All commands (npm, pip, cargo, etc.) run isolated — host credentials, system files, and network access are shielded.
 
 **Core principle:** If `.watermelon.toml` exists in the project, route all build/install/test commands through `watermelon exec` automatically.
 
@@ -54,7 +54,9 @@ watermelon exec "npm install && npm run build && npm test"
 
 **Installation (if not available):**
 ```bash
-brew install lima
+# Install limactl from Lima first.
+# macOS: brew install lima
+# Linux: install Lima with your distro package manager or upstream package.
 curl -fsSL https://raw.githubusercontent.com/saeta-eth/watermelon/main/install.sh | sh
 ```
 
@@ -72,7 +74,7 @@ cpus = 2         # Default: 1. Minimum: 1
 disk = "20GB"    # Default: 10GB
 
 [security]
-enforcement = "log"  # "log" (allow + log), "fail" (block + log), "silent" (block quietly)
+enforcement = "log"  # "log" (allow + log), "fail" (block + log), "silent" (block quietly), "ask" (prompt)
 
 [ide]
 command = "code"  # "code", "cursor", "codium", "code-insiders"

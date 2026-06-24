@@ -7,6 +7,15 @@ import (
 	"github.com/saeta-eth/watermelon/internal/config"
 )
 
+func withHostGOOS(t *testing.T, goos string) {
+	t.Helper()
+	old := hostGOOS
+	hostGOOS = goos
+	t.Cleanup(func() {
+		hostGOOS = old
+	})
+}
+
 func TestValidatePort(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -63,6 +72,8 @@ func TestGenerateConfigValidation(t *testing.T) {
 }
 
 func TestGenerateLimaConfig(t *testing.T) {
+	withHostGOOS(t, "darwin")
+
 	cfg := config.NewConfig()
 	cfg.VM.Image = "ubuntu-22.04"
 	cfg.Resources.Memory = "4GB"
@@ -95,6 +106,44 @@ func TestGenerateLimaConfig(t *testing.T) {
 		if !strings.Contains(yaml, check) {
 			t.Errorf("expected yaml to contain %q", check)
 		}
+	}
+}
+
+func TestGenerateConfigSelectsVMTypeForHostOS(t *testing.T) {
+	tests := []struct {
+		goos   string
+		vmType string
+	}{
+		{goos: "darwin", vmType: "vz"},
+		{goos: "linux", vmType: "qemu"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			withHostGOOS(t, tt.goos)
+
+			yaml, err := GenerateConfig(config.NewConfig(), "/test/project")
+			if err != nil {
+				t.Fatalf("GenerateConfig() error = %v", err)
+			}
+
+			want := "vmType: " + tt.vmType
+			if !strings.Contains(yaml, want) {
+				t.Errorf("expected generated yaml to contain %q", want)
+			}
+		})
+	}
+}
+
+func TestGenerateConfigRejectsUnsupportedHostOS(t *testing.T) {
+	withHostGOOS(t, "windows")
+
+	_, err := GenerateConfig(config.NewConfig(), "/test/project")
+	if err == nil {
+		t.Fatal("expected unsupported host OS error")
+	}
+	if !strings.Contains(err.Error(), "supports macOS and Linux") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

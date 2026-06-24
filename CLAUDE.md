@@ -23,7 +23,7 @@ go run ./cmd/watermelon <command>
 
 ## Architecture Overview
 
-Watermelon is a sandbox tool that isolates developer commands (npm install, pip install, etc.) inside a Lima-managed Linux VM on macOS, protecting the host from untrusted packages.
+Watermelon is a sandbox tool that isolates developer commands (npm install, pip install, etc.) inside a Lima-managed Linux VM on macOS or Linux, protecting the host from untrusted packages.
 
 ### Package Structure
 
@@ -56,4 +56,4 @@ Input validation is critical - the `internal/lima` package validates all user-pr
 ### Config Defaults
 
 - Memory: 2GB, CPUs: 1, Disk: 10GB
-- Enforcement: "log" (options: "log", "fail", "silent")
+- Enforcement: "log" (options: "log", "fail", "silent", "ask")

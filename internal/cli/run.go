@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -136,12 +139,98 @@ func ensureNfqdBinary(projectDir string) error {
 		return err
 	}
 
+	if source, err := findNfqdBinary(); err == nil {
+		fmt.Println("Installing network interceptor for VM...")
+		return copyExecutable(source, nfqdPath)
+	}
+
+	sourceRoot, err := findWatermelonSourceRoot()
+	if err != nil {
+		return errors.New("watermelon-nfqd sidecar not found; install the release sidecar or set WATERMELON_NFQD_BINARY")
+	}
+
 	fmt.Println("Building network interceptor for VM...")
 	cmd := exec.Command("go", "build", "-o", nfqdPath, "./cmd/watermelon-nfqd")
-	cmd.Env = append(os.Environ(), "GOOS=linux")
+	cmd.Dir = sourceRoot
+	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func findNfqdBinary() (string, error) {
+	if override := os.Getenv("WATERMELON_NFQD_BINARY"); override != "" {
+		if info, err := os.Stat(override); err == nil && !info.IsDir() {
+			return override, nil
+		}
+		return "", fmt.Errorf("WATERMELON_NFQD_BINARY %q does not exist", override)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(exe)
+	for _, name := range []string{
+		"watermelon-nfqd-linux-" + runtime.GOARCH,
+		"watermelon-nfqd",
+	} {
+		candidate := filepath.Join(dir, name)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+func findWatermelonSourceRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		goMod := filepath.Join(dir, "go.mod")
+		nfqdMain := filepath.Join(dir, "cmd", "watermelon-nfqd", "main.go")
+		if data, err := os.ReadFile(goMod); err == nil &&
+			strings.Contains(string(data), "module github.com/saeta-eth/watermelon") {
+			if _, err := os.Stat(nfqdMain); err == nil {
+				return dir, nil
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", os.ErrNotExist
+}
+
+func copyExecutable(source, dest string) error {
+	src, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".watermelon-nfqd-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmp, src); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, dest)
 }
 
 func readSavedPort(dir string) int {

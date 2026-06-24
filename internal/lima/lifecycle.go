@@ -18,6 +18,8 @@ const (
 	StatusRunning
 )
 
+const startTimeout = "30m"
+
 func (s VMStatus) String() string {
 	switch s {
 	case StatusRunning:
@@ -71,13 +73,13 @@ func Start(vmName, configPath string) error {
 	case StatusRunning:
 		return nil // already running
 	case StatusStopped:
-		cmd := execCommand("limactl", "start", vmName)
+		cmd := execCommand("limactl", "start", "--timeout="+startTimeout, vmName)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	default:
 		// Create new VM
-		cmd := execCommand("limactl", "start", "--name", vmName, configPath)
+		cmd := execCommand("limactl", "start", "--timeout="+startTimeout, "--name", vmName, configPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
