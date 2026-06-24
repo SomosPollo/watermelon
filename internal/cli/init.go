@@ -40,7 +40,7 @@ cpus = 1
 disk = "10GB"
 
 [security]
-# How to enforce network policy: "log", "fail", or "silent"
+# How to enforce network policy: "log", "fail", "silent", or "ask"
 enforcement = "log"
 
 [ide]

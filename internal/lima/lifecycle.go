@@ -122,10 +122,17 @@ func Shell(vmName string) error {
 // Exec runs a command in the VM
 func Exec(vmName string, args []string) error {
 	cmdArgs := []string{"shell", "--workdir", "/project", vmName, "--"}
+	if len(args) == 1 && shouldRunViaShell(args[0]) {
+		args = []string{"sh", "-lc", args[0]}
+	}
 	cmdArgs = append(cmdArgs, args...)
 	cmd := execCommand("limactl", cmdArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func shouldRunViaShell(arg string) bool {
+	return strings.ContainsAny(arg, " \t\n;&|<>*?$`")
 }

@@ -70,6 +70,7 @@ Enters an interactive shell inside the sandbox VM.
 
 ```bash
 watermelon run
+watermelon run --no-shell
 ```
 
 **Behavior:**
@@ -77,6 +78,7 @@ watermelon run
 - Starts the VM if it was stopped
 - Opens a bash shell with your project mounted at `/project`
 - The VM persists after you exit (installed packages survive)
+- With `--no-shell`, creates or starts the VM and exits without opening a shell
 
 **VM naming:**
 VMs are named `watermelon-{project}-{hash}` based on the project directory path, ensuring consistent naming across sessions.
@@ -89,6 +91,7 @@ Runs a single command inside the VM without an interactive shell.
 
 ```bash
 watermelon exec "<command>"
+watermelon exec <command> [args...]
 ```
 
 **Examples:**
@@ -97,11 +100,14 @@ watermelon exec "npm install"
 watermelon exec "npm test"
 watermelon exec "python -m pytest"
 watermelon exec "npm install && npm run build"
+watermelon exec npm install
 ```
 
 **Behavior:**
 - Requires the VM to already exist (run `watermelon run` first)
 - Starts the VM if it was stopped
+- Passes multi-argument commands directly to `limactl shell`
+- Runs a single string containing spaces or shell operators through `sh -lc` inside the VM
 - Returns the command's exit code
 - Useful for CI/CD pipelines and scripts
 

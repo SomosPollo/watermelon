@@ -62,6 +62,19 @@ func TestValidateResources(t *testing.T) {
 	}
 }
 
+func TestValidateVMImage(t *testing.T) {
+	cfg := NewConfig()
+	cfg.VM.Image = "ubuntu-24.04"
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected unsupported VM image to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported vm.image") {
+		t.Errorf("expected error to mention unsupported vm.image, got: %v", err)
+	}
+}
+
 func TestValidateIDECommand(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -100,11 +113,15 @@ func TestValidateNetworkAllowDomains(t *testing.T) {
 	}{
 		{"valid domains", []string{"registry.npmjs.org", "github.com"}, false},
 		{"valid wildcard", []string{"*.anthropic.com"}, false},
+		{"valid domain with port", []string{"example.com:443"}, false},
 		{"valid IP", []string{"192.168.1.1"}, false},
 		{"empty list", []string{}, false},
 		{"injection in domain", []string{"evil.com; rm -rf /"}, true},
 		{"empty domain in list", []string{"good.com", ""}, true},
 		{"backtick injection", []string{"evil.com`whoami`"}, true},
+		{"wildcard with port", []string{"*.example.com:443"}, true},
+		{"invalid port", []string{"example.com:99999"}, true},
+		{"invalid wildcard", []string{"foo.*.example.com"}, true},
 	}
 
 	for _, tt := range tests {
@@ -114,6 +131,101 @@ func TestValidateNetworkAllowDomains(t *testing.T) {
 			err := Validate(cfg)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Validate() with allow %v error = %v, wantErr %v", tt.allow, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateTools(t *testing.T) {
+	tests := []struct {
+		name    string
+		tools   map[string][]string
+		wantErr bool
+	}{
+		{
+			name:    "valid images and commands",
+			tools:   map[string][]string{"ghcr.io/foundry-rs/foundry:latest": {"forge", "cast"}},
+			wantErr: false,
+		},
+		{
+			name:    "invalid image shell injection",
+			tools:   map[string][]string{"node:20-slim; rm -rf /": {"node"}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid command slash",
+			tools:   map[string][]string{"node:20-slim": {"../node"}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid command shell injection",
+			tools:   map[string][]string{"node:20-slim": {"npm;evil"}},
+			wantErr: true,
+		},
+		{
+			name:    "empty command",
+			tools:   map[string][]string{"node:20-slim": {""}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Tools = tt.tools
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateMounts(t *testing.T) {
+	tests := []struct {
+		name    string
+		mounts  map[string]Mount
+		wantErr bool
+	}{
+		{
+			name:    "valid read only default",
+			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "/home/dev/.gitconfig"}},
+			wantErr: false,
+		},
+		{
+			name:    "valid read write",
+			mounts:  map[string]Mount{"~/.cache/huggingface": {Target: "/home/dev/.cache/huggingface", Mode: "rw"}},
+			wantErr: false,
+		},
+		{
+			name:    "empty host path",
+			mounts:  map[string]Mount{"": {Target: "/home/dev/.gitconfig"}},
+			wantErr: true,
+		},
+		{
+			name:    "relative target",
+			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "home/dev/.gitconfig"}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid mode",
+			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "/home/dev/.gitconfig", Mode: "write"}},
+			wantErr: true,
+		},
+		{
+			name:    "host path injection",
+			mounts:  map[string]Mount{"/Users/test/.gitconfig\"": {Target: "/home/dev/.gitconfig"}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Mounts = tt.mounts
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
