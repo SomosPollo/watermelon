@@ -18,7 +18,7 @@ Real-world configuration examples for different project types and security scena
 | [monorepo](./monorepo/) | Full-stack monorepo (Node + Python) |
 | [foundry](./foundry/) | Ethereum smart contracts with Foundry |
 | [hardhat](./hardhat/) | Ethereum smart contracts with Hardhat |
-| [audit-package](./audit-package/) | Safely inspect suspicious npm packages |
+| [audit-package](./audit-package/) | Inspect suspicious npm packages under a strict policy |
 
 ## Usage
 
@@ -31,3 +31,5 @@ watermelon run
 ```
 
 Then customize the network allowlist and tools for your specific needs.
+
+The shipped examples use the default strict `fail` policy: non-allowlisted outbound traffic is blocked and recorded as rate-limited policy events. Workload DNS is redirected to a managed resolver that answers only policy names; loopback, established response traffic, and scoped DHCPv4 lease traffic required by VM control networking remain available. The DHCP exception is not arbitrary external UDP access.

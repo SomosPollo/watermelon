@@ -17,12 +17,19 @@ func NewStopCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			dir, err = canonicalProjectRoot(dir)
+			if err != nil {
+				return err
+			}
 
 			vmName := lima.VMNameFromPath(dir)
-			status := lima.GetStatus(vmName)
+			status := cliGetVMStatus(vmName)
 
 			if status == lima.StatusNotFound {
 				return fmt.Errorf("no sandbox VM found for this project")
+			}
+			if err := requireVMProjectBinding(dir, vmName); err != nil {
+				return err
 			}
 
 			if status == lima.StatusStopped {
@@ -31,7 +38,10 @@ func NewStopCmd() *cobra.Command {
 			}
 
 			fmt.Println("Stopping sandbox VM...")
-			return lima.Stop(vmName)
+			if err := requireVMProjectBinding(dir, vmName); err != nil {
+				return err
+			}
+			return cliStopVM(vmName)
 		},
 	}
 }

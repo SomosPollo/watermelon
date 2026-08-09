@@ -39,5 +39,6 @@ allow = [
 
 Python packages with native extensions can run arbitrary code during installation. Watermelon ensures that code can't:
 - Read your SSH keys or cloud credentials
-- Exfiltrate data to unknown servers
-- Install persistence mechanisms on your host
+- Directly write unmounted host persistence locations such as cron or shell profiles
+
+The example's strict policy also blocks new non-allowlisted external traffic. Workload DNS is redirected to a managed resolver that answers only policy names, while loopback, established responses, and scoped VM-control DHCPv4 lease traffic remain available. The DHCP exception is not arbitrary external UDP access, and destinations allowed by policy can still carry data.

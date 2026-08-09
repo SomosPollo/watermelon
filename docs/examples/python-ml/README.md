@@ -33,7 +33,7 @@ disk = "100GB"   # For datasets
 
 ## Model Downloads
 
-Models from Hugging Face Hub are allowed by default. For other sources:
+The example allowlist includes Hugging Face Hub. Add only the other model sources your project needs:
 
 ```toml
 [network]

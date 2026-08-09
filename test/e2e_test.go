@@ -220,6 +220,9 @@ func TestE2ECLIProjectWorkflow(t *testing.T) {
 			t.Fatalf("default config missing %q:\n%s", want, config)
 		}
 	}
+	if !strings.Contains(config, `enforcement = "fail"`) {
+		t.Fatalf("default config is not strict:\n%s", config)
+	}
 
 	out = h.runErr(30*time.Second, "init")
 	if !strings.Contains(out, ".watermelon.toml already exists") {
@@ -227,9 +230,7 @@ func TestE2ECLIProjectWorkflow(t *testing.T) {
 	}
 
 	out = h.run(30*time.Second, "status")
-	if !strings.Contains(out, "Status:  Not found") {
-		t.Fatalf("status before VM creation should be Not found:\n%s", out)
-	}
+	requireVMStatus(t, out, "Not found")
 
 	out = h.runErr(30*time.Second, "exec", "true")
 	if !strings.Contains(out, "no sandbox VM found") {
@@ -276,7 +277,7 @@ image = "ubuntu-22.04"
 allow = []
 
 [mounts]
-%q = { target = "/mnt/wm-extra" }
+%q = { target = "/mnt/watermelon/wm-extra" }
 
 [ports]
 forward = [8765]
@@ -286,8 +287,6 @@ memory = "2GB"
 cpus = 1
 disk = "10GB"
 
-[security]
-enforcement = "fail"
 `, extraMount)
 	if err := os.WriteFile(filepath.Join(h.project, ".watermelon.toml"), []byte(config), 0644); err != nil {
 		t.Fatalf("writing config: %v", err)
@@ -296,9 +295,7 @@ enforcement = "fail"
 	h.run(timings.boot, "run", "--no-shell")
 
 	out := h.run(timings.status, "status")
-	if !strings.Contains(out, "Status:  Running") {
-		t.Fatalf("status after run should be Running:\n%s", out)
-	}
+	requireVMStatus(t, out, "Running")
 
 	out = h.run(timings.command, "exec", "pwd")
 	if strings.TrimSpace(out) != "/project" {
@@ -310,7 +307,7 @@ enforcement = "fail"
 		t.Fatalf("project mount did not round-trip, got:\n%s", out)
 	}
 
-	out = h.run(timings.command, "exec", "cat", "/mnt/wm-extra/extra.txt")
+	out = h.run(timings.command, "exec", "cat", "/mnt/watermelon/wm-extra/extra.txt")
 	if strings.TrimSpace(out) != "extra-mount-ok" {
 		t.Fatalf("extra mount did not render, got:\n%s", out)
 	}
@@ -339,20 +336,76 @@ enforcement = "fail"
 	}
 	waitForLogLine(t, h, "watermelon-net", timings.logWait, timings.status)
 
+	// The omitted [security] section must default to strict enforcement. Normal
+	// resolution and attempts to select an external resolver must both receive
+	// the managed resolver's negative response for an unlisted name.
+	h.runErr(timings.command, "exec", "getent", "ahostsv4", "example.com")
+	h.run(timings.command, "exec", "--", "python3", "-c", directDNSMediationProbe)
+
+	out = h.run(timings.command, "exec", "cat", "/proc/sys/net/ipv6/conf/all/disable_ipv6")
+	if strings.TrimSpace(out) != "1" {
+		t.Fatalf("strict default must disable unfiltered IPv6, got:\n%s", out)
+	}
+
 	h.run(timings.command, "exec", "sh", "-lc", "printf port-forward-ok > index.html; nohup python3 -m http.server 8765 --bind 0.0.0.0 >/tmp/wm-e2e-http.log 2>&1 &")
 	waitForHTTP(t, "http://127.0.0.1:8765/", "port-forward-ok", timings.httpWait)
 
 	h.run(timings.stop, "stop")
 	out = h.run(timings.status, "status")
-	if !strings.Contains(out, "Status:  Stopped") {
-		t.Fatalf("status after stop should be Stopped:\n%s", out)
-	}
+	requireVMStatus(t, out, "Stopped")
 
 	h.run(timings.boot, "exec", "true")
 	out = h.run(timings.status, "status")
-	if !strings.Contains(out, "Status:  Running") {
-		t.Fatalf("exec should restart stopped VM:\n%s", out)
+	requireVMStatus(t, out, "Running")
+
+	restartedBlockedOut := h.runErr(timings.command, "exec", "timeout 5 bash -lc 'echo > /dev/tcp/93.184.216.34/80'")
+	if restartedBlockedOut == "" {
+		t.Log("blocked network command failed after restart with no output, as expected")
 	}
+}
+
+const directDNSMediationProbe = `
+import socket
+import struct
+
+name = "example.com"
+question = b"".join(bytes([len(label)]) + label.encode() for label in name.split(".")) + b"\x00\x00\x01\x00\x01"
+query = struct.pack("!HHHHHH", 0x574D, 0x0100, 1, 0, 0, 0) + question
+
+udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp.settimeout(5)
+udp.sendto(query, ("8.8.8.8", 53))
+udp_response, _ = udp.recvfrom(4096)
+assert udp_response[3] & 0x0F == 3, "direct UDP DNS bypassed the managed resolver"
+
+def recv_exact(sock, size):
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise RuntimeError("unexpected EOF from DNS server")
+        data += chunk
+    return data
+
+tcp = socket.create_connection(("8.8.8.8", 53), timeout=5)
+tcp.sendall(struct.pack("!H", len(query)) + query)
+tcp_size = struct.unpack("!H", recv_exact(tcp, 2))[0]
+tcp_response = recv_exact(tcp, tcp_size)
+assert tcp_response[3] & 0x0F == 3, "direct TCP DNS bypassed the managed resolver"
+`
+
+func requireVMStatus(t *testing.T, output, want string) {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if ok && strings.TrimSpace(key) == "Status" {
+			if got := strings.TrimSpace(value); got != want {
+				t.Fatalf("VM status = %q, want %q:\n%s", got, want, output)
+			}
+			return
+		}
+	}
+	t.Fatalf("status output has no Status field:\n%s", output)
 }
 
 func waitForLogLine(t *testing.T, h *e2eHarness, needle string, timeout, commandTimeout time.Duration) {

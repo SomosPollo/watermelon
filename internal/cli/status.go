@@ -30,8 +30,18 @@ func NewStatusCmd() *cobra.Command {
 }
 
 func runStatus(out io.Writer, dir string) error {
+	canonicalDir, err := canonicalProjectRoot(dir)
+	if err != nil {
+		return err
+	}
+	dir = canonicalDir
 	vmName := lima.VMNameFromPath(dir)
-	status := lima.GetStatus(vmName)
+	status := cliGetVMStatus(vmName)
+	if status != lima.StatusNotFound {
+		if err := requireVMProjectBinding(dir, vmName); err != nil {
+			return err
+		}
+	}
 
 	fmt.Fprintf(out, "Project:  %s\n", dir)
 	fmt.Fprintf(out, "VM Name:  %s\n", vmName)
@@ -42,25 +52,34 @@ func runStatus(out io.Writer, dir string) error {
 
 	cfg, err := loadProjectConfig(dir)
 	if err != nil {
+		assessment := assessAppliedPolicy(dir, status, nil)
 		if _, statErr := os.Stat(filepath.Join(dir, ".watermelon.toml")); os.IsNotExist(statErr) {
 			fmt.Fprintln(out, "Config:   missing (.watermelon.toml not found; run 'watermelon init')")
+			fmt.Fprintln(out, "Configured Policy: unavailable (config missing)")
 			if status == lima.StatusNotFound {
 				fmt.Fprintln(out, "Next:     watermelon init")
 			}
 		} else {
 			fmt.Fprintf(out, "Config:   unreadable (%v)\n", err)
+			fmt.Fprintln(out, "Configured Policy: unavailable (config unreadable)")
 		}
+		fmt.Fprintf(out, "Applied Policy:    %s\n", formatAppliedPolicy(assessment))
 		return nil
 	}
 
 	if err := config.Validate(cfg); err != nil {
+		assessment := assessAppliedPolicy(dir, status, nil)
 		fmt.Fprintf(out, "Config:   invalid (%v)\n", err)
+		fmt.Fprintf(out, "Configured Policy: %s (config invalid)\n", config.DescribeEnforcement(cfg.Security.Enforcement))
+		fmt.Fprintf(out, "Applied Policy:    %s\n", formatAppliedPolicy(assessment))
 		return nil
 	}
 
-	fmt.Fprintf(out, "Config:   %s\n", configSnapshotStatus(dir, status))
-	fmt.Fprintf(out, "Network:  %s enforcement, %s, %s\n",
-		cfg.Security.Enforcement,
+	assessment := assessAppliedPolicy(dir, status, cfg)
+	fmt.Fprintf(out, "Config:   %s\n", configSnapshotStatus(assessment))
+	fmt.Fprintf(out, "Configured Policy: %s\n", config.DescribeEnforcement(cfg.Security.Enforcement))
+	fmt.Fprintf(out, "Applied Policy:    %s\n", formatAppliedPolicy(assessment))
+	fmt.Fprintf(out, "Network:  %s, %s\n",
 		countLabel(len(cfg.Network.Allow), "allow rule", "allow rules"),
 		countLabel(len(cfg.Network.Process), "process rule", "process rules"),
 	)
@@ -74,31 +93,58 @@ func runStatus(out io.Writer, dir string) error {
 	fmt.Fprintf(out, "Logs:     %s\n", logStatus(dir))
 	if status == lima.StatusNotFound {
 		fmt.Fprintln(out, "Next:     watermelon run")
+	} else if policyRequiresRecreation(assessment.State) {
+		fmt.Fprintf(out, "Next:     %s\n", recreatePolicyCommand)
 	}
 
 	return nil
 }
 
-func configSnapshotStatus(dir string, status lima.VMStatus) string {
-	if status == lima.StatusNotFound {
-		return "valid"
+func configSnapshotStatus(assessment appliedPolicyAssessment) string {
+	switch assessment.State {
+	case policyNotApplied:
+		return "valid (not yet applied)"
+	case policyCurrent:
+		return "current"
+	case policyStale:
+		return "changed since VM creation"
+	case policyUnverifiedLegacy:
+		return "valid (legacy VM policy is unverified)"
+	case policyUnverifiedMissing:
+		return "valid (VM policy snapshot missing)"
+	case policyComparisonUnavailable:
+		return "valid (could not compare configured and applied policy)"
+	default:
+		return "valid (VM policy snapshot unreadable)"
 	}
+}
 
-	current, err := currentConfigDigest(dir)
-	if err != nil {
-		return "valid (could not read current snapshot)"
+func formatAppliedPolicy(assessment appliedPolicyAssessment) string {
+	switch assessment.State {
+	case policyNotApplied:
+		return "none (VM not created)"
+	case policyCurrent:
+		return config.DescribeEnforcement(assessment.Snapshot.Enforcement) + " (recorded, current)"
+	case policyStale:
+		return config.DescribeEnforcement(assessment.Snapshot.Enforcement) + " (recorded, stale; differs from current configuration)"
+	case policyUnverifiedLegacy:
+		return "unverified (legacy snapshot does not record enforcement)"
+	case policyUnverifiedMissing:
+		return "unverified (applied-policy snapshot missing)"
+	case policyComparisonUnavailable:
+		return config.DescribeEnforcement(assessment.Snapshot.Enforcement) + " (recorded; current configuration unavailable for comparison)"
+	default:
+		return fmt.Sprintf("unverified (applied-policy snapshot unreadable: %v)", assessment.Err)
 	}
-	saved, err := readConfigDigest(dir)
-	if os.IsNotExist(err) {
-		return "valid (VM snapshot unknown)"
+}
+
+func policyRequiresRecreation(state appliedPolicyState) bool {
+	switch state {
+	case policyStale, policyUnverifiedLegacy, policyUnverifiedMissing, policyUnverifiedInvalid:
+		return true
+	default:
+		return false
 	}
-	if err != nil {
-		return "valid (could not read VM snapshot)"
-	}
-	if current != saved {
-		return "changed since VM creation (recreate to apply network, tools, ports, mounts, or resources)"
-	}
-	return "current"
 }
 
 func formatTools(tools map[string][]string) string {

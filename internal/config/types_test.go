@@ -16,8 +16,8 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.Resources.Disk != "10GB" {
 		t.Errorf("expected default disk 10GB, got %s", cfg.Resources.Disk)
 	}
-	if cfg.Security.Enforcement != "log" {
-		t.Errorf("expected default enforcement 'log', got %s", cfg.Security.Enforcement)
+	if cfg.Security.Enforcement != EnforcementFail {
+		t.Errorf("expected default enforcement %q, got %s", EnforcementFail, cfg.Security.Enforcement)
 	}
 	if cfg.IDE.Command != "code" {
 		t.Errorf("expected default IDE command 'code', got %s", cfg.IDE.Command)

@@ -5,10 +5,6 @@ image = "ubuntu-22.04"
 allow = [
     "pypi.org",
     "files.pythonhosted.org",
-    "registry-1.docker.io",
-    "auth.docker.io",
-    "production.cloudflare.docker.com",
-    "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
 ]
 
 [tools]
@@ -18,4 +14,4 @@ allow = [
 forward = [8000]
 
 [security]
-enforcement = "log"
+enforcement = "fail"

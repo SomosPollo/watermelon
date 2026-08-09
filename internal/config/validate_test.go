@@ -153,6 +153,21 @@ func TestValidateTools(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "invalid image leading hyphen",
+			tools:   map[string][]string{"-node:20-slim": {"node"}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid image leading dot",
+			tools:   map[string][]string{".node:20-slim": {"node"}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid image leading underscore",
+			tools:   map[string][]string{"_node:20-slim": {"node"}},
+			wantErr: true,
+		},
+		{
 			name:    "invalid command slash",
 			tools:   map[string][]string{"node:20-slim": {"../node"}},
 			wantErr: true,
@@ -189,32 +204,72 @@ func TestValidateMounts(t *testing.T) {
 	}{
 		{
 			name:    "valid read only default",
-			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "/home/dev/.gitconfig"}},
+			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "/mnt/watermelon/gitconfig"}},
 			wantErr: false,
 		},
 		{
 			name:    "valid read write",
-			mounts:  map[string]Mount{"~/.cache/huggingface": {Target: "/home/dev/.cache/huggingface", Mode: "rw"}},
+			mounts:  map[string]Mount{"~/.cache/huggingface": {Target: "/mnt/watermelon/cache/huggingface", Mode: "rw"}},
+			wantErr: false,
+		},
+		{
+			name:    "valid exact mount root",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon"}},
+			wantErr: false,
+		},
+		{
+			name:    "valid normalized descendant",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon/./cache"}},
 			wantErr: false,
 		},
 		{
 			name:    "empty host path",
-			mounts:  map[string]Mount{"": {Target: "/home/dev/.gitconfig"}},
+			mounts:  map[string]Mount{"": {Target: "/mnt/watermelon/gitconfig"}},
 			wantErr: true,
 		},
 		{
 			name:    "relative target",
-			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "home/dev/.gitconfig"}},
+			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "mnt/watermelon/gitconfig"}},
 			wantErr: true,
 		},
 		{
 			name:    "invalid mode",
-			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "/home/dev/.gitconfig", Mode: "write"}},
+			mounts:  map[string]Mount{"/Users/test/.gitconfig": {Target: "/mnt/watermelon/gitconfig", Mode: "write"}},
 			wantErr: true,
 		},
 		{
 			name:    "host path injection",
-			mounts:  map[string]Mount{"/Users/test/.gitconfig\"": {Target: "/home/dev/.gitconfig"}},
+			mounts:  map[string]Mount{"/Users/test/.gitconfig\"": {Target: "/mnt/watermelon/gitconfig"}},
+			wantErr: true,
+		},
+		{
+			name:    "reject project target",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/project/vendor"}},
+			wantErr: true,
+		},
+		{
+			name:    "reject home target",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/home/dev/shared"}},
+			wantErr: true,
+		},
+		{
+			name:    "reject system target",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/etc/watermelon"}},
+			wantErr: true,
+		},
+		{
+			name:    "reject mount root prefix spoof",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon-evil/cache"}},
+			wantErr: true,
+		},
+		{
+			name:    "reject traversal outside root",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon/../../etc"}},
+			wantErr: true,
+		},
+		{
+			name:    "reject traversal that normalizes inside root",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon/cache/../shared"}},
 			wantErr: true,
 		},
 	}
@@ -231,6 +286,31 @@ func TestValidateMounts(t *testing.T) {
 	}
 }
 
+func TestValidateMountPathEncoding(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		validate func(string) error
+		wantErr  bool
+	}{
+		{name: "valid UTF-8 source", value: "/Users/test/café", validate: ValidateMountSource},
+		{name: "source with NUL", value: "/Users/test/cache\x00suffix", validate: ValidateMountSource, wantErr: true},
+		{name: "source with invalid UTF-8", value: "/Users/test/cache\xff", validate: ValidateMountSource, wantErr: true},
+		{name: "valid UTF-8 target", value: "/mnt/watermelon/café", validate: ValidateMountTarget},
+		{name: "target with NUL", value: "/mnt/watermelon/cache\x00suffix", validate: ValidateMountTarget, wantErr: true},
+		{name: "target with invalid UTF-8", value: "/mnt/watermelon/cache\xff", validate: ValidateMountTarget, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.validate(tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validator error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateNetworkProcessNames(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -240,6 +320,7 @@ func TestValidateNetworkProcessNames(t *testing.T) {
 		{"valid simple", "claude", false},
 		{"valid with dash", "code-insiders", false},
 		{"valid with underscore", "my_tool", false},
+		{"valid with dot and plus", "node.js+dev", false},
 		{"empty name", "", true},
 		{"semicolon injection", "claude;rm", true},
 		{"pipe injection", "claude|cat", true},
@@ -248,7 +329,16 @@ func TestValidateNetworkProcessNames(t *testing.T) {
 		{"backtick injection", "claude`whoami`", true},
 		{"backslash injection", "claude\\test", true},
 		{"space in name", "my tool", true},
+		{"tab in name", "my\ttool", true},
+		{"newline in name", "my\ntool", true},
 		{"slash in name", "my/tool", true},
+		{"redirection substitution", "x>(reboot)", true},
+		{"leading hyphen", "-danger", true},
+		{"single dot", ".", true},
+		{"double dot", "..", true},
+		{"leading dot", ".hidden", true},
+		{"maximum length", "a" + strings.Repeat("b", 254), false},
+		{"over maximum length", "a" + strings.Repeat("b", 255), true},
 	}
 
 	for _, tt := range tests {

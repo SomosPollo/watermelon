@@ -9,7 +9,7 @@ While Go doesn't have postinstall scripts like npm, it does:
 - Run tests that might have side effects
 - Download and compile dependencies with CGO
 
-Watermelon ensures these operations can't affect your host.
+Watermelon keeps these operations away from unmounted host files and services. The project directory remains mounted read-write.
 
 ## Setup
 
@@ -42,5 +42,7 @@ allow = [
 
 [mounts]
 # Mount deploy key (read-only)
-"~/.ssh/deploy_key" = { target = "/home/dev/.ssh/id_rsa" }
+"~/.ssh/deploy_key" = { target = "/mnt/watermelon/deploy-key" }
 ```
+
+Point Git/SSH at the mounted key explicitly, for example with `GIT_SSH_COMMAND="ssh -i /mnt/watermelon/deploy-key"`. Additional mount targets cannot replace the VM user's home or system paths.

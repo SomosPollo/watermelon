@@ -28,16 +28,16 @@ If you want common CLIs available every time the VM is created:
 npm = ["typescript", "eslint"]
 ```
 
-This uses `npm install -g ...` during provisioning.
+This uses `npm install -g ...` during provisioning and creates the command wrappers when the VM is built. Prefer this configuration over an ad-hoc global install: a newly installed executable is not automatically exposed in the guest command path.
 
 ## Notes
 
 - The example provisions `pnpm` globally during VM creation (`[provision].npm = ["pnpm"]`), so you can run `pnpm` directly.
-- The allowlist includes Docker Hub domains so Watermelon can pull the base `node` image.
+- Watermelon pulls the base `node` image during trusted bootstrap, so Docker Hub does not need to be in the workload allowlist.
 
 ## Troubleshooting network allowlist
 
-If installs fail, check blocked domains and add only what you need:
+If installs fail, inspect network policy events and add only trusted destinations the project needs:
 
 ```bash
 watermelon logs

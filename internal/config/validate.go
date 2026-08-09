@@ -3,8 +3,10 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // NetworkRule is a validated network allow-list entry.
@@ -17,11 +19,8 @@ type NetworkRule struct {
 
 // Validate checks config for errors
 func Validate(cfg *Config) error {
-	// Validate enforcement
-	switch cfg.Security.Enforcement {
-	case "log", "fail", "silent", "ask":
-		// valid
-	default:
+	// Validate enforcement against the same descriptors used by the CLI.
+	if _, ok := LookupEnforcement(cfg.Security.Enforcement); !ok {
 		return fmt.Errorf("invalid enforcement %q: must be log, fail, silent, or ask", cfg.Security.Enforcement)
 	}
 
@@ -83,7 +82,7 @@ func Validate(cfg *Config) error {
 
 	// Validate network process names and domains
 	for processName, domains := range cfg.Network.Process {
-		if err := validateProcessName(processName); err != nil {
+		if err := ValidateProcessName(processName); err != nil {
 			return fmt.Errorf("invalid network process: %w", err)
 		}
 		for _, domain := range domains {
@@ -140,14 +139,25 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
-// validateProcessName checks that a process name is safe for shell use
-func validateProcessName(name string) error {
+// ValidateProcessName checks that a process name can safely be used as a
+// command name and as one host filesystem path component.
+func ValidateProcessName(name string) error {
 	if name == "" {
 		return fmt.Errorf("process name cannot be empty")
 	}
-	// Disallow shell metacharacters and path separators
-	if strings.ContainsAny(name, ";|&$`\\ /") {
-		return fmt.Errorf("process name %q contains invalid characters", name)
+	if len(name) > 255 {
+		return fmt.Errorf("process name is too long: %d bytes (maximum 255)", len(name))
+	}
+	for index, r := range name {
+		firstAllowed := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_'
+		if index == 0 && !firstAllowed {
+			return fmt.Errorf("process name %q must start with an ASCII letter, digit, or underscore", name)
+		}
+		if !firstAllowed && r != '.' && r != '+' && r != '-' {
+			return fmt.Errorf("process name %q contains invalid character %q", name, r)
+		}
 	}
 	return nil
 }
@@ -286,6 +296,12 @@ func ValidateToolImage(image string) error {
 	if image == "" {
 		return fmt.Errorf("image cannot be empty")
 	}
+	first := image[0]
+	if !((first >= 'a' && first <= 'z') ||
+		(first >= 'A' && first <= 'Z') ||
+		(first >= '0' && first <= '9')) {
+		return fmt.Errorf("image %q must start with an ASCII letter or digit", image)
+	}
 	for _, r := range image {
 		if !(r >= 'a' && r <= 'z') &&
 			!(r >= 'A' && r <= 'Z') &&
@@ -320,6 +336,12 @@ func ValidateMountSource(source string) error {
 	if source == "" {
 		return fmt.Errorf("source cannot be empty")
 	}
+	if !utf8.ValidString(source) {
+		return fmt.Errorf("source %q must be valid UTF-8", source)
+	}
+	if strings.IndexByte(source, 0) >= 0 {
+		return fmt.Errorf("source %q cannot contain a NUL byte", source)
+	}
 	if strings.ContainsAny(source, safePathDisallowed) {
 		return fmt.Errorf("source %q contains invalid characters", source)
 	}
@@ -333,14 +355,27 @@ func ValidateMountTarget(target string) error {
 	if target == "" {
 		return fmt.Errorf("target cannot be empty")
 	}
+	if !utf8.ValidString(target) {
+		return fmt.Errorf("target %q must be valid UTF-8", target)
+	}
+	if strings.IndexByte(target, 0) >= 0 {
+		return fmt.Errorf("target %q cannot contain a NUL byte", target)
+	}
 	if strings.ContainsAny(target, safePathDisallowed) {
 		return fmt.Errorf("target %q contains invalid characters", target)
 	}
-	if !strings.HasPrefix(target, "/") {
+	if !filepath.IsAbs(target) {
 		return fmt.Errorf("target %q must be absolute", target)
 	}
-	if target == "/project" || strings.HasPrefix(target, "/project/") {
-		return fmt.Errorf("target %q conflicts with project mount", target)
+	for _, component := range strings.Split(target, string(filepath.Separator)) {
+		if component == ".." {
+			return fmt.Errorf("target %q cannot contain path traversal", target)
+		}
+	}
+	cleaned := filepath.Clean(target)
+	const mountRoot = "/mnt/watermelon"
+	if cleaned != mountRoot && !strings.HasPrefix(cleaned, mountRoot+string(filepath.Separator)) {
+		return fmt.Errorf("target %q must be %s or a descendant", target, mountRoot)
 	}
 	return nil
 }

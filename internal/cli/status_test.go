@@ -6,9 +6,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/saeta-eth/watermelon/internal/config"
+	"github.com/saeta-eth/watermelon/internal/lima"
 )
 
+func useNoVMStatus(t *testing.T) {
+	t.Helper()
+	oldStatus := cliGetVMStatus
+	cliGetVMStatus = func(string) lima.VMStatus { return lima.StatusNotFound }
+	t.Cleanup(func() { cliGetVMStatus = oldStatus })
+}
+
 func TestStatusCommand(t *testing.T) {
+	useNoVMStatus(t)
 	dir := t.TempDir()
 
 	var out bytes.Buffer
@@ -21,6 +32,7 @@ func TestStatusCommand(t *testing.T) {
 }
 
 func TestStatusShowsConfigSummary(t *testing.T) {
+	useNoVMStatus(t)
 	dir := t.TempDir()
 	config := `[vm]
 image = "ubuntu-22.04"
@@ -56,8 +68,10 @@ disk = "15GB"
 	}
 	rendered := out.String()
 	for _, want := range []string{
-		"Config:   valid",
-		"Network:  log enforcement, 1 allow rule, 0 process rules",
+		"Config:   valid (not yet applied)",
+		"Configured Policy: fail (blocks and logs connections outside the allowlist)",
+		"Applied Policy:    none (VM not created)",
+		"Network:  1 allow rule, 0 process rules",
 		"Tools:    node:20-slim [node, npm]",
 		"Ports:    3000, 5173",
 		"Resources: 4GB memory, 2 CPUs, 15GB disk",
@@ -69,7 +83,45 @@ disk = "15GB"
 	}
 }
 
+func TestFormatAppliedPolicyDistinguishesCurrentStaleAndLegacy(t *testing.T) {
+	current := formatAppliedPolicy(appliedPolicyAssessment{
+		State: policyCurrent,
+		Snapshot: config.AppliedPolicySnapshot{
+			Enforcement: config.EnforcementFail,
+		},
+	})
+	if !strings.Contains(current, "fail") || !strings.Contains(current, "recorded, current") || strings.Contains(current, "verified") {
+		t.Errorf("current applied policy = %q", current)
+	}
+
+	stale := formatAppliedPolicy(appliedPolicyAssessment{
+		State: policyStale,
+		Snapshot: config.AppliedPolicySnapshot{
+			Enforcement: config.EnforcementLog,
+		},
+	})
+	if !strings.Contains(stale, "log") || !strings.Contains(stale, "recorded, stale") || !strings.Contains(stale, "not strict") {
+		t.Errorf("stale applied policy = %q", stale)
+	}
+
+	legacy := formatAppliedPolicy(appliedPolicyAssessment{State: policyUnverifiedLegacy})
+	if !strings.Contains(legacy, "unverified") || !strings.Contains(legacy, "does not record enforcement") {
+		t.Errorf("legacy applied policy = %q", legacy)
+	}
+
+	unavailable := formatAppliedPolicy(appliedPolicyAssessment{
+		State: policyComparisonUnavailable,
+		Snapshot: config.AppliedPolicySnapshot{
+			Enforcement: config.EnforcementFail,
+		},
+	})
+	if !strings.Contains(unavailable, "recorded") || strings.Contains(unavailable, "verified") {
+		t.Errorf("comparison-unavailable applied policy = %q", unavailable)
+	}
+}
+
 func TestStatusReportsUnreadableConfig(t *testing.T) {
+	useNoVMStatus(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".watermelon.toml"), []byte("not = [valid"), 0644); err != nil {
 		t.Fatal(err)

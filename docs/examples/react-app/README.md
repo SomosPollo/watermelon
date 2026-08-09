@@ -22,8 +22,8 @@ npm run dev
 
 - Your `~/.ssh` keys are inaccessible to npm postinstall scripts
 - Your `~/.aws` credentials can't be read by malicious packages
-- Network requests to unexpected domains are blocked
-- The malicious package can't install launch agents or cron jobs on your host
+- New external connections outside the allowlist are blocked; managed DNS, loopback, established responses, and scoped VM-control DHCPv4 remain available, but DHCP is not arbitrary external UDP access
+- Unmounted host launch-agent and cron locations are outside the VM; the package can still modify the project
 
 ## Customization
 

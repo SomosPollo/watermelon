@@ -21,11 +21,11 @@ Visit your app from the host using the forwarded port (for example `http://local
 
 ## Notes
 
-- The example allowlist includes Docker Hub domains so Watermelon can pull the `oven/bun:1` tool image.
+- Watermelon pulls the `oven/bun:1` tool image during trusted bootstrap, so Docker Hub does not need to be in the workload allowlist.
 
 ## Troubleshooting network allowlist
 
-If installs fail, check blocked domains and add only what you need:
+If installs fail, inspect network policy events and add only trusted destinations the project needs:
 
 ```bash
 watermelon logs

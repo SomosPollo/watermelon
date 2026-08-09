@@ -1,10 +1,10 @@
-# Security Audit Example
+# Strict Package Inspection Example
 
-Maximum isolation configuration for safely inspecting suspicious packages.
+Restrictive configuration for inspecting suspicious packages away from unmounted host files.
 
 ## Use case
 
-You want to examine a potentially malicious npm package without risking your system.
+You want to reduce host exposure while examining a potentially malicious npm package.
 
 ## Setup
 
@@ -30,7 +30,7 @@ curl -O https://registry.npmjs.org/suspicious-package/-/suspicious-package-1.0.0
 ```bash
 watermelon run
 
-# Inside sandbox (no network)
+# Inside sandbox (strict external-network policy)
 tar -xzf suspicious-package-1.0.0.tgz
 cd package
 
@@ -48,10 +48,12 @@ grep -r "eval\|Function(" .
 
 ## What this protects against
 
-- Package can't read your SSH keys, AWS credentials, etc.
-- Package can't exfiltrate data (no network)
-- Package can't install persistence mechanisms
-- Any violation immediately fails and alerts you
+- Unmounted SSH keys, cloud credentials, and other host files are inaccessible
+- New non-allowlisted external traffic is rejected
+- Unmounted host persistence locations are outside the VM; the package can still modify the mounted project
+- `fail` mode records rate-limited policy events for rejected traffic
+
+Workload DNS still reaches Watermelon's managed resolver, but with this empty strict policy it does not resolve arbitrary names. Loopback, established response traffic, and scoped DHCPv4 lease traffic required by VM control networking remain available; the DHCP exception is not arbitrary external UDP access. The project directory is mounted read-write, and VM escape vulnerabilities are outside Watermelon's guarantees. Do not expose real secrets while inspecting hostile code.
 
 ## Checking logs
 
@@ -62,4 +64,4 @@ If you see failures:
 watermelon logs
 ```
 
-This shows what the package tried to access.
+This shows rate-limited network policy events for destinations the package tried to access.

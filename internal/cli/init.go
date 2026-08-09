@@ -15,7 +15,7 @@ const defaultConfig = `# Watermelon sandbox configuration
 image = "ubuntu-22.04"
 
 [network]
-# Allowlisted domains (all other network access blocked)
+# Domains allowed by policy. Connections to other domains follow [security].
 allow = [
     # "registry.npmjs.org",
     # "github.com",
@@ -27,8 +27,9 @@ allow = [
 # "python:3.12-slim" = ["python", "python3", "pip"]
 
 [mounts]
-# Additional host paths to mount (read-only by default)
-# "~/.gitconfig" = { target = "/home/dev/.gitconfig" }
+# Additional host paths to mount (read-only by default). Guest targets must
+# stay under /mnt/watermelon so mounts cannot shadow system, home, or project paths.
+# "~/.gitconfig" = { target = "/mnt/watermelon/gitconfig" }
 
 [ports]
 # Ports to forward from VM to host
@@ -41,7 +42,9 @@ disk = "10GB"
 
 [security]
 # How to enforce network policy: "log", "fail", "silent", or "ask"
-enforcement = "log"
+# "fail" is the strict default: block and log connections outside the allowlist.
+# "log" is non-strict: it records unknown connections but allows them.
+enforcement = "fail"
 
 [ide]
 # IDE command for 'watermelon code' (e.g., "code", "cursor", "codium")
