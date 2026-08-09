@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 
 	"github.com/saeta-eth/watermelon/internal/ask"
-	"github.com/saeta-eth/watermelon/internal/config"
 	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/spf13/cobra"
 )
@@ -22,14 +21,30 @@ func NewExecCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			cfg, err := loadProjectConfig(dir)
+			dir, err = canonicalProjectRoot(dir)
 			if err != nil {
 				return err
 			}
 
-			if err := config.Validate(cfg); err != nil {
-				return fmt.Errorf("invalid config: %w", err)
+			cfg, err := loadValidatedProjectConfigFailClosed(dir)
+			if err != nil {
+				return err
+			}
+
+			vmName := lima.VMNameFromPath(dir)
+			status := cliGetVMStatus(vmName)
+			if status == lima.StatusNotFound {
+				return fmt.Errorf("no sandbox VM found (run 'watermelon run' first)")
+			}
+			if err := requireVMProjectBinding(dir, vmName); err != nil {
+				return err
+			}
+			warnIfNonStrictPolicy(os.Stderr, cfg)
+			if err := requireCurrentAppliedPolicyAndStopUnsafe(dir, vmName, status, cfg); err != nil {
+				return err
+			}
+			if status == lima.StatusUnknown {
+				return fmt.Errorf("cannot safely use VM %q because its Lima state is unknown", vmName)
 			}
 
 			// Start verdict server for ask enforcement mode
@@ -59,18 +74,23 @@ func NewExecCmd() *cobra.Command {
 				fmt.Println("Verdict server listening for network policy prompts...")
 			}
 
-			vmName := lima.VMNameFromPath(dir)
-			status := lima.GetStatus(vmName)
-
-			if status == lima.StatusNotFound {
-				return fmt.Errorf("no sandbox VM found (run 'watermelon run' first)")
-			}
-
 			if status == lima.StatusStopped {
-				fmt.Println("Starting sandbox VM...")
-				if err := lima.Start(vmName, ""); err != nil {
-					return fmt.Errorf("starting VM: %w", err)
+				if err := requireVMProjectBinding(dir, vmName); err != nil {
+					return err
 				}
+				fmt.Println("Starting sandbox VM...")
+				if err := startVMFailClosed(dir, vmName, ""); err != nil {
+					return err
+				}
+			}
+			if err := requireVMProjectBinding(dir, vmName); err != nil {
+				return err
+			}
+			if err := requireRuntimePolicyAppliedAndStopUnsafe(dir, vmName, false); err != nil {
+				return err
+			}
+			if err := requireVMProjectBinding(dir, vmName); err != nil {
+				return err
 			}
 
 			return lima.Exec(vmName, args)

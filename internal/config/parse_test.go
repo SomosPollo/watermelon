@@ -79,8 +79,18 @@ allow = ["example.com"]
 	if cfg.Resources.Memory != "2GB" {
 		t.Errorf("expected default memory 2GB, got %s", cfg.Resources.Memory)
 	}
-	if cfg.Security.Enforcement != "log" {
-		t.Errorf("expected default enforcement log, got %s", cfg.Security.Enforcement)
+	if cfg.Security.Enforcement != EnforcementFail {
+		t.Errorf("expected default enforcement fail, got %s", cfg.Security.Enforcement)
+	}
+}
+
+func TestParseConfigRetainsExplicitLogEnforcement(t *testing.T) {
+	cfg, err := Parse([]byte("[security]\nenforcement = \"log\"\n"))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if cfg.Security.Enforcement != EnforcementLog {
+		t.Fatalf("explicit log enforcement = %q, want %q", cfg.Security.Enforcement, EnforcementLog)
 	}
 }
 

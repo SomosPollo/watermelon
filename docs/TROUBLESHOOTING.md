@@ -65,24 +65,49 @@ watermelon destroy --force
 watermelon run
 ```
 
+### Existing VM policy is unverified
+
+VMs created before versioned policy records have only a legacy project digest, which does not identify the recorded enforcement mode. For safety, `watermelon run`, `exec`, and `code` require a one-time recreation:
+
+```bash
+watermelon destroy --force && watermelon run
+```
+
+This removes VM-local state but preserves project files on the host. `watermelon status` compares the configured policy with the host-side record written after VM creation; it does not inspect the live firewall.
+
 ---
 
 ## Command Issues
 
 ### "Command not found" inside VM
 
-**Cause:** Tool not configured in `.watermelon.toml`
+**Cause:** The tool is not configured in `.watermelon.toml`, or its package was installed ad hoc and no guest command wrapper was created.
 
-**Solution:** Add the tool:
+**Solution:** Add the base command under `[tools]`:
 ```toml
 [tools]
 "node:20-slim" = ["node", "npm", "npx"]
 ```
 
+For a global CLI package, declare it under `[provision]`, then recreate the VM so Watermelon can create its wrapper reliably:
+
+```toml
+[provision]
+npm = ["typescript"]
+```
+
+```bash
+watermelon destroy --force && watermelon run --no-shell
+```
+
+### `sudo` is denied inside the VM
+
+This is intentional. Watermelon removes the VM user's general passwordless `sudo` access after system provisioning; interactive shells and `watermelon exec` are unprivileged. Express tools and global packages through `[tools]` and `[provision]`. Per-process command wrappers invoke only their narrowly authorized, root-owned launchers automatically.
+
 ### Command hangs
 
 **Possible causes:**
-1. Network request to blocked domain
+1. A non-allowlisted request was blocked in `fail`, `silent`, or `ask` mode
 2. Waiting for input (use `watermelon exec` for non-interactive)
 
 **Check logs:**
@@ -96,19 +121,26 @@ watermelon logs
 
 ### Package installation fails
 
-**Check what's being blocked:**
+**Inspect network policy events:**
 ```bash
 watermelon logs
 ```
+
+In the default `fail` mode, these events represent blocked traffic. In discovery mode (`enforcement = "log"`), they represent IPv4 traffic that was allowed, so the installation failure has another cause. Policy-event logging is rate-limited; log-mode IPv6 traffic is allowed but not currently captured. `silent` does not record events, while `ask` reports decisions through its prompt.
 
 **Add the domain to config:**
 ```toml
 [network]
 allow = [
     "registry.npmjs.org",
-    "blocked-domain.com",  # Add this
+    "required-domain.com",  # Add only if trusted and required
 ]
+
+[security]
+enforcement = "fail"
 ```
+
+Network policy changes require VM reprovisioning: `watermelon destroy --force && watermelon run --no-shell`. This removes VM-local state but preserves project files on the host.
 
 ### Common domains by package manager
 

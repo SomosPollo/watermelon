@@ -4,7 +4,7 @@ Sandbox configuration for using AI coding assistants (Claude Code, Codex, Aider,
 
 ## The Problem
 
-AI coding assistants need API access to work, but you want to sandbox `npm install` and other build tools. With per-process network policies, you can allow Claude to reach Anthropic's API while keeping everything else locked down.
+AI coding assistants need API access to work, while build tools usually need only package registries. With the example's strict `fail` policy, per-process rules can give Claude access to Anthropic while blocking other new external connections that do not match an allow rule.
 
 ## Setup
 
@@ -26,7 +26,7 @@ npm = ["@anthropic-ai/claude-code", "@openai/codex"]
 pip = ["aider-chat"]
 ```
 
-This runs `npm install -g` and `pip install` automatically when the VM starts.
+This runs `npm install -g` and `pip install` during initial VM creation or recreation, then creates command wrappers for the provisioned CLIs.
 
 ### Per-Process Network Access
 
@@ -47,32 +47,38 @@ aider = ["api.anthropic.com", "api.openai.com"]
 ```
 
 When you run `claude` inside the sandbox:
-1. A wrapper script routes it through a dedicated network namespace
-2. That namespace allows both general domains AND Claude-specific domains
-3. Build tools like `npm` only get the general domains
+
+1. Its command wrapper invokes Watermelon's narrowly authorized, root-owned launcher
+2. The launcher routes it through a dedicated network namespace
+3. That namespace allows both general domains AND Claude-specific domains
+4. Build tools like `npm` get only the general allowed external destinations
+
+Workload DNS is redirected to a managed resolver. With this example's `fail` policy, it answers only names in the applicable general or process-specific rules. Loopback, established response traffic, and scoped VM-control DHCPv4 lease traffic remain available; the DHCP exception is not arbitrary external UDP access.
 
 ## Inside the Sandbox
 
 ```bash
-# Install dependencies (restricted to registries only)
+# Install dependencies (new external connections restricted to the general allowlist)
 npm install
 
 # Use Claude Code (has API access)
 claude
 
-# Both work, but with different network permissions
+# Both work with different external-network permissions
 ```
 
 ## Wildcard Domains
 
-Wildcards like `*.anthropic.com` are supported. The sandbox uses dnsmasq to dynamically allow resolved IPs.
+Wildcards like `*.anthropic.com` are supported. The managed resolver dynamically allows resolved subdomain IPs. A wildcard does not include its apex, so add `anthropic.com` separately if the tool needs it.
 
 ## Verifying Isolation
 
 ```bash
-# This should work (Claude has API access)
-ip netns exec watermelon-claude curl -I https://api.anthropic.com
+# Use Claude normally; its generated wrapper applies the process-specific policy
+claude
 
-# This should fail (npm doesn't have API access)
+# From the ordinary shell, this should fail under the strict general policy
 curl -I https://api.anthropic.com
 ```
+
+Do not call `sudo ip netns exec` directly. Watermelon removes the VM user's general passwordless `sudo` access after provisioning, and namespace/helper names are internal rather than stable `watermelon-<process>` names. The configured command wrapper is the supported launcher; ordinary shell and `watermelon exec` commands remain unprivileged.

@@ -6,10 +6,6 @@ allow = [
     "registry.npmjs.org",
     "pypi.org",
     "files.pythonhosted.org",
-    "registry-1.docker.io",
-    "auth.docker.io",
-    "production.cloudflare.docker.com",
-    "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
 ]
 
 [tools]
@@ -25,4 +21,4 @@ cpus = 4
 disk = "20GB"
 
 [security]
-enforcement = "log"
+enforcement = "fail"

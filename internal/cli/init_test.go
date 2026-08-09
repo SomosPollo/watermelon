@@ -32,6 +32,12 @@ func TestInitCommand(t *testing.T) {
 			t.Errorf("config should contain %q", check)
 		}
 	}
+	if !strings.Contains(content, `enforcement = "fail"`) {
+		t.Errorf("generated config should use strict fail enforcement:\n%s", content)
+	}
+	if strings.Contains(content, `enforcement = "log"`) {
+		t.Errorf("generated config should not opt into non-strict log enforcement:\n%s", content)
+	}
 }
 
 func TestInitCommandExisting(t *testing.T) {

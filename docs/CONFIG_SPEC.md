@@ -18,7 +18,7 @@ allow = ["registry.npmjs.org", "github.com"]
 "node:20-slim" = ["node", "npm", "npx"]
 
 [mounts]
-# "~/.gitconfig" = { target = "/home/dev/.gitconfig" }
+# "~/.gitconfig" = { target = "/mnt/watermelon/gitconfig" }
 
 [ports]
 forward = [3000, 8080]
@@ -29,7 +29,7 @@ cpus = 2
 disk = "10GB"
 
 [security]
-enforcement = "log"
+enforcement = "fail"
 
 [ide]
 command = "code"
@@ -59,7 +59,13 @@ image = "ubuntu-22.04"
 
 ### `[network]`
 
-Controls network access from the sandbox. Unknown outbound network behavior depends on `[security].enforcement`: discovery mode logs and allows, while strict modes block.
+Controls network access from the sandbox. Non-allowlisted outbound behavior depends on `[security].enforcement`: the default strict mode blocks and records it, while discovery mode allows it and records rate-limited IPv4 policy events.
+
+Workload DNS is transparently redirected to a managed resolver. In `fail` and `silent`, that resolver answers only names covered by the applicable general or per-process policy; other names receive a local negative response. In `log` and `ask`, it resolves arbitrary names so discovery and interactive prompts can work. Loopback, established/related response traffic, and scoped DHCPv4 lease traffic required by VM control networking remain available in every mode. The DHCP exception does not allow arbitrary external UDP.
+
+In `fail` and `silent`, exact domain rules are resolved once during trusted VM bootstrap and served as exact records; recreate the VM to refresh those records if the destination's addresses change. A wildcard such as `"*.example.com"` dynamically resolves subdomains only; it does not include the apex `"example.com"`, which must be added separately when needed. A per-process resolver combines the general rules with that process's additional rules.
+
+Network enforcement currently operates on IPv4. Watermelon disables IPv6 in `fail`, `silent`, and `ask` so it cannot bypass a blocking policy. Discovery mode (`log`) leaves IPv6 enabled; its rate-limited policy events currently capture IPv4 traffic only.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -90,7 +96,7 @@ allow = [
 ]
 ```
 
-**To completely block non-DNS network access, use an empty allow list with strict enforcement:**
+**To block new external connections, use an empty allow list with strict enforcement:**
 ```toml
 [network]
 allow = []
@@ -98,6 +104,8 @@ allow = []
 [security]
 enforcement = "fail"
 ```
+
+An empty allow list still permits the managed DNS path, loopback, established/related responses, and scoped VM-control DHCPv4 lease traffic. It does not grant arbitrary external UDP access.
 
 #### `[network.process]`
 
@@ -111,8 +119,9 @@ Per-process network rules. Each key is a process name, and the value is a list o
 - Rules are **additive**: process-specific domains are added to the general `allow` list
 - Processes not listed use only the general `allow` rules
 - Wildcards supported: `"*.example.com"`
+- `fail`, `silent`, and `ask` enforce these rules; `log` only observes non-allowlisted traffic
 
-**Implementation:** Each listed process runs in a dedicated Linux network namespace with its own iptables rules. Wrapper scripts in `/usr/local/bin/` transparently route the process through its namespace.
+**Implementation:** Each listed process runs in a dedicated Linux network namespace with its own firewall and resolver policy. Its command wrapper invokes a root-owned, per-process launcher through a narrowly scoped authorization created by Watermelon. Namespace and helper identifiers are internal implementation details and are not derived into a stable, human-readable `watermelon-<process>` name. Other shell and `watermelon exec` commands run as the unprivileged VM user; general passwordless `sudo` is removed after provisioning.
 
 ```toml
 [network]
@@ -124,15 +133,19 @@ codex = ["api.openai.com"]
 aider = ["api.anthropic.com", "api.openai.com"]
 ```
 
-**Security:** Process names cannot contain shell metacharacters (`;|&$\`\\ /`).
+**Process-name syntax:** Keys must be at most 255 bytes and match `[A-Za-z0-9_][A-Za-z0-9._+-]*`. They must begin with an ASCII letter, digit, or underscore; leading `-` or `.`, whitespace, control characters, path separators, and shell syntax are rejected.
 
-**Note:** Requires VM reprovisioning (`watermelon destroy && watermelon init`) to apply changes.
+**Note:** Requires VM reprovisioning (`watermelon destroy --force && watermelon run --no-shell`) to apply changes. Destroying the VM removes its state but does not delete `.watermelon.toml`.
 
 ---
 
 ### `[provision]`
 
 Packages to install during VM provisioning. Each key corresponds to a package manager.
+
+User-configured package installation runs after workload network policy is active, so its registries and download hosts must be covered by `[network].allow` in blocking modes.
+
+Declare global CLI packages here and recreate the VM when you need reliable command wrappers. Do not rely on an ad-hoc global install to expose a newly introduced executable in the guest command path; wrapper discovery and creation happen during VM provisioning.
 
 | Field | Type | Requires Tool | Install Command |
 |-------|------|---------------|-----------------|
@@ -180,6 +193,8 @@ Defines containerized tools available in the sandbox. Tools are run via nerdctl 
 
 Each command becomes available as a wrapper script in `/usr/local/bin/` inside the VM.
 
+Configured base images are pulled during Watermelon's trusted bootstrap, before workload network policy is activated. Do not add container-registry domains to `[network].allow` solely for these image pulls; add them only if the workload itself must contact a registry.
+
 ```toml
 [tools]
 # Node.js tools
@@ -220,25 +235,27 @@ Additional host paths to mount into the VM (beyond the project directory).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `target` | string | required | Path inside the VM |
+| `target` | string | required | `/mnt/watermelon` or a descendant path inside the VM |
 | `mode` | string | `"ro"` | Mount mode: `"ro"` (read-only) or `"rw"` (read-write) |
 
 ```toml
 [mounts]
 # Git config (read-only)
-"~/.gitconfig" = { target = "/home/dev/.gitconfig" }
+"~/.gitconfig" = { target = "/mnt/watermelon/gitconfig" }
 
 # SSH keys (read-only) - use with caution
-"~/.ssh" = { target = "/home/dev/.ssh", mode = "ro" }
+"~/.ssh" = { target = "/mnt/watermelon/ssh", mode = "ro" }
 
 # npm auth tokens
-"~/.npmrc" = { target = "/home/dev/.npmrc" }
+"~/.npmrc" = { target = "/mnt/watermelon/npmrc" }
 
 # Shared cache directory (read-write)
-"~/.cache/huggingface" = { target = "/home/dev/.cache/huggingface", mode = "rw" }
+"~/.cache/huggingface" = { target = "/mnt/watermelon/cache/huggingface", mode = "rw" }
 ```
 
-**Note:** The project directory is always mounted at `/project` with read-write access.
+Targets are normalized and must remain at or below `/mnt/watermelon`; `..` traversal is rejected. This dedicated namespace prevents additional mounts from shadowing guest system, home, policy, or project paths. Applications do not automatically treat these paths as home-directory configuration: point the relevant tool at the mounted file or directory explicitly.
+
+**Note:** The project directory is separately mounted at `/project` with read-write access.
 
 ---
 
@@ -314,30 +331,26 @@ Security policy configuration.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enforcement` | string | `"log"` | How to enforce network policy |
+| `enforcement` | string | `"fail"` | How to enforce network policy |
 
 **Enforcement modes:**
 
 | Value | Behavior |
 |-------|----------|
-| `"log"` | Log the violation and allow the request |
-| `"fail"` | Block the request and log an error |
-| `"silent"` | Block the request silently |
-| `"ask"` | Prompt for unknown TCP connections and persist always-allow choices |
+| `"fail"` | **Strict default:** block non-allowlisted traffic, record a rate-limited policy event, and resolve only policy names |
+| `"log"` | **Discovery:** allow non-allowlisted traffic, record rate-limited IPv4 policy events, and resolve arbitrary names; IPv6 is not captured |
+| `"silent"` | **Strict, quiet:** block non-allowlisted traffic without recording policy events and resolve only policy names |
+| `"ask"` | **Interactive:** resolve arbitrary names, prompt for non-allowlisted TCP connections, reject other non-allowlisted traffic, and persist always-allow choices |
 
 ```toml
 [security]
-# Development: see what's being blocked
-enforcement = "log"
-
-# Production/audit: strict blocking
+# Choose one mode. The strict default is:
 enforcement = "fail"
 
-# Quiet mode: block without noise
-enforcement = "silent"
-
-# Interactive mode: prompt on unknown TCP connections
-enforcement = "ask"
+# Alternatives:
+# enforcement = "log"     # Discovery: allow; record IPv4 events (IPv6 is not captured)
+# enforcement = "silent"  # Strict, quiet: block without policy events
+# enforcement = "ask"     # Interactive: prompt for TCP; reject other non-allowlisted traffic
 ```
 
 ---
@@ -429,10 +442,10 @@ cpus = 4
 disk = "20GB"
 
 [security]
-enforcement = "log"
+enforcement = "fail"
 ```
 
-### Maximum Security (Audit Mode)
+### Most Restrictive Built-in Policy (Audit Mode)
 
 ```toml
 [vm]
@@ -456,6 +469,8 @@ disk = "5GB"
 [security]
 enforcement = "fail"
 ```
+
+Even this policy retains the managed DNS path, loopback, established/related responses, and scoped DHCPv4 lease traffic required by VM control networking. That DHCP exception is not general external UDP access.
 
 ---
 

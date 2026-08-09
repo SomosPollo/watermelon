@@ -3,8 +3,6 @@ image = "ubuntu-22.04"
 
 [network]
 allow = [
-    "ghcr.io",
-    "pkg-containers.githubusercontent.com",
     "github.com",
     "*.githubusercontent.com",
 ]
@@ -21,4 +19,4 @@ cpus = 2
 disk = "20GB"
 
 [security]
-enforcement = "log"
+enforcement = "fail"

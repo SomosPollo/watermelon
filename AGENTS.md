@@ -56,4 +56,6 @@ Input validation is critical - the `internal/lima` package validates all user-pr
 ### Config Defaults
 
 - Memory: 2GB, CPUs: 1, Disk: 10GB
-- Enforcement: "log" (options: "log", "fail", "silent", "ask")
+- Enforcement: `"fail"` by default (strict block + rate-limited policy events). `"log"` is discovery mode and allows non-allowlisted traffic; other options are `"silent"` and `"ask"`.
+- Workload DNS is redirected to a managed resolver. In `fail`/`silent` it answers only policy names; `log`/`ask` resolve arbitrary names for discovery or prompting. Loopback remains available.
+- IPv6 is disabled in `fail`, `silent`, and `ask` because enforcement is IPv4-only; `log` leaves it enabled but does not capture it in policy events.

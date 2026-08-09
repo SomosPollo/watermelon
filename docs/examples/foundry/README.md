@@ -60,7 +60,7 @@ allow = [
 
 ## Private keys
 
-**Never store private keys on your host filesystem.** Use environment variables passed at runtime or hardware wallets. The sandbox protects against dependency attacks but your project files are read-write.
+**Never expose valuable private keys to untrusted dependencies.** The sandbox isolates unmounted host files and blocks non-allowlisted external traffic, but project files are read-write and destinations permitted by policy remain reachable. Prefer hardware wallets or disposable development keys.
 
 ```bash
 # Pass key at runtime (not stored in files)

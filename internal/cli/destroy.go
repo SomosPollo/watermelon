@@ -10,6 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	destroyGetStatus = lima.GetStatus
+	destroyDelete    = lima.Delete
+)
+
 func NewDestroyCmd() *cobra.Command {
 	var force bool
 
@@ -21,18 +26,25 @@ func NewDestroyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			dir, err = canonicalProjectRoot(dir)
+			if err != nil {
+				return err
+			}
 
 			vmName := lima.VMNameFromPath(dir)
-			status := lima.GetStatus(vmName)
+			status := destroyGetStatus(vmName)
 
 			if status == lima.StatusNotFound {
 				return fmt.Errorf("no sandbox VM found for this project")
+			}
+			if err := requireVMProjectBinding(dir, vmName); err != nil {
+				return err
 			}
 
 			if !force {
 				fmt.Printf("This will delete VM '%s' and all installed dependencies.\n", vmName)
 				fmt.Print("Are you sure? [y/N] ")
-				reader := bufio.NewReader(os.Stdin)
+				reader := bufio.NewReader(cmd.InOrStdin())
 				response, _ := reader.ReadString('\n')
 				response = strings.TrimSpace(strings.ToLower(response))
 				if response != "y" && response != "yes" {
@@ -42,7 +54,16 @@ func NewDestroyCmd() *cobra.Command {
 			}
 
 			fmt.Println("Destroying sandbox VM...")
-			return lima.Delete(vmName)
+			if err := requireVMProjectBinding(dir, vmName); err != nil {
+				return err
+			}
+			if err := destroyDelete(vmName); err != nil {
+				return err
+			}
+			if err := clearAppliedPolicySnapshot(dir); err != nil {
+				return fmt.Errorf("VM was destroyed, but its applied-policy snapshot could not be removed: %w", err)
+			}
+			return nil
 		},
 	}
 

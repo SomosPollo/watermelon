@@ -9,7 +9,7 @@ npm packages run postinstall scripts with full system access. A malicious packag
 - Exfiltrate mnemonics to remote servers
 - Install keyloggers or clipboard monitors
 
-Watermelon ensures npm packages can't access your host system.
+Watermelon keeps npm packages away from unmounted host files and services. The project directory remains mounted read-write.
 
 ## Setup
 
