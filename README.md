@@ -40,7 +40,7 @@ Before the first run—and after changes—review `.watermelon.toml` as trusted 
 # Install dependency: limactl from Lima
 # macOS: brew install lima
 # Linux: install Lima with your distro package manager or upstream package
-curl -fsSL https://raw.githubusercontent.com/saeta-eth/watermelon/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/SomosPollo/watermelon/main/install.sh | sh
 
 cd your-project
 watermelon init                      # Create .watermelon.toml
@@ -55,6 +55,14 @@ exit
 **Alternative:** install with Go directly:
 ```bash
 go install github.com/saeta-eth/watermelon/cmd/watermelon@latest
+```
+
+To install without root, choose a writable directory and add it to `PATH`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SomosPollo/watermelon/main/install.sh \
+  | WATERMELON_INSTALL_DIR="$HOME/.local/bin" sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ### Upgrading existing sandboxes
