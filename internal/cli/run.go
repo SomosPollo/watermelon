@@ -189,6 +189,12 @@ func verdictAuthKeyForInstance(instance namedVMInstanceIdentity) (ask.AuthKey, e
 }
 
 func runRunWithOptions(opts runOptions) error {
+	if opts.Workdir != "" {
+		if err := config.ValidateGuestWorkdir(opts.Workdir); err != nil {
+			return NewUsageError(fmt.Errorf("invalid --workdir %q: %w", opts.Workdir, err))
+		}
+	}
+
 	dir, err := os.Getwd()
 	if err != nil {
 		return err
@@ -202,9 +208,6 @@ func runRunWithOptions(opts runOptions) error {
 	vmName := target.VMName
 	workdir := target.Workdir
 	if opts.Workdir != "" {
-		if err := config.ValidateGuestWorkdir(opts.Workdir); err != nil {
-			return fmt.Errorf("invalid --workdir %q: %w", opts.Workdir, err)
-		}
 		workdir = opts.Workdir
 	}
 	lifecycleLock, err := acquireVMLifecycleLock(vmName)

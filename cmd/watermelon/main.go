@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/saeta-eth/watermelon/internal/cli"
 	"github.com/spf13/cobra"
@@ -11,14 +12,16 @@ import (
 // Version is set at build time via -ldflags
 var Version = "dev"
 
-var rootCmd = &cobra.Command{
-	Use:     "watermelon",
-	Short:   "Sandbox that isolates your project inside a Linux VM",
-	Long:    "Watermelon is a sandbox that isolates your project inside a Linux VM.",
-	Version: Version,
-}
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{
+		Use:           "watermelon",
+		Short:         "Sandbox that isolates your project inside a Linux VM",
+		Long:          "Watermelon is a sandbox that isolates your project inside a Linux VM.",
+		Version:       Version,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+	}
 
-func init() {
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 	rootCmd.AddCommand(cli.NewInitCmd())
 	rootCmd.AddCommand(cli.NewRunCmd())
@@ -30,16 +33,91 @@ func init() {
 	rootCmd.AddCommand(cli.NewLogsCmd())
 	rootCmd.AddCommand(cli.NewCodeCmd())
 	rootCmd.AddCommand(cli.NewCopyCmd())
+	rootCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return cli.NewUsageError(err)
+	})
+	return rootCmd
 }
 
-func main() {
-	if err := rootCmd.Execute(); err != nil {
-		if code, ok := exitCodeForError(err); ok {
-			os.Exit(code)
+func configureGeneratedCommands(rootCmd *cobra.Command) {
+	rootCmd.InitDefaultHelpCmd()
+	var helpCmd *cobra.Command
+	for _, candidate := range rootCmd.Commands() {
+		if candidate.Name() == "help" {
+			helpCmd = candidate
+			break
 		}
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
 	}
+	if helpCmd == nil {
+		panic("Cobra did not initialize the help command")
+	}
+
+	// Cobra's generated help command prints an unknown-topic message and exits
+	// successfully. Return a normal invocation error instead so help failures
+	// use the same top-level formatting and exit behavior as every other command.
+	helpCmd.Run = nil
+	helpCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		target, remaining, err := cmd.Root().Find(args)
+		if err != nil || target == nil || len(remaining) != 0 {
+			return cli.NewUsageError(fmt.Errorf("unknown help topic %q", strings.Join(args, " ")))
+		}
+		target.SetContext(cmd.Context())
+		target.InitDefaultHelpFlag()
+		target.InitDefaultVersionFlag()
+		return target.Help()
+	}
+
+	rootCmd.InitDefaultCompletionCmd()
+	for _, candidate := range rootCmd.Commands() {
+		if candidate.Name() == "completion" && candidate.Run == nil && candidate.RunE == nil {
+			candidate.RunE = func(cmd *cobra.Command, _ []string) error {
+				return cmd.Help()
+			}
+			break
+		}
+	}
+	markArgumentErrors(rootCmd)
+}
+
+func markArgumentErrors(cmd *cobra.Command) {
+	if cmd.Args != nil {
+		validate := cmd.Args
+		cmd.Args = func(cmd *cobra.Command, args []string) error {
+			return cli.NewUsageError(validate(cmd, args))
+		}
+	}
+	for _, child := range cmd.Commands() {
+		markArgumentErrors(child)
+	}
+}
+
+var rootCmd = newRootCmd()
+
+func main() {
+	if code := executeCommand(rootCmd); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func executeCommand(rootCmd *cobra.Command) int {
+	configureGeneratedCommands(rootCmd)
+	executedCmd, err := rootCmd.ExecuteC()
+	if err == nil {
+		return 0
+	}
+	if code, ok := exitCodeForError(err); ok {
+		return code
+	}
+	if executedCmd == nil {
+		executedCmd = rootCmd
+	}
+
+	errOut := executedCmd.ErrOrStderr()
+	fmt.Fprintln(errOut, executedCmd.ErrPrefix(), err)
+	if cli.IsUsageError(err) || executedCmd == rootCmd {
+		fmt.Fprint(errOut, executedCmd.UsageString())
+	}
+	return 1
 }
 
 // Keep this interface specific to guest execution. In particular,

@@ -26,12 +26,12 @@ Prefix a colon-containing host filename with ./ to make it explicitly local.
 Examples:
   watermelon copy ./file.txt somospollo-vm:/tmp/
   watermelon copy somospollo-vm:/tmp/output.log ./`,
-		Args: cobra.ExactArgs(2),
+		Args: validateCopyCommandArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src, dst := args[0], args[1]
 			vmName, err := copyArgsVMName(src, dst)
 			if err != nil {
-				return err
+				return NewUsageError(err)
 			}
 			lifecycleLock, err := acquireVMLifecycleLock(vmName)
 			if err != nil {
@@ -52,6 +52,13 @@ Examples:
 
 	cmd.Flags().BoolVarP(&recursive, "recursive", "r", false, "Copy directories recursively")
 	return cmd
+}
+
+func validateCopyCommandArgs(cmd *cobra.Command, args []string) error {
+	if err := cobra.ExactArgs(2)(cmd, args); err != nil {
+		return err
+	}
+	return validateCopyArgs(args[0], args[1])
 }
 
 // copyOperandIsRemote recognizes Lima's vmname:path syntax. A colon in an
