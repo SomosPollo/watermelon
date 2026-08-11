@@ -11,7 +11,7 @@ Watermelon is designed to reduce host exposure when malicious packages attempt t
 | **Credential theft** | Reading `~/.ssh`, `~/.aws`, `~/.gnupg` | Unmounted host paths are outside the VM |
 | **Arbitrary outbound connections** | Sending project data to an unlisted service | `fail` and `silent` block non-allowlisted traffic and resolve only policy names |
 | **Persistent access** | Cron jobs, launch agents, shell profiles | Unmounted host system directories are outside the VM |
-| **Lateral movement** | Accessing other projects, `.env` files | At most the current project and explicit mounts are exposed; no-mount mode excludes the project too |
+| **Lateral movement** | Accessing other projects, `.env` files | At most the resolved project root and explicit mounts are exposed; no-mount mode excludes the project too |
 | **Resource exhaustion** | Fork bombs, disk filling | VM resource limits enforced |
 
 ## What Watermelon Does NOT Protect Against

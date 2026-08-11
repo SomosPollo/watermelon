@@ -13,7 +13,12 @@ Watermelon runs developer commands inside a Lima-managed Linux VM on macOS or Li
 
 ## Agent Behavior
 
-**Detection:** Check for `.watermelon.toml` in the project root. If present, all package manager and build commands MUST go through `watermelon exec`.
+**Detection:** Starting in the canonical current directory, check for the
+nearest `.watermelon.toml` there or in a physical parent. Check each directory
+before stopping at a Git or filesystem boundary. Also stop before a parent that
+is other-user-owned or world-writable; accept a root-owned parent only when it
+is not group/world-writable. If a config is present, route all package manager
+and build commands through `watermelon exec`.
 
 ```bash
 # WRONG - runs on host, defeats sandboxing
@@ -51,14 +56,14 @@ watermelon exec "npm install && npm run build && npm test"
 | `watermelon run [--name NAME] [--workdir PATH]` | Open interactive shell in sandbox |
 | `watermelon exec [--name NAME] -- <cmd>` | Run command in sandbox (default for all commands) |
 | `watermelon code [--name NAME]` | Open IDE and remain foreground until its remote window exits |
-| `watermelon status [--name NAME]` | Show VM status for current project |
+| `watermelon status [--name NAME]` | Show VM status for the resolved project |
 | `watermelon list` | List all watermelon VMs |
 | `watermelon stop [--name NAME]` | Stop VM immediately, preserve VM-local state |
 | `watermelon destroy [--name NAME] [--force]` | Stop and permanently delete VM state |
 | `watermelon logs [--name NAME] [--clear]` | Show/clear network policy events |
 | `watermelon copy [-r] <src> <dst>` | Copy between host and one explicit `vm-name:path` operand |
 
-Normal `--name` operation still validates the current project's config and ownership. `stop` is an immediate fail-closed interrupt. `destroy` also stops a running VM immediately, then waits for terminated Watermelon shell/exec/IDE/copy clients to detach before deleting identity and VM state; `--force` skips confirmation only.
+Normal `--name` operation still validates the resolved project's config and ownership. `stop` is an immediate fail-closed interrupt. `destroy` also stops a running VM immediately, then waits for terminated Watermelon shell/exec/IDE/copy clients to detach before deleting identity and VM state; `--force` skips confirmation only.
 
 **Installation (if not available):**
 ```bash

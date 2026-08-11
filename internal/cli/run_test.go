@@ -1307,7 +1307,7 @@ func TestRequireVMProjectBindingRejectsCollidingProject(t *testing.T) {
 	t.Cleanup(func() { cliProjectMountSource = oldProjectSource })
 
 	err := requireVMProjectBinding(project, lima.VMNameFromPath(project))
-	if err == nil || !strings.Contains(err.Error(), "not the current project") {
+	if err == nil || !strings.Contains(err.Error(), "not the resolved project") {
 		t.Fatalf("binding error = %v, want colliding-project refusal", err)
 	}
 }

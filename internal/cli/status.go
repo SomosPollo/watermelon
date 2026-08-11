@@ -21,7 +21,7 @@ func NewStatusCmd() *cobra.Command {
 	var name string
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show sandbox VM status for current project",
+		Short: "Show sandbox VM status for the resolved project",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir, err := os.Getwd()
@@ -31,7 +31,7 @@ func NewStatusCmd() *cobra.Command {
 			return runStatusForName(os.Stdout, dir, name)
 		},
 	}
-	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the path-derived name)")
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
 	return cmd
 }
 

@@ -63,7 +63,7 @@ command = "code"
 func NewInitCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Create a .watermelon.toml config file",
+		Short: "Create .watermelon.toml in the current directory",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir, err := os.Getwd()
@@ -76,7 +76,7 @@ func NewInitCmd() *cobra.Command {
 }
 
 func runInit(dir string) error {
-	configPath := filepath.Join(dir, ".watermelon.toml")
+	configPath := filepath.Join(dir, projectConfigName)
 
 	if _, err := os.Stat(configPath); err == nil {
 		return fmt.Errorf(".watermelon.toml already exists")

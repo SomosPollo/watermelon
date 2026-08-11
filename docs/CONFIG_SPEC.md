@@ -575,4 +575,40 @@ A present configuration is parsed strictly and validated before Watermelon uses 
 
 ## File Location
 
-Watermelon looks for `.watermelon.toml` in the current working directory. Without `vm.name`, the VM name is derived from the canonical project path for consistency. Normal `--name` operation validates the local configuration, binds the selected name to the current project, and never replaces a missing or invalid config with defaults. `stop` and explicit-name `destroy` have the ownership-verified recovery behavior described above. Management commands retain legacy path-derived lookup only when neither a config nor an explicit name is present.
+Starting at the canonical current working directory, Watermelon checks that
+directory and each physical parent for the nearest `.watermelon.toml`. A
+directory's config is checked before its boundary markers. Search stops after a
+directory containing a `.git` entry, before crossing onto a parent filesystem
+with a different device ID, before entering an untrusted parent, or at the
+filesystem root. A parent is trusted when it is current-user-owned and not
+world-writable, or root-owned and not group/world-writable. This refuses to
+enter other-user-owned and broadly writable parents while intentionally
+treating current-user-owned group workspaces as trusted. A config in the exact
+invocation directory is still considered for backward compatibility. Mode-bit
+checks do not detect additional write access granted through filesystem ACLs,
+so review the selected config and the trust model of shared workspaces.
+
+The nearest observed config is authoritative. Watermelon opens it nonblocking,
+requires the opened target to be a regular file no larger than 4 MiB, and reads
+that same descriptor. The target must be current-user-owned and not
+world-writable, or root-owned and not group/world-writable. Malformed,
+unreadable, dangling, non-regular, oversized, untrusted, or otherwise
+unloadable selected configs return an error that names their path; Watermelon
+never falls back to a higher config. A symlink to a loadable, trusted regular
+file remains supported. The selected config's canonical directory is the
+project root used for VM naming and ownership, the default `/project` mount and
+workdir, provision-script resolution, policy state, and logs. Explicit and
+configured workdirs retain their normal precedence; the host invocation
+subdirectory is not mirrored automatically. `watermelon status` exposes a
+successfully loaded root as `Project:`, while load errors identify the selected
+path. `watermelon init` is intentionally different: it creates a config in the
+exact current directory and does not discover or modify an ancestor config.
+
+Without `vm.name`, the VM name is derived from the canonical resolved project
+root. Normal `--name` operation validates the discovered configuration, binds
+the selected name to that root, and never replaces a missing or invalid config
+with defaults. Configured commands fail if bounded discovery finds no config.
+Management commands retain their legacy canonical-invocation-directory target
+only when neither a config nor an explicit name is present. `stop` and
+explicit-name `destroy` have the ownership-verified recovery behavior described
+above.

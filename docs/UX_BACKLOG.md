@@ -206,10 +206,18 @@ Acceptance criteria:
 
 ### Discover the project root from subdirectories
 
-- [ ] Walk parent directories for `.watermelon.toml`.
+- [x] Walk parent directories for `.watermelon.toml`.
 
-Target resolution currently treats the exact current directory as the project
-root. Running from `project/src` does not discover `project/.watermelon.toml`.
+Resolved by walking canonical physical parents for the nearest config, while
+stopping at `.git`, filesystem-device, untrusted-directory, or filesystem-root
+boundaries. The nearest observed config remains authoritative even when invalid
+or unreadable. All project-scoped commands share the resolved root for VM
+identity and mounts and for associating policy state, logs, and provision
+scripts. Existing guest-workdir precedence is retained, with `/project` as the
+mounted default rather than the invocation subpath. Successful `status` output
+exposes the root, and config errors name the selected path. Configless
+management retains its legacy invocation-directory fallback, and `init` remains
+an intentional current-directory operation.
 
 Design constraints:
 
@@ -218,8 +226,8 @@ Design constraints:
   policy records, logs, provision scripts, and workdirs.
 - Print or expose the resolved root when useful for diagnostics.
 
-Evidence: `internal/cli/target.go` and `loadProjectConfig` in
-`internal/cli/run.go`.
+Evidence: `internal/cli/project_root.go`, `internal/cli/target.go`, focused
+target/status/recovery tests, and `loadProjectConfig` in `internal/cli/run.go`.
 
 ### Centralize resource and port validation
 

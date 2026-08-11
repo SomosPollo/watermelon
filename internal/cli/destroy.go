@@ -93,8 +93,11 @@ func resolveDestroyTarget(dir, name string) (targetContext, *namedVMIdentity, er
 	if configErr == nil {
 		return target, nil, nil
 	}
+	if target.ProjectRoot != "" {
+		dir = target.ProjectRoot
+	}
 	if name == "" {
-		return targetContext{}, nil, configErr
+		return target, nil, configErr
 	}
 	instance, identityErr := loadOwnedNamedVMIdentity(dir, name)
 	if identityErr != nil {
@@ -206,6 +209,9 @@ func NewDestroyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if target.ProjectRoot != initialTarget.ProjectRoot {
+				return fmt.Errorf("sandbox project root changed from %q to %q while destruction was awaiting confirmation; retry the command", initialTarget.ProjectRoot, target.ProjectRoot)
+			}
 			if target.VMName != vmName {
 				return fmt.Errorf("sandbox target changed from %q to %q while destruction was awaiting confirmation; retry the command", vmName, target.VMName)
 			}
@@ -283,6 +289,6 @@ func NewDestroyCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation prompt")
-	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the path-derived name)")
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
 	return cmd
 }

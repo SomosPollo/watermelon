@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,6 +186,85 @@ func TestDestroyPromptDoesNotBlockStopLifecycle(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("destroy did not exit after cancellation")
+	}
+}
+
+func TestDestroyRefusesProjectRootChangeWhilePromptWaits(t *testing.T) {
+	project := prepareDestroySnapshotTest(t)
+	if err := os.WriteFile(filepath.Join(project, projectConfigName), []byte("[network]\nallow = []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(project, "src")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(nested); err != nil {
+		t.Fatal(err)
+	}
+	vmName := lima.VMNameFromPath(project)
+
+	oldStatus, oldProjectMount, oldStop, oldDelete := destroyGetStatus, cliProjectMountSource, destroyStop, destroyDelete
+	destroyGetStatus = func(name string) lima.VMStatus {
+		if name != vmName {
+			t.Fatalf("status queried VM %q, want %q", name, vmName)
+		}
+		return lima.StatusRunning
+	}
+	cliProjectMountSource = func(name string) (string, error) { return project, nil }
+	stopCalls := 0
+	destroyStop = func(string) error {
+		stopCalls++
+		return nil
+	}
+	deleteCalls := 0
+	destroyDelete = func(string) error {
+		deleteCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		destroyGetStatus = oldStatus
+		cliProjectMountSource = oldProjectMount
+		destroyStop = oldStop
+		destroyDelete = oldDelete
+	})
+
+	reader := &controlledPromptReader{started: make(chan struct{}), response: make(chan string, 1)}
+	cmd := NewDestroyCmd()
+	cmd.SetIn(reader)
+	done := make(chan error, 1)
+	go func() { done <- cmd.RunE(cmd, nil) }()
+	responseSent := false
+	t.Cleanup(func() {
+		if !responseSent {
+			reader.response <- "n\n"
+		}
+	})
+
+	select {
+	case <-reader.started:
+	case <-time.After(time.Second):
+		t.Fatal("destroy did not reach its confirmation prompt")
+	}
+	nearerConfig := fmt.Sprintf("[vm]\nname = %q\n", vmName)
+	if err := os.WriteFile(filepath.Join(nested, projectConfigName), []byte(nearerConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reader.response <- "yes\n"
+	responseSent = true
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "project root changed") || !strings.Contains(err.Error(), project) || !strings.Contains(err.Error(), nested) {
+			t.Fatalf("destroy root-change error = %v, want both roots and refusal", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("destroy did not finish after project-root change")
+	}
+	if deleteCalls != 0 {
+		t.Fatalf("delete calls = %d, want 0 after project-root change", deleteCalls)
+	}
+	if stopCalls != 0 {
+		t.Fatalf("stop calls = %d, want 0 after project-root change", stopCalls)
 	}
 }
 

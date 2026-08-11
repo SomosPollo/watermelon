@@ -60,7 +60,7 @@ func NewLogsCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&clear, "clear", false, "Clear the log")
-	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the path-derived name)")
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
 	return cmd
 }
 

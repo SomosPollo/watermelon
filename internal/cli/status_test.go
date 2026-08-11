@@ -36,6 +36,107 @@ func TestStatusCommand(t *testing.T) {
 	}
 }
 
+func TestStatusPrintsDiscoveredAncestorProjectRoot(t *testing.T) {
+	useNoVMStatus(t)
+	project, err := canonicalProjectRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, projectConfigName), []byte("[network]\nallow = []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(project, "src", "package")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runStatus(&out, nested); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Project:  "+project+"\n") {
+		t.Fatalf("status did not expose discovered root %q:\n%s", project, out.String())
+	}
+	if !strings.Contains(out.String(), "VM Name:  "+lima.VMNameFromPath(project)+"\n") {
+		t.Fatalf("status did not use root-derived VM name:\n%s", out.String())
+	}
+}
+
+func TestStatusUsesDiscoveredRootForExistingVMPolicyBindingAndLogs(t *testing.T) {
+	project, err := canonicalProjectRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", privateTempDir(t))
+	t.Setenv("LIMA_HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(project, projectConfigName), []byte("[network]\nallow = []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(project, "src", "package")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	rootLog := filepath.Join(project, ".watermelon", "logs.log")
+	if err := os.Mkdir(filepath.Dir(rootLog), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootLog, []byte("root event\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	nestedLog := filepath.Join(nested, ".watermelon", "logs.log")
+	if err := os.Mkdir(filepath.Dir(nestedLog), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nestedLog, []byte("nested one\nnested two\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadProjectConfig(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAppliedPolicySnapshot(project, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	oldStatus, oldProjectSource := cliGetVMStatusWithError, cliProjectMountSource
+	cliGetVMStatusWithError = func(name string) (lima.VMStatus, error) {
+		if name != lima.VMNameFromPath(project) {
+			t.Fatalf("status queried VM %q, want root-derived VM", name)
+		}
+		return lima.StatusStopped, nil
+	}
+	bindingCalls := 0
+	cliProjectMountSource = func(name string) (string, error) {
+		bindingCalls++
+		if name != lima.VMNameFromPath(project) {
+			t.Fatalf("binding queried VM %q, want root-derived VM", name)
+		}
+		return project, nil
+	}
+	t.Cleanup(func() {
+		cliGetVMStatusWithError = oldStatus
+		cliProjectMountSource = oldProjectSource
+	})
+
+	var out bytes.Buffer
+	if err := runStatus(&out, nested); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Project:  " + project,
+		"Config:   current",
+		"Applied Policy:    fail (blocks and logs connections outside the allowlist) (recorded, current)",
+		"Logs:     1 entry",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status output missing %q:\n%s", want, out.String())
+		}
+	}
+	if bindingCalls == 0 {
+		t.Fatal("status did not verify the existing VM's root project mount")
+	}
+}
+
 func TestStatusReportsLimaFailureWithDoctorGuidance(t *testing.T) {
 	oldStatus := cliGetVMStatusWithError
 	cliGetVMStatusWithError = func(string) (lima.VMStatus, error) {

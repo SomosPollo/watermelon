@@ -40,6 +40,32 @@ func TestInitCommand(t *testing.T) {
 	}
 }
 
+func TestInitCommandCreatesNestedProjectEvenWithAncestorConfig(t *testing.T) {
+	parent := t.TempDir()
+	parentConfig := filepath.Join(parent, projectConfigName)
+	if err := os.WriteFile(parentConfig, []byte("parent config\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(parent, "nested-project")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runInit(child); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(child, projectConfigName)); err != nil {
+		t.Fatalf("nested config was not created: %v", err)
+	}
+	data, err := os.ReadFile(parentConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "parent config\n" {
+		t.Fatalf("ancestor config changed: %q", data)
+	}
+}
+
 func TestInitCommandExisting(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, ".watermelon.toml")

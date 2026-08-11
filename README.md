@@ -141,6 +141,15 @@ See [docs/COMMANDS.md](./docs/COMMANDS.md) for detailed usage.
 
 Create `.watermelon.toml` in your project root:
 
+Project-scoped commands can then run from that directory or a descendant that
+can reach it without crossing a Git, filesystem, or untrusted-directory
+boundary (see [File Location](./docs/CONFIG_SPEC.md#file-location)). Watermelon
+discovers the nearest ancestor config and treats its canonical directory as the
+project root. The entire resolved root—not only the directory where the command
+was invoked—is mounted at `/project` by default, and the default guest workdir
+remains `/project` rather than mirroring the host invocation subdirectory.
+`watermelon status` prints the resolved path as `Project:`.
+
 ```toml
 [vm]
 image = "ubuntu-22.04"  # ubuntu-24.04 is also supported

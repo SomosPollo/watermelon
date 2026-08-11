@@ -2,7 +2,26 @@
 
 Detailed documentation for all watermelon commands.
 
-For normal operation, commands that accept `--name` resolve and validate `.watermelon.toml` in the current project. The flag overrides `[vm].name`; it never adopts a VM owned by another project or creates one from default configuration. Two fail-closed recovery paths are deliberately narrower: `stop` can stop a securely verified project-owned VM while returning the config error, and `destroy --name` can use its durable ownership record when the local config is missing or invalid.
+Project-scoped commands search the canonical current directory and its physical
+parents for the nearest `.watermelon.toml`, stopping at a Git, filesystem, or
+untrusted-directory boundary. The config directory becomes the resolved
+project root for VM identity and mounts and for associating policy state,
+scripts, and logs; `status` prints it as `Project:`. The invocation subdirectory
+is not preserved as a guest workdir: explicit and configured workdirs keep
+their existing precedence, with `/project` as the mounted default. A nearer
+invalid config is an error rather than a reason to use a higher one. `init`
+remains current-directory-only, while `doctor`, `list`, and `copy` are
+project-independent. See [File Location](CONFIG_SPEC.md#file-location) for the
+precise rules.
+
+For normal operation, commands that accept `--name` resolve and validate the
+discovered config. The flag overrides `[vm].name`; it never adopts a VM owned
+by another project or creates one from default configuration. Two fail-closed
+recovery paths are deliberately narrower: `stop` can stop a securely verified
+project-owned VM while returning an invalid discovered-config error, and
+`destroy --name` can use its durable ownership record in that case. If the
+config is missing entirely, run explicit-name recovery from the owning project
+root; a descendant alone cannot reconstruct that former root.
 
 Commands that create or attach to workloads (`run`, `exec`, `code`, and
 `copy`) run the host, Lima, and backend preflight before VM use, including the
@@ -37,7 +56,9 @@ for support tooling and automation.
 
 ## `watermelon init`
 
-Creates a `.watermelon.toml` configuration file in the current directory.
+Creates a `.watermelon.toml` configuration file in the current directory. It
+does not search for or modify an ancestor config, so it can intentionally start
+a nested project.
 
 ```bash
 watermelon init
@@ -66,7 +87,7 @@ watermelon code [--name <vm-name>]
 
 | Flag | Description |
 |------|-------------|
-| `--name <name>` | Override `[vm].name` and the path-derived name for this project |
+| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
 
 **Behavior:**
 - Requires the VM to exist (run `watermelon run` first)
@@ -131,7 +152,7 @@ watermelon run --no-shell
 
 | Flag | Description |
 |------|-------------|
-| `--name <name>` | Override `[vm].name` and the path-derived name for this project |
+| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
 | `--workdir <path>` | Override the configured guest working directory for this shell; the directory must already exist |
 | `--no-shell` | Create or start the VM without opening a shell; unavailable with `ask` enforcement |
 
@@ -183,7 +204,7 @@ watermelon exec [--name <vm-name>] "<shell command>"
 
 | Flag | Description |
 |------|-------------|
-| `--name <name>` | Override `[vm].name` and the path-derived name for this project |
+| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
 
 Watermelon flags must appear before the guest command. Use `--` to make the boundary explicit, especially when the guest command has flags of its own.
 
@@ -227,14 +248,14 @@ watermelon stop [--name <vm-name>]
 
 | Flag | Description |
 |------|-------------|
-| `--name <name>` | Override `[vm].name` and the path-derived name for this project |
+| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
 
 **Behavior:**
 - Gracefully shuts down the VM
 - All installed packages and files are preserved
 - VM can be restarted with `watermelon run`
 - Stops immediately even when interactive shells, commands, or IDE sessions are active; those sessions terminate as the VM shuts down
-- If a present config is malformed or unreadable, returns that error but first attempts to stop running VMs whose project binding or durable ownership can still be verified; with explicit `--name`, the same recovery also applies when the config is missing
+- If a present config is malformed or unreadable, returns that error but first attempts to stop running VMs whose project binding or durable ownership can still be verified; with explicit `--name`, the same recovery also applies when the config is missing and the command runs from the owning project root
 
 ---
 
@@ -250,7 +271,7 @@ watermelon destroy -f       # Short form
 
 | Flag | Description |
 |------|-------------|
-| `--name <name>` | Override `[vm].name` and the path-derived name for this project |
+| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
 | `--force`, `-f` | Skip the confirmation prompt |
 
 **Behavior:**
@@ -261,14 +282,14 @@ watermelon destroy -f       # Short form
 - If the VM is running, stops it immediately, terminating active interactive shells, commands, and IDE connections
 - After shutdown, waits for terminated Watermelon client processes to detach and release their usage leases before deleting the VM; `--force` skips confirmation, not this cleanup-safety wait
 - Revalidates project ownership before deletion and removes the corresponding host identity and policy state
-- With an explicit `--name`, can recover a custom-named VM when the local config is missing or invalid, but only when its durable identity proves that the current project owns it
+- With an explicit `--name`, can recover a custom-named VM after an invalid discovered config, but only when its durable identity proves ownership; when the config is missing entirely, run recovery from the owning project root
 - If Lima no longer has that verified VM, removes its stale Watermelon identity and policy state without asking Lima to delete another instance
 
 ---
 
 ## `watermelon status`
 
-Shows the status of the VM for the current project.
+Shows the status of the VM for the resolved project.
 
 ```bash
 watermelon status [--name <vm-name>]
@@ -276,7 +297,7 @@ watermelon status [--name <vm-name>]
 
 | Flag | Description |
 |------|-------------|
-| `--name <name>` | Override `[vm].name` and the path-derived name for this project |
+| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
 
 **Example output:**
 ```
@@ -287,7 +308,7 @@ Configured Policy: fail (blocks and logs connections outside the allowlist)
 Applied Policy:    fail (blocks and logs connections outside the allowlist) (recorded, current)
 ```
 
-`Configured Policy` comes from the current `.watermelon.toml`; `Applied Policy` comes from a host-side versioned record written after successful VM creation. “Current” means that record matches the current VM-affecting configuration; status does not inspect the live firewall. For an existing VM, status labels a changed record as stale and missing, invalid, or legacy records as unverified, then prints the required recreation command. The comparison rereads the exact bytes of every provision script. Keep those host files present and readable: editing a script makes the configuration stale, while a missing, unreadable, or newly invalid script prevents status from completing the comparison.
+`Configured Policy` comes from the discovered `.watermelon.toml`; `Applied Policy` comes from a host-side versioned record written after successful VM creation. “Current” means that record matches the current VM-affecting configuration; status does not inspect the live firewall. For an existing VM, status labels a changed record as stale and missing, invalid, or legacy records as unverified, then prints the required recreation command. The comparison rereads the exact bytes of every provision script. Keep those host files present and readable: editing a script makes the configuration stale, while a missing, unreadable, or newly invalid script prevents status from completing the comparison.
 
 **Status values:**
 - `Running` - VM is active
@@ -356,7 +377,7 @@ watermelon logs --name build --clear # Clear a named VM's log
 
 | Flag | Description |
 |------|-------------|
-| `--name <name>` | Override `[vm].name` and select that project's registered VM log |
+| `--name <name>` | Override `[vm].name` and select the resolved project's registered VM log |
 | `--clear` | Clear the selected log |
 
 **Example output:**
