@@ -244,6 +244,9 @@ func runRunWithOptions(opts runOptions) error {
 	if opts.Workdir != "" {
 		workdir = opts.Workdir
 	}
+	if err := requireCompatibleLima(); err != nil {
+		return err
+	}
 	lifecycleLock, err := acquireVMLifecycleLock(vmName)
 	if err != nil {
 		return fmt.Errorf("locking VM %q lifecycle: %w", vmName, err)

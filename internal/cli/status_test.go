@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,9 +14,13 @@ import (
 
 func useNoVMStatus(t *testing.T) {
 	t.Helper()
-	oldStatus := cliGetVMStatus
+	oldStatus, oldStatusWithError := cliGetVMStatus, cliGetVMStatusWithError
 	cliGetVMStatus = func(string) lima.VMStatus { return lima.StatusNotFound }
-	t.Cleanup(func() { cliGetVMStatus = oldStatus })
+	cliGetVMStatusWithError = func(string) (lima.VMStatus, error) { return lima.StatusNotFound, nil }
+	t.Cleanup(func() {
+		cliGetVMStatus = oldStatus
+		cliGetVMStatusWithError = oldStatusWithError
+	})
 }
 
 func TestStatusCommand(t *testing.T) {
@@ -28,6 +33,28 @@ func TestStatusCommand(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Config:   missing") {
 		t.Errorf("status output should mention missing config:\n%s", out.String())
+	}
+}
+
+func TestStatusReportsLimaFailureWithDoctorGuidance(t *testing.T) {
+	oldStatus := cliGetVMStatusWithError
+	cliGetVMStatusWithError = func(string) (lima.VMStatus, error) {
+		return lima.StatusUnknown, errors.New("limactl executable not found")
+	}
+	t.Cleanup(func() { cliGetVMStatusWithError = oldStatus })
+
+	var out bytes.Buffer
+	err := runStatus(&out, t.TempDir())
+	if err == nil {
+		t.Fatal("runStatus() succeeded")
+	}
+	for _, want := range []string{"limactl executable not found", "watermelon doctor"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("runStatus() error = %q, want %q", err, want)
+		}
+	}
+	if out.Len() != 0 {
+		t.Fatalf("status wrote partial output after Lima failure:\n%s", out.String())
 	}
 }
 
@@ -126,12 +153,15 @@ func TestStatusRecoveryKeepsExplicitPathDerivedSelection(t *testing.T) {
 	}
 	derived := lima.VMNameFromPath(dir)
 
-	oldStatus, oldProjectSource := cliGetVMStatus, cliProjectMountSource
+	oldStatus, oldStatusWithError, oldProjectSource := cliGetVMStatus, cliGetVMStatusWithError, cliProjectMountSource
 	cliGetVMStatus = func(name string) lima.VMStatus {
 		if name != derived {
 			t.Fatalf("status checked for VM %q, want explicitly selected %q", name, derived)
 		}
 		return lima.StatusStopped
+	}
+	cliGetVMStatusWithError = func(name string) (lima.VMStatus, error) {
+		return cliGetVMStatus(name), nil
 	}
 	cliProjectMountSource = func(name string) (string, error) {
 		if name != derived {
@@ -141,6 +171,7 @@ func TestStatusRecoveryKeepsExplicitPathDerivedSelection(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		cliGetVMStatus = oldStatus
+		cliGetVMStatusWithError = oldStatusWithError
 		cliProjectMountSource = oldProjectSource
 	})
 

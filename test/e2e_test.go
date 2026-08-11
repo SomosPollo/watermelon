@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -363,6 +364,22 @@ func requireUsableKVM() error {
 
 func TestE2ECLIProjectWorkflow(t *testing.T) {
 	h := newHarness(t)
+
+	doctorOutput, err := h.commandInDir(h.root, 30*time.Second, "doctor", "--json")
+	if err != nil {
+		t.Fatalf("project-independent doctor failed: %v\n%s", err, doctorOutput)
+	}
+	var doctorReport struct {
+		SchemaVersion int               `json:"schemaVersion"`
+		OK            bool              `json:"ok"`
+		Checks        []json.RawMessage `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(doctorOutput), &doctorReport); err != nil {
+		t.Fatalf("doctor returned invalid JSON: %v\n%s", err, doctorOutput)
+	}
+	if doctorReport.SchemaVersion != 1 || !doctorReport.OK || len(doctorReport.Checks) == 0 {
+		t.Fatalf("doctor returned an unhealthy or incomplete report: %+v", doctorReport)
+	}
 
 	out := h.run(30*time.Second, "init")
 	if !strings.Contains(out, "Created") {

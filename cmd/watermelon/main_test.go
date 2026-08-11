@@ -25,6 +25,17 @@ func TestMainBuilds(t *testing.T) {
 	}
 }
 
+func TestRootRegistersDoctor(t *testing.T) {
+	root := newRootCmd()
+	doctor := findCommand(t, root, "doctor")
+	if doctor.Short == "" {
+		t.Fatal("doctor command has no summary")
+	}
+	if doctor.Args == nil {
+		t.Fatal("doctor command has no positional-argument contract")
+	}
+}
+
 func TestResolvedVersionPrefersLinkedVersion(t *testing.T) {
 	readCalled := false
 	got := resolvedVersion("v9.8.7", func() (*debug.BuildInfo, bool) {

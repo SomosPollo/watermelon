@@ -674,14 +674,16 @@ func TestStatusExplicitNameUsesEffectiveNamedPolicySnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldStatus, oldMount, oldProjectMount := cliGetVMStatus, cliInstanceMount, cliProjectMountSource
+	oldStatus, oldStatusWithError, oldMount, oldProjectMount := cliGetVMStatus, cliGetVMStatusWithError, cliInstanceMount, cliProjectMountSource
 	cliGetVMStatus = func(string) lima.VMStatus { return lima.StatusRunning }
+	cliGetVMStatusWithError = func(string) (lima.VMStatus, error) { return lima.StatusRunning, nil }
 	cliInstanceMount = func(_, target string) (lima.LimaMount, error) {
 		return lima.LimaMount{Location: instance.Paths.BootstrapDir, MountPoint: target}, nil
 	}
 	cliProjectMountSource = func(string) (string, error) { return project, nil }
 	t.Cleanup(func() {
 		cliGetVMStatus = oldStatus
+		cliGetVMStatusWithError = oldStatusWithError
 		cliInstanceMount = oldMount
 		cliProjectMountSource = oldProjectMount
 	})

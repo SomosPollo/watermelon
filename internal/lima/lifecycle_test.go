@@ -199,6 +199,44 @@ func TestGetStatusTreatsTransitionalBrokenAndCommandErrorsAsUnknown(t *testing.T
 	})
 }
 
+func TestGetStatusWithErrorPreservesOperationalFailures(t *testing.T) {
+	t.Run("command error", func(t *testing.T) {
+		withFakeExec(t, "", 1)
+		status, err := GetStatusWithError("watermelon-test-12345678")
+		if status != StatusUnknown || err == nil || !strings.Contains(err.Error(), "listing Lima instances") {
+			t.Fatalf("GetStatusWithError() = (%v, %v), want StatusUnknown with listing error", status, err)
+		}
+	})
+
+	t.Run("malformed output", func(t *testing.T) {
+		withFakeExec(t, "not-json", 0)
+		status, err := GetStatusWithError("watermelon-test-12345678")
+		if status != StatusUnknown || err == nil || !strings.Contains(err.Error(), "decoding Lima instance list") {
+			t.Fatalf("GetStatusWithError() = (%v, %v), want StatusUnknown with decoding error", status, err)
+		}
+	})
+}
+
+func TestGetStatusWithErrorReturnsOrdinaryStatusesWithoutError(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		output string
+		want   VMStatus
+	}{
+		{name: "running", output: limaStringRecord("custom-dev", "Running"), want: StatusRunning},
+		{name: "not found", output: limaStringRecord("other", "Running"), want: StatusNotFound},
+		{name: "transitional", output: limaStringRecord("custom-dev", "Starting"), want: StatusUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			withFakeExec(t, test.output, 0)
+			status, err := GetStatusWithError("custom-dev")
+			if err != nil || status != test.want {
+				t.Fatalf("GetStatusWithError() = (%v, %v), want (%v, nil)", status, err, test.want)
+			}
+		})
+	}
+}
+
 func TestProjectMountSource(t *testing.T) {
 	withFakeExec(t, limaMountRecord("watermelon-test-12345678", `[{"location":"/host/project","mountPoint":"/project","writable":true}]`), 0)
 

@@ -21,6 +21,7 @@ func TestNoArgumentCommandsHaveExplicitContracts(t *testing.T) {
 	}{
 		{name: "run", new: NewRunCmd},
 		{name: "init", new: NewInitCmd},
+		{name: "doctor", new: func() *cobra.Command { return NewDoctorCmd("test-version") }},
 		{name: "stop", new: NewStopCmd},
 		{name: "destroy", new: NewDestroyCmd},
 		{name: "status", new: NewStatusCmd},
@@ -53,6 +54,7 @@ func TestNoArgumentCommandsRejectUnexpectedArgumentsBeforeHandlers(t *testing.T)
 	}{
 		{name: "run", new: NewRunCmd, args: []string{"unexpected", "--no-shell"}},
 		{name: "init", new: NewInitCmd, args: []string{"unexpected"}},
+		{name: "doctor", new: func() *cobra.Command { return NewDoctorCmd("test-version") }, args: []string{"unexpected"}},
 		{name: "stop", new: NewStopCmd, args: []string{"some-name"}},
 		{name: "destroy", new: NewDestroyCmd, args: []string{"some-name", "--force"}},
 		{name: "status", new: NewStatusCmd, args: []string{"some-name"}},
