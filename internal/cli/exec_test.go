@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,8 +12,90 @@ import (
 	"time"
 
 	"github.com/saeta-eth/watermelon/internal/lima"
+	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
 )
+
+type testExecGuestExitError struct {
+	code int
+}
+
+func (e *testExecGuestExitError) Error() string      { return fmt.Sprintf("guest exit %d", e.code) }
+func (e *testExecGuestExitError) GuestExitCode() int { return e.code }
+
+func TestFinishExecCommandPreservesOnlyCleanGuestResult(t *testing.T) {
+	t.Run("clean guest exit", func(t *testing.T) {
+		cmd := NewExecCmd()
+		guestErr := &testExecGuestExitError{code: 37}
+		got := finishExecCommand(cmd, guestErr, nil)
+		if got != guestErr {
+			t.Fatalf("finishExecCommand() = %T %v, want exact guest error", got, got)
+		}
+		if !cmd.SilenceErrors || !cmd.SilenceUsage {
+			t.Fatalf("guest result left Cobra noise enabled: errors=%v usage=%v", cmd.SilenceErrors, cmd.SilenceUsage)
+		}
+	})
+
+	t.Run("guest exit with cleanup failure", func(t *testing.T) {
+		cmd := NewExecCmd()
+		guestErr := &testExecGuestExitError{code: 37}
+		cleanupErr := errors.New("releasing usage lease")
+		got := finishExecCommand(cmd, guestErr, cleanupErr)
+		if !errors.Is(got, guestErr) || !errors.Is(got, cleanupErr) {
+			t.Fatalf("finishExecCommand() = %v, want joined guest and cleanup errors", got)
+		}
+		if _, ok := got.(guestExitCoder); ok {
+			t.Fatalf("cleanup failure retained a top-level guest marker: %T", got)
+		}
+		if cmd.SilenceErrors || cmd.SilenceUsage {
+			t.Fatalf("cleanup failure silenced Cobra: errors=%v usage=%v", cmd.SilenceErrors, cmd.SilenceUsage)
+		}
+	})
+
+	t.Run("ordinary exec failure", func(t *testing.T) {
+		cmd := NewExecCmd()
+		execErr := errors.New("launching limactl")
+		got := finishExecCommand(cmd, execErr, nil)
+		if got != execErr {
+			t.Fatalf("finishExecCommand() = %v, want exact ordinary error", got)
+		}
+		if cmd.SilenceErrors || cmd.SilenceUsage {
+			t.Fatalf("ordinary failure silenced Cobra: errors=%v usage=%v", cmd.SilenceErrors, cmd.SilenceUsage)
+		}
+	})
+
+	t.Run("cleanup after success", func(t *testing.T) {
+		cmd := NewExecCmd()
+		cleanupErr := errors.New("releasing usage lease")
+		got := finishExecCommand(cmd, nil, cleanupErr)
+		if !errors.Is(got, cleanupErr) {
+			t.Fatalf("finishExecCommand() = %v, want cleanup error", got)
+		}
+		if _, ok := got.(guestExitCoder); ok {
+			t.Fatalf("cleanup failure was marked as guest exit: %T", got)
+		}
+	})
+}
+
+func TestCleanGuestResultProducesNoCobraErrorOrUsage(t *testing.T) {
+	cmd := NewExecCmd()
+	guestErr := &testExecGuestExitError{code: 37}
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		return finishExecCommand(cmd, guestErr, nil)
+	}
+	cmd.SetArgs([]string{"guest-command"})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+
+	err := cmd.Execute()
+	if err != guestErr {
+		t.Fatalf("Execute() error = %T %v, want exact guest error", err, err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("Cobra printed output for guest result: %q", output.String())
+	}
+}
 
 func TestExecFlagParsingStopsAtGuestCommand(t *testing.T) {
 	tests := []struct {

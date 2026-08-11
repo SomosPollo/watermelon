@@ -546,6 +546,67 @@ func TestExecRunsCompoundSingleStringThroughShell(t *testing.T) {
 	}
 }
 
+func TestExecMarksNumericGuestExitStatuses(t *testing.T) {
+	for _, want := range []int{1, 2, 126, 127, 128, 130, 143, 254, 255} {
+		t.Run(fmt.Sprint(want), func(t *testing.T) {
+			withFakeExec(t, "", want)
+
+			err := Exec("watermelon-test-12345678", []string{"guest-command"})
+			guestErr, ok := err.(interface{ GuestExitCode() int })
+			if !ok {
+				t.Fatalf("Exec() error = %T %v, want guest exit marker", err, err)
+			}
+			if got := guestErr.GuestExitCode(); got != want {
+				t.Fatalf("guest exit code = %d, want %d", got, want)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("Exec() error does not retain *exec.ExitError: %v", err)
+			}
+		})
+	}
+}
+
+func TestExecDoesNotMarkSignalKilledLimactlAsGuestExit(t *testing.T) {
+	old := execCommand
+	execCommand = func(string, ...string) *exec.Cmd {
+		return exec.Command("sh", "-c", "kill -TERM $$")
+	}
+	t.Cleanup(func() { execCommand = old })
+
+	err := Exec("watermelon-test-12345678", []string{"guest-command"})
+	if err == nil {
+		t.Fatal("Exec() unexpectedly succeeded")
+	}
+	if _, ok := err.(interface{ GuestExitCode() int }); ok {
+		t.Fatalf("signal-killed limactl was marked as a guest exit: %v", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Exec() error = %T %v, want *exec.ExitError", err, err)
+	}
+	if got := exitErr.ExitCode(); got != -1 {
+		t.Fatalf("signal-killed process exit code = %d, want -1", got)
+	}
+}
+
+func TestExecDoesNotMarkLaunchFailuresAsGuestExit(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-limactl")
+	old := execCommand
+	execCommand = func(string, ...string) *exec.Cmd {
+		return exec.Command(missing)
+	}
+	t.Cleanup(func() { execCommand = old })
+
+	err := Exec("watermelon-test-12345678", []string{"guest-command"})
+	if err == nil {
+		t.Fatal("Exec() unexpectedly succeeded")
+	}
+	if _, ok := err.(interface{ GuestExitCode() int }); ok {
+		t.Fatalf("launch failure was marked as a guest exit: %v", err)
+	}
+}
+
 func TestShellAndExecHonorExplicitWorkdir(t *testing.T) {
 	tests := []struct {
 		name string
@@ -600,6 +661,8 @@ func TestShellAndExecRejectMultipleWorkdirsWithoutCallingLima(t *testing.T) {
 	}
 	if err := Exec("custom-dev", []string{"pwd"}, "/one", "/two"); err == nil {
 		t.Fatal("Exec() accepted multiple workdirs")
+	} else if _, ok := err.(interface{ GuestExitCode() int }); ok {
+		t.Fatalf("workdir validation error was marked as a guest exit: %v", err)
 	}
 	if len(captured) != 0 {
 		t.Fatalf("invalid workdirs invoked Lima: %v", captured)

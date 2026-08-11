@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -167,6 +168,19 @@ func (h *e2eHarness) runErr(timeout time.Duration, args ...string) string {
 	out, err := h.command(timeout, args...)
 	if err == nil {
 		h.t.Fatalf("watermelon %s unexpectedly succeeded:\n%s", strings.Join(args, " "), out)
+	}
+	return out
+}
+
+func (h *e2eHarness) runExitCode(timeout time.Duration, want int, args ...string) string {
+	h.t.Helper()
+	out, err := h.command(timeout, args...)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		h.t.Fatalf("watermelon %s error = %T %v, want exit code %d\n%s", strings.Join(args, " "), err, err, want, out)
+	}
+	if got := exitErr.ExitCode(); got != want {
+		h.t.Fatalf("watermelon %s exit code = %d, want %d\n%s", strings.Join(args, " "), got, want, out)
 	}
 	return out
 }
@@ -355,7 +369,7 @@ func TestE2ECLIProjectWorkflow(t *testing.T) {
 	out = h.run(30*time.Second, "status")
 	requireVMStatus(t, out, "Not found")
 
-	out = h.runErr(30*time.Second, "exec", "true")
+	out = h.runExitCode(30*time.Second, 1, "exec", "true")
 	if !strings.Contains(out, "no sandbox VM found") {
 		t.Fatalf("exec before VM creation returned unexpected output:\n%s", out)
 	}
@@ -582,6 +596,10 @@ disk = "10GB"
 	if strings.TrimSpace(out) != "/project" {
 		t.Fatalf("expected pwd to be /project, got:\n%s", out)
 	}
+
+	h.runExitCode(timings.command, 37, "exec", "--", "sh", "-c", "exit 37")
+	h.runExitCode(timings.command, 255, "exec", "--", "sh", "-c", "exit 255")
+	h.runExitCode(timings.command, 143, "exec", "--", "sh", "-c", "kill -TERM $$")
 
 	out = h.run(timings.command, "exec", "cat", "/project/host.txt")
 	if strings.TrimSpace(out) != "project-mount-ok" {

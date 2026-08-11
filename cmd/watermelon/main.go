@@ -34,7 +34,29 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
+		if code, ok := exitCodeForError(err); ok {
+			os.Exit(code)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// Keep this interface specific to guest execution. In particular,
+// *exec.ExitError also has an ExitCode method and is returned by Watermelon's
+// own subprocesses, so matching a generic exit-code interface would be unsafe.
+type guestExitCoder interface {
+	GuestExitCode() int
+}
+
+func exitCodeForError(err error) (int, bool) {
+	guestErr, ok := err.(guestExitCoder)
+	if !ok {
+		return 1, false
+	}
+	code := guestErr.GuestExitCode()
+	if code < 1 || code > 255 {
+		return 1, false
+	}
+	return code, true
 }
