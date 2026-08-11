@@ -32,6 +32,7 @@ func NewRunCmd() *cobra.Command {
 		Use:   "run",
 		Short: "Enter the project sandbox VM",
 		Long:  "Start the project VM (creating it if needed) and open an interactive shell.",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRunWithOptions(runOptions{OpenShell: !noShell, Name: name, Workdir: workdir})
 		},
