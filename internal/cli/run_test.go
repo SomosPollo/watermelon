@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/saeta-eth/watermelon/internal/ask"
 	"github.com/saeta-eth/watermelon/internal/config"
 	"github.com/saeta-eth/watermelon/internal/lima"
 )
@@ -597,6 +598,55 @@ func TestSaveAndAssessAppliedPolicySnapshot(t *testing.T) {
 	}
 }
 
+func TestSavedAskRuleMakesAppliedPolicyStaleUntilNamedVMRecreation(t *testing.T) {
+	project := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", privateTempDir(t))
+	t.Setenv("LIMA_HOME", "")
+	vmName := "ask-saved-rule"
+	configPath := filepath.Join(project, ".watermelon.toml")
+	contents := `[vm]
+name = "ask-saved-rule"
+
+[network]
+allow = []
+
+[security]
+enforcement = "ask"
+`
+	if err := os.WriteFile(configPath, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := loadProjectConfig(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAppliedPolicySnapshotForVM(project, vmName, applied); err != nil {
+		t.Fatal(err)
+	}
+
+	added, err := ask.AddDomainToConfig(configPath, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !added {
+		t.Fatal("new ask rule was not added")
+	}
+	configured, err := loadProjectConfig(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessment := assessAppliedPolicyForVM(project, vmName, lima.StatusStopped, configured)
+	if assessment.State != policyStale {
+		t.Fatalf("saved ask-rule policy state = %v, want stale (error: %v)", assessment.State, assessment.Err)
+	}
+
+	wantCommand := "watermelon destroy --name ask-saved-rule --force && watermelon run --name ask-saved-rule"
+	policyErr := requireCurrentAppliedPolicyForVM(project, vmName, lima.StatusStopped, configured, true)
+	if policyErr == nil || !strings.Contains(policyErr.Error(), wantCommand) {
+		t.Fatalf("saved ask-rule recovery error = %v, want %q", policyErr, wantCommand)
+	}
+}
+
 func TestAppliedPolicySnapshotDetectsEffectiveUIDMismatch(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("Watermelon VM creation requires an unprivileged effective host UID")
@@ -675,6 +725,10 @@ func TestPolicyRecoveryCommandsPreserveCustomVMName(t *testing.T) {
 	derived := lima.VMNameFromPath(dir)
 	if got := recreatePolicyCommandForVM(dir, derived); got != recreatePolicyCommand {
 		t.Fatalf("derived recreate command = %q, want %q", got, recreatePolicyCommand)
+	}
+	wantDeferred := "watermelon destroy --name " + derived + " --force && watermelon run --name " + derived
+	if got := deferredRecreatePolicyCommandForVM(dir, derived); got != wantDeferred {
+		t.Fatalf("deferred derived recreate command = %q, want VM-pinned %q", got, wantDeferred)
 	}
 	if got := restartPolicyCommandForVM(dir, derived); got != "watermelon stop && watermelon run" {
 		t.Fatalf("derived restart command = %q", got)

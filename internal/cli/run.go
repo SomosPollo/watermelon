@@ -83,6 +83,13 @@ func recreatePolicyCommandForVM(dir, vmName string, nameExplicit ...bool) string
 	return fmt.Sprintf("watermelon destroy --name %s --force && watermelon run --name %s", vmName, vmName)
 }
 
+// deferredRecreatePolicyCommandForVM pins the VM selected when an ask prompt
+// server starts. The user runs this destructive command later, after leaving
+// the session; an intervening vm.name edit must not retarget it.
+func deferredRecreatePolicyCommandForVM(dir, vmName string) string {
+	return recreatePolicyCommandForVM(dir, vmName, true)
+}
+
 func restartPolicyCommandForVM(dir, vmName string, nameExplicit ...bool) string {
 	if !policyCommandNeedsExplicitName(dir, vmName, nameExplicit) {
 		return "watermelon stop && watermelon run"
@@ -179,7 +186,13 @@ func startAskVerdictServerForExistingVMWithDialog(dir, vmName string, dialog ask
 	if dialog == nil {
 		dialog = ask.ShowDialog
 	}
-	srv := ask.NewServer(project, configPath, authKey, dialog)
+	srv := ask.NewServer(
+		project,
+		configPath,
+		authKey,
+		dialog,
+		ask.WithRecreateCommand(deferredRecreatePolicyCommandForVM(dir, vmName)),
+	)
 	go srv.Serve(listener)
 	return listener, nil
 }
@@ -323,7 +336,13 @@ func runRunWithOptions(opts runOptions) error {
 
 		configPath := filepath.Join(dir, ".watermelon.toml")
 		project := filepath.Base(dir)
-		srv := ask.NewServer(project, configPath, verdictAuthKey, terminalCoordinator.Dialog)
+		srv := ask.NewServer(
+			project,
+			configPath,
+			verdictAuthKey,
+			terminalCoordinator.Dialog,
+			ask.WithRecreateCommand(deferredRecreatePolicyCommandForVM(dir, vmName)),
+		)
 		go srv.Serve(verdictListener)
 		fmt.Printf("Verdict server listening on port %d...\n", verdictPort)
 	}

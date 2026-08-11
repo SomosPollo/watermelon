@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"time"
 	"unicode"
@@ -33,9 +34,11 @@ const (
 type Server struct {
 	project      string
 	configPath   string
+	recreateCmd  string
+	noticeWriter io.Writer
 	cache        *Cache
 	dialog       DialogFunc
-	dialogMu     sync.Mutex // ensures one dialog at a time
+	dialogMu     sync.Mutex // serializes each dialog, persistence edit, and notice
 	authKey      AuthKey
 	connections  chan struct{}
 	connectionMu sync.Mutex
@@ -49,19 +52,45 @@ type Server struct {
 	writeTimeout time.Duration
 }
 
+// ServerOption customizes verdict-server behavior.
+type ServerOption func(*Server)
+
+// WithRecreateCommand sets the exact host command shown after an always-allow
+// decision is saved. The command should recreate the VM selected by the CLI so
+// the saved policy can become part of its provisioned firewall.
+func WithRecreateCommand(command string) ServerOption {
+	return func(server *Server) {
+		server.recreateCmd = command
+	}
+}
+
+// WithNoticeWriter redirects always-allow persistence notices. It is primarily
+// useful to callers that need to present or test those notices separately from
+// the verdict dialog.
+func WithNoticeWriter(writer io.Writer) ServerOption {
+	return func(server *Server) {
+		if writer == nil {
+			writer = io.Discard
+		}
+		server.noticeWriter = writer
+	}
+}
+
 // NewServer creates a verdict server.
 // project is the project name shown in dialogs.
 // configPath is the path to .watermelon.toml (for always-allow writes). Empty string disables TOML writes.
 // authKey is the per-instance key shared only with the root-owned guest daemon.
 // dialog is the function to show the verdict dialog. Pass nil to use the
-// default host prompt.
-func NewServer(project, configPath string, authKey AuthKey, dialog DialogFunc) *Server {
+// default host prompt. Options can supply the exact VM recreation command and
+// redirect persistence notices.
+func NewServer(project, configPath string, authKey AuthKey, dialog DialogFunc, options ...ServerOption) *Server {
 	if dialog == nil {
 		dialog = ShowDialog
 	}
-	return &Server{
+	server := &Server{
 		project:      project,
 		configPath:   configPath,
+		noticeWriter: os.Stderr,
 		cache:        NewCache(),
 		dialog:       dialog,
 		authKey:      authKey,
@@ -73,6 +102,12 @@ func NewServer(project, configPath string, authKey AuthKey, dialog DialogFunc) *
 		readTimeout:  verdictReadTimeout,
 		writeTimeout: verdictWriteTimeout,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(server)
+		}
+	}
+	return server
 }
 
 // Serve accepts connections on the listener and handles verdict requests.
@@ -245,7 +280,12 @@ func (s *Server) markNonce(nonce string) bool {
 
 func (s *Server) getVerdict(req VerdictRequest) string {
 	domain := req.Domain
-	if domain == "" {
+	if domain != "" {
+		// Requests are validated before reaching this path. Canonicalizing here
+		// keeps the displayed, cached, and persisted host spellings identical.
+		rule, _ := config.ParseNetworkRule(domain)
+		domain = rule.Host
+	} else {
 		domain = req.IP
 	}
 
@@ -266,10 +306,12 @@ func (s *Server) getVerdict(req VerdictRequest) string {
 		return s.getVerdict(req)
 	}
 
-	// We're the first — show dialog (one at a time)
+	// We're the first — handle the full interactive decision one at a time. Keep
+	// the lock through persistence and its notice so a second prompt cannot be
+	// overwritten by the first decision's delayed output.
 	s.dialogMu.Lock()
+	defer s.dialogMu.Unlock()
 	verdict := s.dialog(req.Process, domain, req.Port, s.project)
-	s.dialogMu.Unlock()
 	if !ValidVerdict(verdict) {
 		verdict = VerdictBlock
 	}
@@ -281,14 +323,42 @@ func (s *Server) getVerdict(req VerdictRequest) string {
 		s.cache.Set(cacheKey, verdict)
 	}
 
-	// For always-allow, persist to TOML (still by domain, not port)
+	// Always Allow deliberately persists a global bare-host rule. The prompt
+	// labels the observed process as informational and states that the saved
+	// rule has no process, protocol, or port scope, rather than implying that
+	// the displayed process or TCP destination port will be retained.
 	if verdict == VerdictAlwaysAllow && s.configPath != "" {
-		if err := AddDomainToConfig(s.configPath, domain); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not update config: %v\n", err)
+		added, err := AddDomainToConfig(s.configPath, domain)
+		var notice strings.Builder
+		if err != nil {
+			fmt.Fprintf(&notice, "Allowed TCP destination %s:%d for all processes in the current VM runtime, but the global host-only rule was not saved: %v\n", domain, req.Port, err)
 		} else {
-			fmt.Fprintf(os.Stderr, "Saved network allow rule for %s in %s\n", domain, s.configPath)
+			action := "Saved"
+			if !added {
+				action = "Found existing"
+			}
+			fmt.Fprintf(&notice, "Allowed TCP destination %s:%d for all processes in the current VM runtime.\n", domain, req.Port)
+			fmt.Fprintf(&notice, "%s global host-only rule %q with no process, protocol, or port scope in %s; managed DNS remains enforced.\n", action, domain, s.configPath)
+			if s.recreateCmd != "" {
+				fmt.Fprintln(&notice, "After this Watermelon session finishes, run the following command from the project root to apply the saved rule to future VM sessions (recreation removes VM-local state):")
+				fmt.Fprintf(&notice, "  %s\n", s.recreateCmd)
+			} else {
+				fmt.Fprintln(&notice, "Recreate the VM after this Watermelon session finishes to apply the saved rule to future VM sessions (recreation removes VM-local state).")
+			}
 		}
+		writeDecisionNotice(s.noticeWriter, notice.String())
 	}
 
 	return verdict
+}
+
+func writeDecisionNotice(writer io.Writer, notice string) {
+	// Interactive guest commands may leave their terminal in a raw state with
+	// output post-processing disabled. Use explicit CRLF for a terminal so this
+	// host-side notice still starts each line in the first column. Redirected
+	// diagnostics retain ordinary LF bytes.
+	if file, ok := writer.(*os.File); ok && fileIsTerminal(file) {
+		notice = strings.ReplaceAll(notice, "\n", "\r\n")
+	}
+	_, _ = io.WriteString(writer, notice)
 }
