@@ -107,6 +107,8 @@ The shell runs as the ordinary VM user. General passwordless `sudo` is removed a
 
 `ask` is deliberately foreground-only. `watermelon run --no-shell` is rejected because no host process would remain to display network prompts. Run without `--no-shell` and keep Watermelon and its interactive shell open; the prompt server remains available until that shell exits. One saved host port connects the VM to one foreground prompt controller, so wait for that controller to exit before starting another ask-mode `run`, `exec`, or `code` command for the same VM.
 
+On Linux, a verdict prompt reads and writes the foreground controlling terminal rather than guest stdin or command stdout. Watermelon pauses forwarding interactive guest input while the prompt is visible, so a shell keystroke cannot become a policy verdict and a verdict cannot reach the guest. If no foreground controlling terminal is available, the request blocks by default instead of reading another input stream. macOS uses its native dialog backend.
+
 **VM naming:**
 
 The VM name is selected in this order:
@@ -154,7 +156,10 @@ watermelon exec "python -m pytest"
 watermelon exec "npm install && npm run build"
 watermelon exec -- npm install
 watermelon exec --name dev -- docker run --name web nginx
+producer | watermelon exec -- consumer
 ```
+
+Redirected stdin is forwarded unchanged to the guest command. In Linux `ask` mode, verdicts still come from the controlling terminal, so bytes from `producer` in the pipeline above can never be interpreted as a verdict. A redirected stdin does not by itself disable prompts when Watermelon still has a foreground controlling terminal. In a detached session, CI job, or other environment with no controlling terminal, non-allowlisted requests block by default rather than waiting on or consuming the pipe. macOS displays its native dialog independently of stdin.
 
 **Behavior:**
 - Requires the VM to already exist (run `watermelon run` first)
@@ -163,6 +168,7 @@ watermelon exec --name dev -- docker run --name web nginx
 - Runs a single string containing spaces or shell operators through `sh -lc` inside the VM
 - Runs in `[vm].workdir`, `/project` by default when mounted, or the guest login directory when no workdir is configured; an explicit workdir must already exist in the guest
 - Preserves flags after the guest command starts; for example, Docker's `--name` is not interpreted as Watermelon's flag
+- Forwards redirected stdin exclusively to the guest command
 - In `ask` mode, runs the host prompt server for the command's full duration, then shuts it down when the command exits; another foreground ask prompt controller for that VM prevents this command from starting
 - Returns `0` when the guest command succeeds and propagates numeric guest exit statuses from `1` through `255` unchanged
 - Reports a guest command terminated by signal `N` using the Unix shell convention `128+N` (for example, `SIGINT` is `130` and `SIGTERM` is `143`)

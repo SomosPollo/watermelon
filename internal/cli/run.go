@@ -49,6 +49,11 @@ type runOptions struct {
 	Workdir   string
 }
 
+type askTerminalCoordinator interface {
+	lima.CommandRunner
+	Dialog(process, domain string, port int, project string) string
+}
+
 const recreatePolicyCommand = "watermelon destroy --force && watermelon run"
 
 func policyCommandNeedsExplicitName(dir, vmName string, nameExplicit []bool) bool {
@@ -125,11 +130,14 @@ var (
 	cliStartVM            = lima.Start
 	cliStopVM             = lima.Stop
 	cliShellVM            = lima.Shell
+	cliShellVMWithRunner  = lima.ShellWithRunner
 	cliVerifyPolicy       = lima.VerifyProvisioningComplete
 	cliGenerateConfig     = lima.GenerateConfigForInstance
 	cliSavePolicySnapshot = saveAppliedPolicySnapshotWithHost
 	cliSaveVerdictPort    = savePort
 	cliSaveVerdictPortAt  = savePortAt
+	cliNewAskCoordinator  = func() askTerminalCoordinator { return ask.NewTerminalCoordinator() }
+	cliStartAskServer     = startAskVerdictServerForExistingVMWithDialog
 )
 
 func runRun() error {
@@ -141,6 +149,10 @@ func listenForAskVerdicts(vmName string, port int) (net.Listener, error) {
 }
 
 func startAskVerdictServerForExistingVM(dir, vmName string) (net.Listener, error) {
+	return startAskVerdictServerForExistingVMWithDialog(dir, vmName, ask.ShowDialog)
+}
+
+func startAskVerdictServerForExistingVMWithDialog(dir, vmName string, dialog ask.DialogFunc) (net.Listener, error) {
 	instance, err := loadOwnedNamedVMIdentity(dir, vmName)
 	if err != nil {
 		return nil, fmt.Errorf("loading ask-mode VM runtime state: %w", err)
@@ -164,7 +176,10 @@ func startAskVerdictServerForExistingVM(dir, vmName string) (net.Listener, error
 
 	configPath := filepath.Join(dir, ".watermelon.toml")
 	project := filepath.Base(dir)
-	srv := ask.NewServer(project, configPath, authKey, ask.ShowDialog)
+	if dialog == nil {
+		dialog = ask.ShowDialog
+	}
+	srv := ask.NewServer(project, configPath, authKey, dialog)
 	go srv.Serve(listener)
 	return listener, nil
 }
@@ -268,7 +283,9 @@ func runRunWithOptions(opts runOptions) error {
 	var verdictListener net.Listener
 	var verdictPort int
 	var verdictAuthKey ask.AuthKey
+	var terminalCoordinator askTerminalCoordinator
 	if cfg.Security.Enforcement == "ask" {
+		terminalCoordinator = cliNewAskCoordinator()
 		if instanceIdentity == nil {
 			return errors.New("internal error: ask enforcement requires a VM identity bootstrap")
 		}
@@ -306,7 +323,7 @@ func runRunWithOptions(opts runOptions) error {
 
 		configPath := filepath.Join(dir, ".watermelon.toml")
 		project := filepath.Base(dir)
-		srv := ask.NewServer(project, configPath, verdictAuthKey, ask.ShowDialog)
+		srv := ask.NewServer(project, configPath, verdictAuthKey, terminalCoordinator.Dialog)
 		go srv.Serve(verdictListener)
 		fmt.Printf("Verdict server listening on port %d...\n", verdictPort)
 	}
@@ -415,7 +432,12 @@ func runRunWithOptions(opts runOptions) error {
 	if err := lifecycleLock.Release(); err != nil {
 		return errors.Join(err, usageLease.Release())
 	}
-	shellErr := cliShellVM(vmName, workdir)
+	var shellErr error
+	if terminalCoordinator != nil {
+		shellErr = cliShellVMWithRunner(vmName, terminalCoordinator, workdir)
+	} else {
+		shellErr = cliShellVM(vmName, workdir)
+	}
 	leaseErr := usageLease.Release()
 	return errors.Join(shellErr, leaseErr)
 }

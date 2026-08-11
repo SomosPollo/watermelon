@@ -136,7 +136,7 @@ enforcement = "ask"
 	}
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
 
-	oldStatus, oldStart, oldShell := cliGetVMStatus, cliStartVM, cliShellVM
+	oldStatus, oldStart, oldShell, oldShellWithRunner := cliGetVMStatus, cliStartVM, cliShellVM, cliShellVMWithRunner
 	oldVerify, oldMount := cliVerifyPolicy, cliInstanceMount
 	oldProjectMount := cliProjectMountSource
 	cliGetVMStatus = func(string) lima.VMStatus { return lima.StatusNotFound }
@@ -170,6 +170,14 @@ enforcement = "ask"
 		}
 		return nil
 	}
+	runnerShellCalls := 0
+	cliShellVMWithRunner = func(name string, runner lima.CommandRunner, workdir ...string) error {
+		runnerShellCalls++
+		if runner == nil {
+			t.Fatal("ask-mode run selected a nil terminal coordinator")
+		}
+		return cliShellVM(name, workdir...)
+	}
 	t.Cleanup(func() {
 		cliGetVMStatus = oldStatus
 		cliStartVM = oldStart
@@ -177,10 +185,14 @@ enforcement = "ask"
 		cliInstanceMount = oldMount
 		cliProjectMountSource = oldProjectMount
 		cliShellVM = oldShell
+		cliShellVMWithRunner = oldShellWithRunner
 	})
 
 	if err := runRunWithOptions(runOptions{OpenShell: true}); err != nil {
 		t.Fatalf("run no-mount creation error = %v", err)
+	}
+	if runnerShellCalls != 1 {
+		t.Fatalf("ask-mode runner shell calls = %d, want 1", runnerShellCalls)
 	}
 	if strings.Contains(generated, "/project") {
 		t.Fatalf("generated no-mount VM retains /project dependency:\n%s", generated)

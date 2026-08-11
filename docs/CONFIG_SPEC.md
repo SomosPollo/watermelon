@@ -399,6 +399,8 @@ enforcement = "fail"
 
 `ask` requires a foreground Watermelon process to host its verdict server. `watermelon run --no-shell` is therefore rejected: use interactive `watermelon run` and keep its shell open. `watermelon exec` keeps prompts available until the guest command exits. `watermelon code` passes the configured IDE command `--wait` and remains in the foreground, keeping prompts available until the remote IDE window exits.
 
+On Linux, terminal verdicts use the foreground controlling terminal independently of guest stdin. Interactive guest input forwarding pauses for the duration of a prompt. Redirected `watermelon exec` stdin remains dedicated to the guest, while verdicts continue to use the controlling terminal; without one, non-allowlisted requests block by default. macOS uses a native dialog and does not depend on terminal stdin.
+
 Each ask-mode VM has one saved host verdict port, so only one foreground `run`, `exec`, or `code` prompt controller can be active for it at a time. Start another only after the first exits. Direct `ssh lima-<vmname>` does not start a verdict server or acquire Watermelon's VM usage lease; a manually connected workload needs a separate foreground Watermelon prompt controller for prompted network access, and Watermelon stop or destroy can terminate that connection without waiting for it.
 
 ---
