@@ -57,9 +57,14 @@ func TestStopDoesNotWaitForActiveUsageLease(t *testing.T) {
 		}
 	})
 
-	oldStatus, oldProjectMount, oldStop := cliGetVMStatus, cliProjectMountSource, cliStopVM
+	oldStatus, oldProjectMount, oldStop, oldCompatibility := cliGetVMStatus, cliProjectMountSource, cliStopVM, cliRequireCompatibleLima
 	cliGetVMStatus = func(string) lima.VMStatus { return lima.StatusRunning }
 	cliProjectMountSource = func(string) (string, error) { return dir, nil }
+	compatibilityCalls := 0
+	cliRequireCompatibleLima = func() error {
+		compatibilityCalls++
+		return os.ErrPermission
+	}
 	stopCalls := 0
 	cliStopVM = func(string) error {
 		stopCalls++
@@ -69,6 +74,7 @@ func TestStopDoesNotWaitForActiveUsageLease(t *testing.T) {
 		cliGetVMStatus = oldStatus
 		cliProjectMountSource = oldProjectMount
 		cliStopVM = oldStop
+		cliRequireCompatibleLima = oldCompatibility
 	})
 
 	done := make(chan error, 1)
@@ -89,6 +95,9 @@ func TestStopDoesNotWaitForActiveUsageLease(t *testing.T) {
 	}
 	if stopCalls != 1 {
 		t.Fatalf("stop calls = %d, want 1", stopCalls)
+	}
+	if compatibilityCalls != 0 {
+		t.Fatalf("stop ran %d Lima compatibility checks; recovery must remain available on old Lima", compatibilityCalls)
 	}
 	if err := activeSession.Release(); err != nil {
 		t.Fatal(err)

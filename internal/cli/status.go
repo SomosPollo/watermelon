@@ -15,6 +15,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var cliGetVMStatusWithError = lima.GetStatusWithError
+
 func NewStatusCmd() *cobra.Command {
 	var name string
 	cmd := &cobra.Command{
@@ -55,7 +57,10 @@ func runStatusForName(out io.Writer, dir, name string) error {
 		return fmt.Errorf("locking VM %q lifecycle: %w", vmName, err)
 	}
 	defer lifecycleLock.Release()
-	status := cliGetVMStatus(vmName)
+	status, err := cliGetVMStatusWithError(vmName)
+	if err != nil {
+		return fmt.Errorf("reading Lima VM state: %w; run 'watermelon doctor' for installation guidance", err)
+	}
 	var staleIdentity *namedVMInstanceIdentity
 	if status == lima.StatusNotFound {
 		instance, identityErr := loadOwnedNamedVMIdentity(dir, vmName)

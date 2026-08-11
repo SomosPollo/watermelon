@@ -48,7 +48,7 @@ func NewListCmd() *cobra.Command {
 func listOwnedWatermelonVMs() ([]lima.VMInfo, error) {
 	allVMs, err := cliListAllVMs()
 	if err != nil {
-		return nil, fmt.Errorf("listing VMs: %w", err)
+		return nil, fmt.Errorf("listing VMs through Lima: %w; run 'watermelon doctor' for installation guidance", err)
 	}
 	identities, err := listNamedVMIdentities()
 	if err != nil {

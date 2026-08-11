@@ -180,15 +180,21 @@ Evidence:
 
 ### Improve the shell installer and add a doctor/preflight path
 
-- [ ] Support a configurable or user-local install directory.
-- [ ] Do not assume `sudo` exists.
-- [ ] Check `curl`, Lima availability, and a supported Lima version.
-- [ ] Execute the installed binary by its resolved path for verification.
-- [ ] Add `watermelon doctor` or equally actionable early diagnostics.
+- [x] Support a configurable or user-local install directory.
+- [x] Do not assume `sudo` exists.
+- [x] Check `curl`, Lima availability, and a supported Lima version.
+- [x] Execute the installed binary by its resolved path for verification.
+- [x] Add `watermelon doctor` or equally actionable early diagnostics.
 
-`install.sh` hard-codes `/usr/local/bin`, assumes that an unwritable directory
-can be handled with `sudo`, and does not preflight `limactl`. A missing Lima
-binary later appears only as an unknown VM state.
+`install.sh` supports an absolute `WATERMELON_INSTALL_DIR`, uses `sudo` only
+when a destination cannot be created or written directly, and verifies the
+exact installed binary. Its preflight requires a stable Lima 2.0.0 or newer
+release, validates the host architecture, macOS 13 minimum on Darwin, and
+required VM backend, verifies the architecture-appropriate QEMU executable on
+Linux, and selects the Linux nfqd sidecar from Lima's architecture.
+`watermelon doctor` provides the same host readiness checks plus read-only text
+and versioned JSON diagnostics, while workload commands surface incompatible
+Lima before VM use without blocking `stop` or `destroy` recovery paths.
 
 Acceptance criteria:
 
@@ -322,11 +328,11 @@ state. `init` does not update or advise about the user's ignore rules.
 
 ## P3: Documentation cleanup
 
-- [ ] Fix the support link in `docs/TROUBLESHOOTING.md`.
+- [x] Fix the support link in `docs/TROUBLESHOOTING.md`.
 
-It currently points to `https://github.com/saeta/watermelon/issues`, which is
-obsolete. Other `saeta-eth` links currently redirect to the `SomosPollo`
-repository and should be normalized to avoid relying on redirects.
+The troubleshooting guide now points directly to the `SomosPollo/watermelon`
+issue tracker. Remaining `saeta-eth` links should still be normalized when the
+module and repository migration is handled as a separate change.
 
 ## Resolved items from the original audit
 

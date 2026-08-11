@@ -38,6 +38,7 @@ func TestExecHelper(t *testing.T) {
 		return
 	}
 	fmt.Fprint(os.Stdout, os.Getenv("GO_TEST_EXEC_OUTPUT"))
+	fmt.Fprint(os.Stderr, os.Getenv("GO_TEST_EXEC_STDERR"))
 	exitCode := 0
 	if code := os.Getenv("GO_TEST_EXEC_EXIT"); code != "" {
 		fmt.Sscan(code, &exitCode)

@@ -47,6 +47,7 @@ watermelon exec "npm install && npm run build && npm test"
 | Command | Purpose |
 |---------|---------|
 | `watermelon init` | Create `.watermelon.toml` template |
+| `watermelon doctor [--json]` | Check host and Lima readiness without changing a VM |
 | `watermelon run [--name NAME] [--workdir PATH]` | Open interactive shell in sandbox |
 | `watermelon exec [--name NAME] -- <cmd>` | Run command in sandbox (default for all commands) |
 | `watermelon code [--name NAME]` | Open IDE and remain foreground until its remote window exits |
@@ -61,10 +62,11 @@ Normal `--name` operation still validates the current project's config and owner
 
 **Installation (if not available):**
 ```bash
-# Install limactl from Lima first.
-# macOS: brew install lima
-# Linux: install Lima with your distro package manager or upstream package.
-curl -fsSL https://raw.githubusercontent.com/saeta-eth/watermelon/main/install.sh | sh
+# Requires curl, an OpenSSH client, and stable Lima 2.0.0 or newer.
+# macOS 13 or newer: brew install lima
+# Linux: install Lima plus the architecture-appropriate QEMU system emulator.
+curl -fsSL https://raw.githubusercontent.com/SomosPollo/watermelon/main/install.sh | sh
+watermelon doctor
 ```
 
 ## Config Reference (`.watermelon.toml`)

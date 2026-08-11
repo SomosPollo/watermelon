@@ -42,6 +42,9 @@ func runCodeWithName(name string) error {
 	dir = target.ProjectRoot
 	cfg := target.Config
 	vmName := target.VMName
+	if err := requireCompatibleLima(); err != nil {
+		return err
+	}
 	lifecycleLock, err := acquireVMLifecycleLock(vmName)
 	if err != nil {
 		return fmt.Errorf("locking VM %q lifecycle: %w", vmName, err)

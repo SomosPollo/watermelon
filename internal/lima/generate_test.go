@@ -243,6 +243,7 @@ func TestGenerateLimaConfig(t *testing.T) {
 
 	// Check key parts are present
 	checks := []string{
+		"minimumLimaVersion: " + MinimumSupportedVersion,
 		"vmType: vz",
 		`memory: "4GiB"`,
 		"cpus: 2",

@@ -4,6 +4,18 @@ Common issues and solutions.
 
 ## Installation Issues
 
+### curl not found
+
+The release installer requires `curl` before it can download Watermelon.
+
+```bash
+# macOS (curl is normally included)
+brew install curl
+
+# Debian/Ubuntu
+sudo apt-get install curl
+```
+
 ### Lima not found
 
 **Error:** `limactl: command not found`
@@ -14,7 +26,35 @@ Common issues and solutions.
 brew install lima
 
 # Linux
-# Install Lima with your distro package manager or upstream package.
+# Install Lima and its QEMU backend with your distro package manager or
+# an upstream Lima package.
+```
+
+Watermelon requires a stable Lima 2.0.0 or newer release. Upgrade Lima when
+`watermelon doctor` reports an older or malformed version. On macOS,
+Watermelon uses VZ and requires macOS 13 or newer. On Linux, it uses QEMU and
+requires `qemu-system-aarch64` or `qemu-system-x86_64` to match Lima's reported
+host architecture. If Lima uses a non-default executable, set
+`QEMU_SYSTEM_AARCH64` or `QEMU_SYSTEM_X86_64` using Lima's shell-word syntax
+before running the installer or doctor. The executable is the first word; put
+quotes inside the value when its path contains spaces. Unavailable KVM
+acceleration is reported as a warning because Lima can fall back to slower TCG
+emulation.
+
+The installer and `watermelon doctor` read the macOS product version with
+`sw_vers -productVersion`. If that command fails or reports malformed output,
+run it directly to diagnose the host, then upgrade to macOS 13 or newer before
+retrying. Unsupported macOS versions are rejected before installer downloads.
+
+The installer also requires an OpenSSH client before downloading Watermelon.
+macOS normally provides `/usr/bin/ssh`; on Linux, install your distribution's
+OpenSSH client package (commonly `openssh-client`) if `ssh` is absent.
+
+Run the read-only preflight from any directory after installing or upgrading:
+
+```bash
+watermelon doctor
+watermelon doctor --json  # stable output for support tooling and automation
 ```
 
 ### Go not installed
@@ -306,13 +346,13 @@ memory = "8GB"  # Increase if needed
 
 ## Getting Help
 
-1. Check logs: `watermelon logs`
-2. Check VM status: `watermelon status`
-3. Check Lima: `limactl list`
+1. Run the host preflight: `watermelon doctor`
+2. Check logs: `watermelon logs`
+3. Check VM status: `watermelon status`
 4. Review config: `cat .watermelon.toml`
 
-If issues persist, [open an issue](https://github.com/saeta/watermelon/issues) with:
+If issues persist, [open an issue](https://github.com/SomosPollo/watermelon/issues) with:
 - Your `.watermelon.toml`
+- Output of `watermelon doctor`
 - Output of `watermelon status`
-- Output of `limactl list`
 - The error message

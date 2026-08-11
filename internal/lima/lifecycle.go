@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -87,27 +86,14 @@ func (s VMStatus) String() string {
 // executables must target this architecture even when the Watermelon CLI is
 // running through an emulation layer.
 func HostArchitecture() (string, error) {
-	cmd := execCommand("limactl", "info")
-	out, err := cmd.Output()
+	info, err := InspectInstallation()
 	if err != nil {
+		if decodeErr, ok := err.(*decodeInstallationInfoError); ok {
+			return "", fmt.Errorf("decoding Lima host architecture: %w", decodeErr.err)
+		}
 		return "", fmt.Errorf("reading Lima host architecture: %w", err)
 	}
-	var info struct {
-		HostArch string `json:"hostArch"`
-	}
-	if err := json.Unmarshal(out, &info); err != nil {
-		return "", fmt.Errorf("decoding Lima host architecture: %w", err)
-	}
-	switch info.HostArch {
-	case "aarch64", "arm64":
-		return "arm64", nil
-	case "x86_64", "amd64":
-		return "amd64", nil
-	case "":
-		return "", errors.New("Lima did not report its host architecture")
-	default:
-		return "", fmt.Errorf("unsupported Lima host architecture %q", info.HostArch)
-	}
+	return goHostArchitecture(info.HostArch)
 }
 
 // VMNameFromPath generates a consistent VM name from project path
@@ -149,8 +135,20 @@ func VMNameFromPath(projectPath string) string {
 	return fmt.Sprintf("watermelon-%s-%s", base, shortHash)
 }
 
-// GetStatus returns the status of a VM
+// GetStatus returns the status of a VM. Operational errors are retained as
+// StatusUnknown for backwards compatibility; callers that need diagnostic
+// details should use GetStatusWithError.
 func GetStatus(vmName string) VMStatus {
+	status, err := GetStatusWithError(vmName)
+	if err != nil {
+		return StatusUnknown
+	}
+	return status
+}
+
+// GetStatusWithError returns the status of a VM without hiding failures to
+// execute limactl or decode its instance list.
+func GetStatusWithError(vmName string) (VMStatus, error) {
 	// Listing all instances makes a missing exact name an ordinary empty lookup.
 	// `limactl list NAME` exits non-zero both when NAME is absent and when Lima
 	// itself fails, which would make an operational error indistinguishable from
@@ -158,13 +156,13 @@ func GetStatus(vmName string) VMStatus {
 	cmd := execCommand("limactl", "list", "--format", statusListFormat)
 	out, err := cmd.Output()
 	if err != nil {
-		return StatusUnknown
+		return StatusUnknown, fmt.Errorf("listing Lima instances: %w", err)
 	}
 	status, err := statusFromInstanceList(out, vmName)
 	if err != nil {
-		return StatusUnknown
+		return StatusUnknown, err
 	}
-	return status
+	return status, nil
 }
 
 func statusFromInstanceList(data []byte, vmName string) (VMStatus, error) {

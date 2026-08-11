@@ -58,8 +58,13 @@ func TestDestroyStopsActiveSessionBeforeWaitingToDelete(t *testing.T) {
 		}
 	})
 
-	oldStatus, oldStop, oldDelete, oldProjectMount := destroyGetStatus, destroyStop, destroyDelete, cliProjectMountSource
+	oldStatus, oldStop, oldDelete, oldProjectMount, oldCompatibility := destroyGetStatus, destroyStop, destroyDelete, cliProjectMountSource, cliRequireCompatibleLima
 	destroyGetStatus = func(string) lima.VMStatus { return lima.StatusRunning }
+	compatibilityCalls := 0
+	cliRequireCompatibleLima = func() error {
+		compatibilityCalls++
+		return os.ErrPermission
+	}
 	stopCalled := make(chan struct{}, 1)
 	destroyStop = func(string) error {
 		stopCalled <- struct{}{}
@@ -76,6 +81,7 @@ func TestDestroyStopsActiveSessionBeforeWaitingToDelete(t *testing.T) {
 		destroyStop = oldStop
 		destroyDelete = oldDelete
 		cliProjectMountSource = oldProjectMount
+		cliRequireCompatibleLima = oldCompatibility
 	})
 
 	cmd := NewDestroyCmd()
@@ -110,6 +116,9 @@ func TestDestroyStopsActiveSessionBeforeWaitingToDelete(t *testing.T) {
 	case <-deleteCalled:
 	default:
 		t.Fatal("destroy did not delete after the active client released its usage lease")
+	}
+	if compatibilityCalls != 0 {
+		t.Fatalf("destroy ran %d Lima compatibility checks; recovery must remain available on old Lima", compatibilityCalls)
 	}
 }
 

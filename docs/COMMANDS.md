@@ -4,6 +4,37 @@ Detailed documentation for all watermelon commands.
 
 For normal operation, commands that accept `--name` resolve and validate `.watermelon.toml` in the current project. The flag overrides `[vm].name`; it never adopts a VM owned by another project or creates one from default configuration. Two fail-closed recovery paths are deliberately narrower: `stop` can stop a securely verified project-owned VM while returning the config error, and `destroy --name` can use its durable ownership record when the local config is missing or invalid.
 
+Commands that create or attach to workloads (`run`, `exec`, `code`, and
+`copy`) run the host, Lima, and backend preflight before VM use, including the
+macOS 13 floor and a stable Lima 2.0.0 or newer release. `stop` and `destroy`
+do not apply that compatibility gate, so an older but functional Lima can still
+be used for fail-closed recovery.
+
+## `watermelon doctor`
+
+Checks whether the host is ready to run Watermelon. It can be run from any
+directory and does not require a project configuration or create, start, stop,
+or modify a VM.
+
+```bash
+watermelon doctor
+watermelon doctor --json
+```
+
+The report covers the Watermelon executable, supported host OS and
+architecture, macOS 13 or newer (read with `sw_vers` on Darwin), unprivileged
+execution, a stable Lima 2.0.0 or newer release, Lima's host information and
+state directory, the required VZ or QEMU backend, the architecture-appropriate
+Linux QEMU system executable, SSH, and optional Linux KVM acceleration. Linux
+does not run the macOS version probe. Independent checks continue after a
+failure; checks that depend on a failed prerequisite are reported as skipped.
+
+`PASS` and `WARN` reports exit successfully. Any `FAIL` makes the command exit
+with status 1. `--json` emits the same ordered checks using a versioned schema
+for support tooling and automation.
+
+---
+
 ## `watermelon init`
 
 Creates a `.watermelon.toml` configuration file in the current directory.

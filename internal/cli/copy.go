@@ -33,6 +33,9 @@ Examples:
 			if err != nil {
 				return NewUsageError(err)
 			}
+			if err := requireCompatibleLima(); err != nil {
+				return err
+			}
 			lifecycleLock, err := acquireVMLifecycleLock(vmName)
 			if err != nil {
 				return fmt.Errorf("locking VM %q lifecycle for copy: %w", vmName, err)

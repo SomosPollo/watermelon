@@ -37,10 +37,11 @@ The project mount is enabled by default. Set `vm.mount_project = false` when the
 Before the first run—and after changes—review `.watermelon.toml` as trusted host policy, not sandboxed project code. It controls enforcement and allow rules, host mounts, container images, provisioning, and forwarded ports. Watermelon refuses applied-config drift for an existing VM, but that check does not make an attacker-authored configuration safe.
 
 ```bash
-# Install dependency: limactl from Lima
-# macOS: brew install lima
-# Linux: install Lima with your distro package manager or upstream package
+# Requirements: curl, an OpenSSH client, and stable Lima 2.0.0 or newer
+# macOS 13 or newer: brew install lima
+# Linux: install Lima plus the architecture-appropriate QEMU system emulator
 curl -fsSL https://raw.githubusercontent.com/SomosPollo/watermelon/main/install.sh | sh
+watermelon doctor
 
 cd your-project
 watermelon init                      # Create .watermelon.toml
@@ -53,9 +54,17 @@ exit
 ```
 
 The shell installer downloads both the host CLI and the matching Linux
-`watermelon-nfqd` sidecar for the host architecture. The sidecar runs inside
+`watermelon-nfqd` sidecar for Lima's default guest architecture. This remains
+correct when the installer itself runs through Rosetta. The sidecar runs inside
 the Lima guest only when `security.enforcement = "ask"`; `fail`, `silent`, and
 `log` do not use it.
+
+On Linux, preflight also resolves and runs `qemu-system-aarch64 --version` or
+`qemu-system-x86_64 --version` for Lima's reported host architecture. If Lima
+uses a non-default executable, set `QEMU_SYSTEM_AARCH64` or
+`QEMU_SYSTEM_X86_64` using Lima's shell-word syntax before running the
+installer. Quote a path containing spaces inside the value, for example
+`QEMU_SYSTEM_AARCH64='"/opt/QEMU tools/qemu-system-aarch64"'`.
 
 **Alternative:** install with Go directly:
 
@@ -115,6 +124,7 @@ This deletes VM-local state but preserves the host project. `watermelon status` 
 | Command | Description |
 |---------|-------------|
 | `watermelon init` | Create `.watermelon.toml` config |
+| `watermelon doctor` | Check host and Lima readiness; add `--json` for automation |
 | `watermelon run` | Enter sandbox (creates VM if needed) |
 | `watermelon code` | Open an IDE and remain foreground until its remote window exits |
 | `watermelon exec <cmd>` | Run command without interactive shell |
