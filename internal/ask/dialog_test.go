@@ -64,13 +64,15 @@ func TestBuildAppleScript(t *testing.T) {
 	script := buildAppleScript("npm", "evil.com", 443, "my-app")
 
 	checks := []string{
-		`"npm"`,
-		"evil.com:443",
+		`Observed process (informational): " & quote & "npm"`,
+		"Requested TCP destination: evil.com:443",
 		"my-app",
 		"Block for Session",
 		"Allow Once",
 		"Always Allow and Save",
-		"Always Allow saves this domain",
+		`Always Allow saves " & quote & "evil.com" & quote & " as a global host-only rule with no process, protocol, or port scope`,
+		"Managed DNS remains enforced",
+		"VM recreation is required",
 		"default button",
 	}
 	for _, check := range checks {
@@ -90,11 +92,8 @@ func TestBuildAppleScriptEscapesQuotes(t *testing.T) {
 
 func TestBuildAppleScriptEmptyProcess(t *testing.T) {
 	script := buildAppleScript("", "evil.com", 443, "my-app")
-	if strings.Contains(script, `"" is trying`) {
-		t.Error("expected empty process name to be replaced with fallback")
-	}
-	if !strings.Contains(script, "A process") {
-		t.Error("expected fallback process name in script")
+	if !strings.Contains(script, `Observed process (informational): " & quote & "unknown"`) {
+		t.Errorf("expected an informational unknown-process fallback in script:\n%s", script)
 	}
 }
 
@@ -173,10 +172,23 @@ func TestReadTerminalPrompt(t *testing.T) {
 				t.Errorf("readTerminalPrompt() = %q, want %q", got, tt.want)
 			}
 			rendered := out.String()
-			for _, want := range []string{"Watermelon network prompt", "npm", "example.com:443", "Project: app", "block for session", "always allow and save"} {
+			for _, want := range []string{
+				"Watermelon network prompt",
+				`Observed process (informational): "npm"`,
+				"Requested TCP destination: example.com:443",
+				"Project: app",
+				`add "example.com" as a global host-only rule with no process, protocol, or port scope`,
+				"Managed DNS remains enforced",
+				"VM recreation is required",
+				"block for session",
+				"always allow and save",
+			} {
 				if !strings.Contains(rendered, want) {
 					t.Errorf("terminal prompt missing %q:\n%s", want, rendered)
 				}
+			}
+			if strings.Contains(rendered, `add "example.com:443"`) {
+				t.Errorf("terminal prompt incorrectly implies that the saved rule retains the requested port:\n%s", rendered)
 			}
 		})
 	}

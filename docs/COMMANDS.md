@@ -81,6 +81,14 @@ A manual SSH process is outside Watermelon's session coordination: it neither st
 
 ---
 
+## Ask-mode saved decisions
+
+The process shown in a network prompt is informational; it does not restrict the decision. **Always Allow and Save** immediately permits the displayed TCP host and port for every process in the current VM runtime. It also writes the bare host to the global `[network].allow` list. That saved host-only rule has no process, protocol, or port scope; managed DNS redirection still applies.
+
+The broader saved rule is not part of the provisioned firewall until the VM is recreated. After the current Watermelon session finishes, preserve any needed VM-local state, then run the exact, VM-pinned recreation command printed by Watermelon from the project root. Recreation removes VM-local state. If this is deferred, the next policy-checked `run`, `exec`, or `code` detects the stale configuration and stops a securely bound running VM before returning the recreation instruction.
+
+---
+
 ## `watermelon run`
 
 Enters an interactive shell inside the sandbox VM.

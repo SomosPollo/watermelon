@@ -384,7 +384,7 @@ Security policy configuration.
 | `"fail"` | **Strict default:** block non-allowlisted traffic, record a rate-limited policy event, and resolve only policy names |
 | `"log"` | **Discovery:** allow non-allowlisted traffic, record rate-limited IPv4 policy events, and resolve arbitrary names; IPv6 is not captured |
 | `"silent"` | **Strict, quiet:** block non-allowlisted traffic without recording policy events and resolve only policy names |
-| `"ask"` | **Interactive:** resolve arbitrary names, prompt for non-allowlisted TCP connections, reject other non-allowlisted traffic, and persist always-allow choices |
+| `"ask"` | **Interactive:** resolve arbitrary names, prompt for non-allowlisted TCP connections, reject other non-allowlisted traffic, and save explicit bare-host allow choices |
 
 ```toml
 [security]
@@ -398,6 +398,8 @@ enforcement = "fail"
 ```
 
 `ask` requires a foreground Watermelon process to host its verdict server. `watermelon run --no-shell` is therefore rejected: use interactive `watermelon run` and keep its shell open. `watermelon exec` keeps prompts available until the guest command exits. `watermelon code` passes the configured IDE command `--wait` and remains in the foreground, keeping prompts available until the remote IDE window exits.
+
+The observed process in a prompt is informational. **Always Allow and Save** immediately permits the displayed TCP host and port for every process in the current VM runtime, but persists a broader rule: the bare host is added to the global `[network].allow` list with no process, protocol, or port scope. Managed DNS redirection still applies. Applying that saved rule to future VM sessions requires destroying and recreating the VM after the current Watermelon session. Watermelon prints an exact command pinned to the selected VM name, so a later configuration edit cannot retarget the destructive operation; recreation removes VM-local state. Until then, the applied-policy snapshot is stale. The next `run`, `exec`, or `code` refuses the stale configuration and stops a securely bound running VM before returning the recreation instruction.
 
 On Linux, terminal verdicts use the foreground controlling terminal independently of guest stdin. Interactive guest input forwarding pauses for the duration of a prompt. Redirected `watermelon exec` stdin remains dedicated to the guest, while verdicts continue to use the controlling terminal; without one, non-allowlisted requests block by default. macOS uses a native dialog and does not depend on terminal stdin.
 

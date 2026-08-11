@@ -167,6 +167,12 @@ watermelon logs
 
 ## Network Issues
 
+### Ask-mode Always Allow made the configuration stale
+
+This is expected. The observed process in an ask prompt is informational. **Always Allow and Save** permits the displayed TCP host and port for every process in the current VM runtime, then saves the bare host as a global `[network].allow` rule with no process, protocol, or port scope. Managed DNS redirection still applies.
+
+The broader saved rule requires VM recreation. Finish the current Watermelon session, preserve any needed VM-local state, and run the exact, VM-pinned recreation command printed by Watermelon from the project root; recreation removes VM-local state. If that step is deferred, `watermelon status` reports the stale policy, and the next `run`, `exec`, or `code` stops a securely bound running VM before returning the recreation instruction. Stopping and starting the VM is not enough to apply the saved rule.
+
 ### Package installation fails
 
 **Inspect network policy events:**

@@ -89,14 +89,17 @@ func writeTerminalPrompt(out io.Writer, process, domain string, port int, projec
 
 func writeTerminalPromptContext(out io.Writer, process, domain string, port int, project string) {
 	if process == "" {
-		process = "A process"
+		process = "unknown"
 	}
 
 	fmt.Fprintf(out, "\nWatermelon network prompt\n")
-	fmt.Fprintf(out, "%q is trying to connect to %s:%d\n", process, domain, port)
+	fmt.Fprintf(out, "Observed process (informational): %q\n", process)
+	fmt.Fprintf(out, "Requested TCP destination: %s:%d\n", domain, port)
 	if project != "" {
 		fmt.Fprintf(out, "Project: %s\n", project)
 	}
+	fmt.Fprintf(out, "Always allow and save: add %q as a global host-only rule with no process, protocol, or port scope.\n", domain)
+	fmt.Fprintln(out, "Managed DNS remains enforced. VM recreation is required to apply the saved rule to future sessions.")
 }
 
 func writeTerminalChoicePrompt(out io.Writer) {
@@ -127,7 +130,7 @@ func normalizeTerminalChoice(input string) string {
 
 func buildAppleScript(process, domain string, port int, project string) string {
 	if process == "" {
-		process = "A process"
+		process = "unknown"
 	}
 	// Escape backslashes and quotes for AppleScript string literals
 	process = escapeAppleScript(process)
@@ -135,12 +138,12 @@ func buildAppleScript(process, domain string, port int, project string) string {
 	project = escapeAppleScript(project)
 
 	return fmt.Sprintf(
-		`display dialog (quote & "%s" & quote & " is trying to connect to\n%s:%d\n\nProject: %s\n\nBlock is remembered for this session.\nAlways Allow saves this domain to .watermelon.toml.") `+
+		`display dialog ("Observed process (informational): " & quote & "%s" & quote & "\nRequested TCP destination: %s:%d\n\nProject: %s\n\nBlock is remembered for this session.\nAlways Allow saves " & quote & "%s" & quote & " as a global host-only rule with no process, protocol, or port scope.\nManaged DNS remains enforced. VM recreation is required to apply the saved rule to future sessions.") `+
 			`with title "Watermelon" `+
 			`buttons {"Block for Session", "Allow Once", "Always Allow and Save"} `+
 			`default button "Block for Session" `+
 			`with icon caution`,
-		process, domain, port, project,
+		process, domain, port, project, domain,
 	)
 }
 

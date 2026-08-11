@@ -7,8 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/saeta-eth/watermelon/internal/config"
 )
 
 var testServerAuthKey = func() AuthKey {
@@ -283,7 +287,7 @@ func exchangeRawVerdictRequest(t *testing.T, srv *Server, payload []byte) (Verdi
 	return resp, err
 }
 
-func TestServerCachesPreviousVerdicts(t *testing.T) {
+func TestServerCachesDestinationVerdictsAcrossProcesses(t *testing.T) {
 	callCount := 0
 	mockDialog := func(process, domain string, port int, project string) string {
 		callCount++
@@ -299,13 +303,14 @@ func TestServerCachesPreviousVerdicts(t *testing.T) {
 
 	go srv.Serve(listener)
 
-	for i := 0; i < 2; i++ {
+	processes := []string{"npm", "python"}
+	for i, process := range processes {
 		conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		req := VerdictRequest{Domain: "evil.com", Port: 443, Process: "npm"}
+		req := VerdictRequest{Domain: "evil.com", Port: 443, Process: process}
 		sendTestVerdictRequest(t, conn, req)
 
 		var resp VerdictResponse
@@ -477,5 +482,173 @@ func TestServerFallsBackToIPWhenNoDomain(t *testing.T) {
 
 	if receivedDomain != "93.184.216.34" {
 		t.Errorf("expected dialog to show IP when domain is empty, got %q", receivedDomain)
+	}
+}
+
+func TestServerAlwaysAllowNoticeDistinguishesRuntimeAndSavedScopes(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), ".watermelon.toml")
+	initial := "[network]\nallow = []\n\n[network.process]\nnpm = [\"registry.npmjs.org\"]\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	const recreateCommand = "watermelon destroy --name shared-dev --force && watermelon run --name shared-dev"
+	var notices bytes.Buffer
+	srv := NewServer(
+		"test-project",
+		configPath,
+		testServerAuthKey,
+		func(_, _ string, _ int, _ string) string { return VerdictAlwaysAllow },
+		WithNoticeWriter(&notices),
+		WithRecreateCommand(recreateCommand),
+	)
+
+	request := VerdictRequest{Domain: "example.com", Port: 443, Process: "npm", IP: "93.184.216.34"}
+	if verdict := srv.getVerdict(request); verdict != VerdictAlwaysAllow {
+		t.Fatalf("getVerdict() = %q, want %q", verdict, VerdictAlwaysAllow)
+	}
+
+	got := notices.String()
+	for _, want := range []string{
+		"Allowed TCP destination example.com:443 for all processes in the current VM runtime.",
+		`Saved global host-only rule "example.com" with no process, protocol, or port scope`,
+		"managed DNS remains enforced",
+		"After this Watermelon session finishes",
+		"apply the saved rule to future VM sessions",
+		"recreation removes VM-local state",
+		recreateCommand,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("always-allow success notice missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `Saved global host-only rule "example.com:443"`) {
+		t.Errorf("success notice incorrectly claims that the saved global rule retains the runtime port:\n%s", got)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Network.Allow) != 1 || cfg.Network.Allow[0] != "example.com" {
+		t.Fatalf("persisted global rules = %v, want only the bare prompted host", cfg.Network.Allow)
+	}
+	if got := cfg.Network.Process["npm"]; len(got) != 1 || got[0] != "registry.npmjs.org" {
+		t.Fatalf("persisted process-scoped rules = %v, want original process policy unchanged", got)
+	}
+}
+
+func TestServerAlwaysAllowSaveFailureReportsRuntimeOnly(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), ".watermelon.toml")
+	original := []byte("[network\nallow = []\n")
+	if err := os.WriteFile(configPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	const recreateCommand = "watermelon destroy --force && watermelon run"
+	var notices bytes.Buffer
+	srv := NewServer(
+		"test-project",
+		configPath,
+		testServerAuthKey,
+		func(_, _ string, _ int, _ string) string { return VerdictAlwaysAllow },
+		WithNoticeWriter(&notices),
+		WithRecreateCommand(recreateCommand),
+	)
+
+	request := VerdictRequest{Domain: "example.com", Port: 8443, Process: "npm", IP: "93.184.216.34"}
+	if verdict := srv.getVerdict(request); verdict != VerdictAlwaysAllow {
+		t.Fatalf("getVerdict() = %q, want the current-runtime %q despite persistence failure", verdict, VerdictAlwaysAllow)
+	}
+
+	got := notices.String()
+	for _, want := range []string{
+		"Allowed TCP destination example.com:8443 for all processes in the current VM runtime",
+		"global host-only rule was not saved",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("always-allow failure notice missing %q:\n%s", want, got)
+		}
+	}
+	for _, misleading := range []string{
+		`Saved global host-only rule "example.com"`,
+		"apply the saved rule",
+		"future VM sessions",
+		recreateCommand,
+	} {
+		if strings.Contains(got, misleading) {
+			t.Errorf("always-allow failure notice incorrectly contains %q:\n%s", misleading, got)
+		}
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, original) {
+		t.Fatalf("failed persistence changed config: got %q, want %q", data, original)
+	}
+}
+
+func TestServerSerializesDifferentDestinationDecisionsThroughNotices(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), ".watermelon.toml")
+	if err := os.WriteFile(configPath, []byte("[network]\nallow = []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var active int32
+	var concurrent atomic.Bool
+	var notices bytes.Buffer
+	srv := NewServer(
+		"test-project",
+		configPath,
+		testServerAuthKey,
+		func(_, _ string, _ int, _ string) string {
+			if atomic.AddInt32(&active, 1) != 1 {
+				concurrent.Store(true)
+			}
+			time.Sleep(10 * time.Millisecond)
+			atomic.AddInt32(&active, -1)
+			return VerdictAlwaysAllow
+		},
+		WithNoticeWriter(&notices),
+		WithRecreateCommand("watermelon destroy --name test --force && watermelon run --name test"),
+	)
+
+	requests := []VerdictRequest{
+		{Domain: "one.example", Port: 443, Process: "npm", IP: "192.0.2.1"},
+		{Domain: "two.example", Port: 8443, Process: "python", IP: "192.0.2.2"},
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, request := range requests {
+		request := request
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = srv.getVerdict(request)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if concurrent.Load() {
+		t.Fatal("different-destination dialogs overlapped")
+	}
+	for _, host := range []string{"one.example", "two.example"} {
+		if !strings.Contains(notices.String(), `Saved global host-only rule "`+host+`"`) {
+			t.Errorf("serialized notices missing %q:\n%s", host, notices.String())
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"`+host+`"`) {
+			t.Errorf("serialized config missing %q:\n%s", host, data)
+		}
 	}
 }
