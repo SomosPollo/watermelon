@@ -1,41 +1,51 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 
+	"github.com/saeta-eth/watermelon/internal/config"
 	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/spf13/cobra"
 )
 
 func NewCodeCmd() *cobra.Command {
-	return &cobra.Command{
+	var name string
+	cmd := &cobra.Command{
 		Use:   "code",
 		Short: "Open project in IDE (VS Code by default)",
 		Long:  "Launch your IDE connected to the sandbox VM via SSH. Configure with [ide] command in .watermelon.toml",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCode()
+			return runCodeWithName(name)
 		},
 	}
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the path-derived name)")
+	return cmd
 }
 
 func runCode() error {
+	return runCodeWithName("")
+}
+
+func runCodeWithName(name string) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	dir, err = canonicalProjectRoot(dir)
+	target, err := resolveConfiguredTarget(dir, name)
 	if err != nil {
 		return err
 	}
-
-	cfg, err := loadValidatedProjectConfigFailClosed(dir)
+	dir = target.ProjectRoot
+	cfg := target.Config
+	vmName := target.VMName
+	lifecycleLock, err := acquireVMLifecycleLock(vmName)
 	if err != nil {
-		return err
+		return fmt.Errorf("locking VM %q lifecycle: %w", vmName, err)
 	}
-
-	vmName := lima.VMNameFromPath(dir)
+	defer lifecycleLock.Release()
 	status := cliGetVMStatus(vmName)
 
 	// Check VM exists
@@ -46,11 +56,19 @@ func runCode() error {
 		return err
 	}
 	warnIfNonStrictPolicy(os.Stderr, cfg)
-	if err := requireCurrentAppliedPolicyAndStopUnsafe(dir, vmName, status, cfg); err != nil {
+	if err := requireCurrentAppliedPolicyAndStopUnsafe(dir, vmName, status, cfg, target.NameExplicit); err != nil {
 		return err
 	}
 	if status == lima.StatusUnknown {
 		return fmt.Errorf("cannot safely use VM %q because its Lima state is unknown", vmName)
+	}
+	if cfg.Security.Enforcement == config.EnforcementAsk {
+		verdictListener, err := startAskVerdictServerForExistingVM(dir, vmName)
+		if err != nil {
+			return err
+		}
+		defer verdictListener.Close()
+		fmt.Println("Verdict server listening for network policy prompts while the IDE is open...")
 	}
 
 	// Start VM if stopped
@@ -66,7 +84,7 @@ func runCode() error {
 	if err := requireVMProjectBinding(dir, vmName); err != nil {
 		return err
 	}
-	if err := requireRuntimePolicyAppliedAndStopUnsafe(dir, vmName, false); err != nil {
+	if err := requireRuntimePolicyAppliedAndStopUnsafe(dir, vmName, false, target.NameExplicit); err != nil {
 		return err
 	}
 
@@ -82,7 +100,7 @@ func runCode() error {
 	}
 
 	sshHost := lima.GetSSHHost(vmName)
-	cmd, args := buildIDECommand(ideCmd, sshHost)
+	cmd, args := buildIDECommand(ideCmd, sshHost, target.IDEWorkdir)
 
 	fmt.Printf("Opening %s...\n", ideCmd)
 
@@ -91,25 +109,39 @@ func runCode() error {
 		return fmt.Errorf("%s not found. Install it or set ide.command in .watermelon.toml", cmd)
 	}
 
-	// Launch IDE (don't wait for it to exit)
+	// Keep the launcher in the foreground. VS Code-family CLIs honor --wait,
+	// which lets Watermelon retain the instance lease (and ask-mode verdict
+	// server) until the remote window closes.
 	execCmd := exec.Command(cmd, args...)
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
 	if err := requireVMProjectBinding(dir, vmName); err != nil {
 		return err
 	}
-	if err := execCmd.Start(); err != nil {
-		return fmt.Errorf("launching %s: %w", cmd, err)
+	usageLease, err := acquireSharedVMUsageLease(vmName)
+	if err != nil {
+		return fmt.Errorf("leasing VM %q for the IDE session: %w", vmName, err)
 	}
-
-	return nil
+	if err := lifecycleLock.Release(); err != nil {
+		return errors.Join(err, usageLease.Release())
+	}
+	runErr := execCmd.Run()
+	leaseErr := usageLease.Release()
+	if runErr != nil {
+		return errors.Join(fmt.Errorf("launching %s: %w", cmd, runErr), leaseErr)
+	}
+	return leaseErr
 }
 
 // buildIDECommand returns the command and arguments to launch the IDE
-func buildIDECommand(ideCmd, sshHost string) (string, []string) {
-	return ideCmd, []string{
+func buildIDECommand(ideCmd, sshHost, workdir string) (string, []string) {
+	args := []string{
+		"--wait",
 		"--remote",
 		"ssh-remote+" + sshHost,
-		"/project",
 	}
+	if workdir != "" {
+		args = append(args, workdir)
+	}
+	return ideCmd, args
 }

@@ -1,18 +1,21 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
-	"net"
 	"os"
-	"path/filepath"
 
-	"github.com/saeta-eth/watermelon/internal/ask"
+	"github.com/saeta-eth/watermelon/internal/config"
 	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/spf13/cobra"
 )
 
+var cliExecVM = lima.Exec
+
 func NewExecCmd() *cobra.Command {
-	return &cobra.Command{
+	var name string
+
+	cmd := &cobra.Command{
 		Use:   "exec [command] [args...]",
 		Short: "Run a command in the sandbox without interactive shell",
 		Args:  cobra.MinimumNArgs(1),
@@ -21,17 +24,18 @@ func NewExecCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dir, err = canonicalProjectRoot(dir)
+			target, err := resolveConfiguredTarget(dir, name)
 			if err != nil {
 				return err
 			}
-
-			cfg, err := loadValidatedProjectConfigFailClosed(dir)
+			dir = target.ProjectRoot
+			cfg := target.Config
+			vmName := target.VMName
+			lifecycleLock, err := acquireVMLifecycleLock(vmName)
 			if err != nil {
-				return err
+				return fmt.Errorf("locking VM %q lifecycle: %w", vmName, err)
 			}
-
-			vmName := lima.VMNameFromPath(dir)
+			defer lifecycleLock.Release()
 			status := cliGetVMStatus(vmName)
 			if status == lima.StatusNotFound {
 				return fmt.Errorf("no sandbox VM found (run 'watermelon run' first)")
@@ -40,37 +44,19 @@ func NewExecCmd() *cobra.Command {
 				return err
 			}
 			warnIfNonStrictPolicy(os.Stderr, cfg)
-			if err := requireCurrentAppliedPolicyAndStopUnsafe(dir, vmName, status, cfg); err != nil {
+			if err := requireCurrentAppliedPolicyAndStopUnsafe(dir, vmName, status, cfg, target.NameExplicit); err != nil {
 				return err
 			}
 			if status == lima.StatusUnknown {
 				return fmt.Errorf("cannot safely use VM %q because its Lima state is unknown", vmName)
 			}
 
-			// Start verdict server for ask enforcement mode
-			var verdictListener net.Listener
-			if cfg.Security.Enforcement == "ask" {
-				if err := ensureNfqdBinary(dir); err != nil {
-					return fmt.Errorf("building nfqd: %w", err)
-				}
-
-				savedPort := readSavedPort(dir)
-				if savedPort == 0 {
-					return fmt.Errorf("no verdict server port found; run 'watermelon run' first to create the VM with ask mode")
-				}
-
-				listenAddr := fmt.Sprintf("0.0.0.0:%d", savedPort)
-				var listenErr error
-				verdictListener, listenErr = net.Listen("tcp", listenAddr)
-				if listenErr != nil {
-					return fmt.Errorf("starting verdict server on port %d: %w", savedPort, listenErr)
+			if cfg.Security.Enforcement == config.EnforcementAsk {
+				verdictListener, err := startAskVerdictServerForExistingVM(dir, vmName)
+				if err != nil {
+					return err
 				}
 				defer verdictListener.Close()
-
-				configPath := filepath.Join(dir, ".watermelon.toml")
-				project := filepath.Base(dir)
-				srv := ask.NewServer(project, configPath, ask.ShowDialog)
-				go srv.Serve(verdictListener)
 				fmt.Println("Verdict server listening for network policy prompts...")
 			}
 
@@ -86,14 +72,34 @@ func NewExecCmd() *cobra.Command {
 			if err := requireVMProjectBinding(dir, vmName); err != nil {
 				return err
 			}
-			if err := requireRuntimePolicyAppliedAndStopUnsafe(dir, vmName, false); err != nil {
+			if err := requireRuntimePolicyAppliedAndStopUnsafe(dir, vmName, false, target.NameExplicit); err != nil {
 				return err
 			}
 			if err := requireVMProjectBinding(dir, vmName); err != nil {
 				return err
 			}
-
-			return lima.Exec(vmName, args)
+			usageLease, err := acquireSharedVMUsageLease(vmName)
+			if err != nil {
+				return fmt.Errorf("leasing VM %q for the guest command: %w", vmName, err)
+			}
+			// Hand off from the exclusive lifecycle mutex to a shared usage
+			// lease without a name-reuse gap. Stop remains able to terminate a
+			// long-running command, while destroy waits for limactl to detach
+			// before cleaning identity state or reusing the public VM name.
+			if err := lifecycleLock.Release(); err != nil {
+				return errors.Join(err, usageLease.Release())
+			}
+			execErr := cliExecVM(vmName, args, target.Workdir)
+			return errors.Join(execErr, usageLease.Release())
 		},
 	}
+
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides the path-derived name)")
+	// Once the guest command starts, every remaining argument belongs to that
+	// command. In particular, flags such as `docker run --name web` must not be
+	// consumed as Watermelon flags. Watermelon flags therefore have to precede
+	// the command; an optional `--` separator is also accepted.
+	cmd.Flags().SetInterspersed(false)
+
+	return cmd
 }

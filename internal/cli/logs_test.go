@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/saeta-eth/watermelon/internal/config"
 )
 
 func TestLogsCommandNoLogs(t *testing.T) {
@@ -19,6 +21,55 @@ func TestLogsCommandNoLogs(t *testing.T) {
 	err = cmd.RunE(cmd, nil)
 	if err != nil {
 		t.Errorf("logs command error = %v, want nil", err)
+	}
+}
+
+func TestLogsNameClearsRegisteredVMLogNotProjectFallback(t *testing.T) {
+	project, _, _ := setupNamedVMIdentityTest(t)
+	cfg := config.NewConfig()
+	cfg.VM.Name = "named-logs"
+	if err := os.WriteFile(filepath.Join(project, ".watermelon.toml"), []byte("[vm]\nname = \"named-logs\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := reserveNamedVMIdentity(project, cfg.VM.Name, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(instance.Paths.GuestNetworkLogPath, []byte("named\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	projectLog := filepath.Join(project, ".watermelon", "logs.log")
+	if err := os.MkdirAll(filepath.Dir(projectLog), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectLog, []byte("project\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDir) })
+
+	cmd := NewLogsCmd()
+	if err := cmd.Flags().Set("name", cfg.VM.Name); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("clear", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(instance.Paths.GuestNetworkLogPath); !os.IsNotExist(err) {
+		t.Fatalf("registered VM log was not cleared: %v", err)
+	}
+	if _, err := os.Stat(projectLog); err != nil {
+		t.Fatalf("project fallback log was incorrectly cleared: %v", err)
 	}
 }
 

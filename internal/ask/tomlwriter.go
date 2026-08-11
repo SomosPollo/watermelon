@@ -1,6 +1,7 @@
 package ask
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -13,6 +14,15 @@ import (
 // It is a no-op if the domain is already in the list.
 // Uses advisory file locking to prevent concurrent write corruption.
 func AddDomainToConfig(configPath string, domain string) error {
+	rule, err := config.ParseNetworkRule(domain)
+	if err != nil || rule.Wildcard || rule.Port != 0 {
+		if err == nil {
+			err = fmt.Errorf("prompted rules must name one host without a wildcard or port")
+		}
+		return fmt.Errorf("invalid prompted network domain %q: %w", domain, err)
+	}
+	domain = rule.Host
+
 	// Open the file for locking (create if needed for the lock)
 	lockFile, err := os.OpenFile(configPath, os.O_RDWR, 0644)
 	if err != nil {

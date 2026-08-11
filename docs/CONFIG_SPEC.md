@@ -4,12 +4,15 @@ This document describes the `.watermelon.toml` configuration file format for Wat
 
 ## Overview
 
-The `.watermelon.toml` file defines how your project's sandbox VM is configured. Place this file in your project's root directory.
+The `.watermelon.toml` file defines how your project's sandbox VM is configured. Place this file in your project's root directory. Parsing is strict: unknown or misspelled keys are rejected at every level, including fields inside individual `[mounts]` entries. Watermelon never silently ignores them and substitutes a safety-sensitive default.
 
 ```toml
 # Example .watermelon.toml
 [vm]
 image = "ubuntu-22.04"
+# name = "my-project-vm"
+# mount_project = true
+# workdir = "/project"
 
 [network]
 allow = ["registry.npmjs.org", "github.com"]
@@ -45,15 +48,33 @@ Configures the base virtual machine.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `name` | string | path-derived | Optional fixed Lima instance name |
 | `image` | string | `"ubuntu-22.04"` | Base OS image for the VM |
+| `mount_project` | bool | `true` | Mount the host project read-write at `/project` |
+| `workdir` | string | `/project` when mounted; guest login directory otherwise | Common working directory for `run`, `exec`, and tool wrappers |
 
 **Supported images:**
+
 - `ubuntu-22.04`
+- `ubuntu-24.04`
 
 ```toml
 [vm]
-image = "ubuntu-22.04"
+name = "my-project-vm"
+image = "ubuntu-24.04"
+mount_project = true
+workdir = "/project"
 ```
+
+**`name`:** A fixed name overrides the normal `watermelon-{project}-{hash}` name. It must be no more than 76 bytes, must match `[a-z0-9]+(?:[._-][a-z0-9]+)*`, and must not end in `.yaml` or `.yml`. Watermelon deliberately requires lowercase: Lima accepts uppercase, but case variants can alias the same instance directory on common macOS filesystems.
+
+A custom-named VM is not a shared global alias. Watermelon records its canonical owning project and an immutable per-instance identity. It refuses collisions with another project or an unmanaged Lima instance and rechecks ownership before lifecycle operations. For normal operation, CLI `--name` overrides this field only for the current command and never creates or accesses a sandbox using default configuration from an unrelated directory. Recovery is limited to verified ownership: `stop` may stop a bound VM while returning a local config error, and `destroy --name` may recover it or clean stale host state from a missing/invalid-config project.
+
+**`mount_project`:** Set this to `false` to keep the host project out of the VM. No `/project` mount is generated. Dedicated read-only bootstrap state and per-VM log state may still be mounted for Watermelon's own operation; these are not project mounts.
+
+**`workdir`:** This must be a clean absolute Linux path. It controls interactive `run` shells, `exec`, and containerized-tool wrappers. Watermelon validates the path syntax but does not create an arbitrary directory in the guest. Create a non-default workdir during provisioning, with ownership suitable for the ordinary `watermelon` user, before the first shell, command, tool wrapper, or IDE tries to use it. The same pre-existing-directory requirement applies to `run --workdir` and `ide.workdir`.
+
+When omitted with `mount_project = true`, `workdir` defaults to the existing `/project` mount. When omitted with `mount_project = false`, the guest login directory is used by `run` and `exec`, while tool wrappers bind their current guest directory into the tool container at the same path. The `run --workdir` flag overrides the configured value for that interactive shell only.
 
 ---
 
@@ -135,13 +156,13 @@ aider = ["api.anthropic.com", "api.openai.com"]
 
 **Process-name syntax:** Keys must be at most 255 bytes and match `[A-Za-z0-9_][A-Za-z0-9._+-]*`. They must begin with an ASCII letter, digit, or underscore; leading `-` or `.`, whitespace, control characters, path separators, and shell syntax are rejected.
 
-**Note:** Requires VM reprovisioning (`watermelon destroy --force && watermelon run --no-shell`) to apply changes. Destroying the VM removes its state but does not delete `.watermelon.toml`.
+**Note:** Requires VM reprovisioning (`watermelon destroy --force && watermelon run --no-shell`) to apply changes. With `enforcement = "ask"`, omit `--no-shell` and keep the resulting interactive shell open. Destroying the VM removes its state but does not delete `.watermelon.toml`.
 
 ---
 
 ### `[provision]`
 
-Packages to install during VM provisioning. Each key corresponds to a package manager.
+Packages to install and host scripts to embed and run during VM provisioning. Each package-manager key installs packages globally inside its configured tool image.
 
 User-configured package installation runs after workload network policy is active, so its registries and download hosts must be covered by `[network].allow` in blocking modes.
 
@@ -154,6 +175,7 @@ Declare global CLI packages here and recreate the VM when you need reliable comm
 | `cargo` | string[] | `rust` image | `cargo install <pkg>` |
 | `go` | string[] | `go` or `golang` image | `go install <pkg>` |
 | `gem` | string[] | `ruby` image | `gem install <pkg>` |
+| `scripts` | string[] | none | Embed each host file and run it as root in the VM |
 
 **Validation:**
 - Package names cannot contain shell metacharacters (`;|&$\`\``)
@@ -168,6 +190,24 @@ Declare global CLI packages here and recreate the VM when you need reliable comm
 [provision]
 npm = ["@anthropic-ai/claude-code", "typescript"]
 pip = ["aider-chat", "black"]
+scripts = ["./vm/setup.sh"]
+```
+
+**Provision scripts:** Paths must be relative to the project root. Absolute paths, every lexical `..` component, and symlinks in any path component are rejected. Watermelon reads the scripts on the host and embeds their contents when generating the Lima configuration; the files do not need to be available inside the VM through `/project`, so this also works with `mount_project = false`. They run as root after Watermelon's built-in provisioning and network policy setup.
+
+Treat every script as trusted configuration with root authority inside the VM. Watermelon refuses an empty or unsafe path, a non-regular file, a file not owned by the current host user, invalid UTF-8, or NUL bytes. Each script is limited to 1 MiB and all scripts together to 4 MiB. Because Lima may run provision steps again, scripts must be idempotent.
+
+Keep every configured host script present, readable, and current while the VM exists. Watermelon rereads and validates the exact bytes before `run`, `exec`, and `code`, and while `status` compares the current and applied configurations. It records those ordered digests in the applied configuration, so changing a script at the same path makes the VM stale and requires recreation. A missing, unreadable, or newly invalid script prevents `status` from completing; policy-checked execution commands refuse to use the VM and may stop a verifiably project-owned running VM fail-closed. The ownership-verified `stop` and `destroy` recovery paths remain available.
+
+For example:
+
+```bash
+#!/bin/sh
+set -eu
+
+# Safe to run more than once.
+install -d -m 0755 /opt/my-project
+printf '%s\n' 'managed by Watermelon' > /opt/my-project/README
 ```
 
 **Use case:** Install AI coding assistants and development tools automatically:
@@ -177,6 +217,7 @@ pip = ["aider-chat", "black"]
 npm = ["@anthropic-ai/claude-code"]  # Claude Code CLI
 pip = ["aider-chat"]                  # Aider AI assistant
 cargo = ["ripgrep", "fd-find"]        # Fast search tools
+scripts = ["./vm/setup.sh"]           # Custom root provisioning
 ```
 
 ---
@@ -214,12 +255,15 @@ Configured base images are pulled during Watermelon's trusted bootstrap, before 
 ```
 
 **How it works:**
+
 1. When you run `npm install` in the sandbox, it executes:
    ```bash
    nerdctl run --rm -it --network=host -v /project:/project -w /project node:20-slim npm install
    ```
-2. The `--network=host` flag ensures ports bind to the VM's network
-3. Lima's port forwarding exposes these ports to the host
+   This is the default mounted-project case.
+2. With `mount_project = false`, wrappers never refer to `/project`. If `vm.workdir` is configured they bind and use that guest path; otherwise they resolve, bind, and use the wrapper's current guest directory.
+3. The `--network=host` flag ensures ports bind to the VM's network.
+4. Lima's configured port forwarding exposes those ports to the host.
 
 ---
 
@@ -255,7 +299,7 @@ Additional host paths to mount into the VM (beyond the project directory).
 
 Targets are normalized and must remain at or below `/mnt/watermelon`; `..` traversal is rejected. This dedicated namespace prevents additional mounts from shadowing guest system, home, policy, or project paths. Applications do not automatically treat these paths as home-directory configuration: point the relevant tool at the mounted file or directory explicitly.
 
-**Note:** The project directory is separately mounted at `/project` with read-write access.
+**Note:** With the default `mount_project = true`, the project directory is separately mounted at `/project` with read-write access. It is absent when `mount_project = false`.
 
 ---
 
@@ -353,6 +397,10 @@ enforcement = "fail"
 # enforcement = "ask"     # Interactive: prompt for TCP; reject other non-allowlisted traffic
 ```
 
+`ask` requires a foreground Watermelon process to host its verdict server. `watermelon run --no-shell` is therefore rejected: use interactive `watermelon run` and keep its shell open. `watermelon exec` keeps prompts available until the guest command exits. `watermelon code` passes the configured IDE command `--wait` and remains in the foreground, keeping prompts available until the remote IDE window exits.
+
+Each ask-mode VM has one saved host verdict port, so only one foreground `run`, `exec`, or `code` prompt controller can be active for it at a time. Start another only after the first exits. Direct `ssh lima-<vmname>` does not start a verdict server or acquire Watermelon's VM usage lease; a manually connected workload needs a separate foreground Watermelon prompt controller for prompted network access, and Watermelon stop or destroy can terminate that connection without waiting for it.
+
 ---
 
 ### `[ide]`
@@ -361,9 +409,12 @@ Configures the IDE for the `watermelon code` command.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `command` | string | `"code"` | IDE command to launch |
+| `command` | string | `"code"` | VS Code-compatible IDE command supporting `--remote` and `--wait` |
+| `workdir` | string | `[vm].workdir`, then the VM default | IDE-only remote directory override |
 
 **Supported IDE commands:**
+
+Each command must support both the VS Code-compatible `--remote ssh-remote+<host>` option and `--wait`. The `--wait` contract is required even outside `ask` mode so Watermelon can retain the VM session lease until the IDE window closes.
 
 | IDE | Command |
 |-----|---------|
@@ -374,26 +425,22 @@ Configures the IDE for the `watermelon code` command.
 
 ```toml
 [ide]
-# VS Code (default)
-command = "code"
-
-# Cursor
 command = "cursor"
-
-# VSCodium
-command = "codium"
+workdir = "/workspace/app"
 ```
 
 **How it works:**
 
 When you run `watermelon code`, it executes:
 ```bash
-<command> --remote ssh-remote+lima-<vmname> /project
+<command> --wait --remote ssh-remote+lima-<vmname> <workdir>
 ```
 
-This opens your IDE connected to the sandbox VM via SSH Remote, directly in the `/project` directory.
+The remote directory is `ide.workdir` when set, otherwise `vm.workdir`, otherwise `/project` for a mounted project. An explicitly configured remote directory must already exist in the guest. With no project mount and no configured workdir, Watermelon omits `<workdir>` and lets the IDE use the guest login directory. `ide.workdir` does not affect `watermelon run` or `watermelon exec`.
 
-**Security:** The IDE command is validated to prevent shell injection (no metacharacters allowed).
+Watermelon runs the IDE command in the foreground. It keeps the shared VM usage lease—and, in `ask` mode, the host prompt server—until the IDE command exits after its remote window closes.
+
+**Security:** The IDE command is validated to prevent shell injection. Both workdir fields must be clean absolute Linux paths and reject shell metacharacters, quotes, control whitespace, and NUL bytes.
 
 ---
 
@@ -413,6 +460,24 @@ memory = "2GB"
 cpus = 1
 disk = "10GB"
 ```
+
+### Project-Owned VM Without a Project Mount
+
+```toml
+[vm]
+name = "isolated-build-vm"
+image = "ubuntu-24.04"
+mount_project = false
+workdir = "/home/watermelon"
+
+[network]
+allow = []
+
+[security]
+enforcement = "fail"
+```
+
+Create and manage this VM from the directory containing that configuration. To transfer selected files, use explicit copy syntax such as `watermelon copy -r ./src isolated-build-vm:/home/watermelon/`. Fixed names do not let normal `--name` commands bypass project ownership or config validation; the recovery exceptions remain ownership-verified. `copy` is a separate, explicit low-level Lima operation and does not verify Watermelon ownership or project configuration. It does coordinate the selected VM name and holds a shared usage lease for the transfer, so destroy cannot delete state or reuse the name until the copy client detaches. Stop and destroy may still interrupt the transfer by immediately shutting down a running VM, potentially leaving a partial destination.
 
 ### Full-Stack Web Development
 
@@ -476,24 +541,34 @@ Even this policy retains the managed DNS path, loopback, established/related res
 
 ## Validation Rules
 
-The configuration is validated at VM creation time:
+A present configuration is parsed strictly and validated before Watermelon uses it. Unknown keys—including unknown fields nested in a mount entry—are configuration errors. VM creation and applied-configuration comparison also prepare and validate provision-script files:
 
-1. **Resources:**
+1. **VM:**
+   - `name`, when set, uses the lowercase filesystem-safe syntax above and the 76-byte limit
+   - `image` must be `ubuntu-22.04` or `ubuntu-24.04`
+   - `workdir`, when set, must be a clean absolute Linux path
+
+2. **Resources:**
    - `cpus` must be ≥ 1
    - `memory` and `disk` must be non-empty
 
-2. **Security:**
+3. **Security:**
    - `enforcement` must be one of: `log`, `fail`, `silent`, `ask`
 
-3. **Network:**
+4. **Network:**
    - Domains are parsed as plain hosts, wildcard subdomains, IPv4 addresses, or host/IP plus TCP port
    - Wildcard domains cannot include ports
 
-4. **Ports:**
+5. **Ports:**
    - Each port must be in range 1-65535
+
+6. **Provisioning:**
+   - Package names and script paths reject unsafe shell syntax
+   - Script paths must be project-relative, contain no `..` component, and contain no symlink component
+   - Scripts must pass the ownership, regular-file, UTF-8, and size checks described above
 
 ---
 
 ## File Location
 
-Watermelon looks for `.watermelon.toml` in the current working directory when running commands. The VM name is derived from the project path to ensure consistent naming across sessions.
+Watermelon looks for `.watermelon.toml` in the current working directory. Without `vm.name`, the VM name is derived from the canonical project path for consistency. Normal `--name` operation validates the local configuration, binds the selected name to the current project, and never replaces a missing or invalid config with defaults. `stop` and explicit-name `destroy` have the ownership-verified recovery behavior described above. Management commands retain legacy path-derived lookup only when neither a config nor an explicit name is present.

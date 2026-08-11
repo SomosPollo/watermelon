@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,7 +190,7 @@ func TestAskCreationPropagatesVerdictPortSaveFailureBeforeStart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
 
-	oldStatus, oldStart, oldSavePort := cliGetVMStatus, cliStartVM, cliSaveVerdictPort
+	oldStatus, oldStart, oldSavePort, oldSavePortAt := cliGetVMStatus, cliStartVM, cliSaveVerdictPort, cliSaveVerdictPortAt
 	cliGetVMStatus = func(string) lima.VMStatus { return lima.StatusNotFound }
 	startCalls := 0
 	cliStartVM = func(string, string) error {
@@ -197,19 +198,81 @@ func TestAskCreationPropagatesVerdictPortSaveFailureBeforeStart(t *testing.T) {
 		return nil
 	}
 	saveErr := errors.New("port state unavailable")
+	listenerHeldThroughSave := false
 	cliSaveVerdictPort = func(string, int) error { return saveErr }
+	cliSaveVerdictPortAt = func(_ string, port int) error {
+		probe, bindErr := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
+		if bindErr == nil {
+			_ = probe.Close()
+			return errors.New("verdict listener was released before its port was saved")
+		}
+		if !errors.Is(bindErr, syscall.EADDRINUSE) {
+			return fmt.Errorf("checking verdict listener during save: %w", bindErr)
+		}
+		listenerHeldThroughSave = true
+		return saveErr
+	}
 	t.Cleanup(func() {
 		cliGetVMStatus = oldStatus
 		cliStartVM = oldStart
 		cliSaveVerdictPort = oldSavePort
+		cliSaveVerdictPortAt = oldSavePortAt
 	})
 
-	err = runRunWithOptions(runOptions{OpenShell: false})
+	err = runRunWithOptions(runOptions{OpenShell: true})
 	if !errors.Is(err, saveErr) {
 		t.Fatalf("run error = %v, want verdict-port save failure preserved", err)
 	}
 	if startCalls != 0 {
 		t.Fatalf("start calls = %d, want 0 before durable verdict-port state", startCalls)
+	}
+	if !listenerHeldThroughSave {
+		t.Fatal("ask listener was not kept open through the durable port save")
+	}
+}
+
+func TestAskVerdictListenerExplainsSingleForegroundController(t *testing.T) {
+	setupNamedVMIdentityTest(t)
+	first, err := listenForAskVerdicts("ask-dev", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	port := first.Addr().(*net.TCPAddr).Port
+
+	second, err := listenForAskVerdicts("ask-dev", port)
+	if second != nil {
+		_ = second.Close()
+		t.Fatal("second ask listener unexpectedly acquired the active prompt port")
+	}
+	if err == nil || !strings.Contains(err.Error(), "already in use") || !strings.Contains(err.Error(), "unrelated process") {
+		t.Fatalf("second ask listener error = %v, want actionable single-controller guidance", err)
+	}
+}
+
+func TestExistingAskVMRequiresStrictSavedVerdictPort(t *testing.T) {
+	project, _, _ := setupNamedVMIdentityTest(t)
+	cfg := config.NewConfig()
+	cfg.Security.Enforcement = config.EnforcementAsk
+	instance, err := reserveNamedVMIdentity(project, "ask-existing-port", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, loadErr := savedAskVerdictPortForExistingVM(instance); loadErr == nil || !strings.Contains(loadErr.Error(), "no saved verdict port") {
+		t.Fatalf("missing saved port error = %v, want strict missing-state rejection", loadErr)
+	}
+	if err := os.WriteFile(instance.Paths.VerdictPortPath, []byte("not-a-port\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, loadErr := savedAskVerdictPortForExistingVM(instance); loadErr == nil || !strings.Contains(loadErr.Error(), "parsing saved verdict port") {
+		t.Fatalf("malformed saved port error = %v, want strict parse rejection", loadErr)
+	}
+	if err := savePortAt(instance.Paths.VerdictPortPath, 39285); err != nil {
+		t.Fatal(err)
+	}
+	if port, err := savedAskVerdictPortForExistingVM(instance); err != nil || port != 39285 {
+		t.Fatalf("valid saved port = %d, err %v; want 39285", port, err)
 	}
 }
 
@@ -425,13 +488,15 @@ func TestHashPreparedNfqdBinaryRejectsUnsafeFileTypesAndPathComponents(t *testin
 
 func TestGenerateConfigForInstanceAuthenticatesAskModeNfqd(t *testing.T) {
 	project := t.TempDir()
-	binDir := filepath.Join(project, ".watermelon", "bin")
-	if err := os.MkdirAll(binDir, 0755); err != nil {
+	bootstrapDir := t.TempDir()
+	nfqdPath := filepath.Join(bootstrapDir, "watermelon-nfqd")
+	if err := os.WriteFile(nfqdPath, []byte("abc"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "watermelon-nfqd"), []byte("abc"), 0755); err != nil {
-		t.Fatal(err)
-	}
+	identity := &namedVMInstanceIdentity{Paths: namedVMIdentityPaths{
+		BootstrapDir: bootstrapDir,
+		NfqdPath:     nfqdPath,
+	}, VerdictAuthKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	cfg := config.NewConfig()
 	cfg.Security.Enforcement = config.EnforcementAsk
 
@@ -449,11 +514,17 @@ func TestGenerateConfigForInstanceAuthenticatesAskModeNfqd(t *testing.T) {
 		if opts.NfqdSHA256 != wantDigest {
 			t.Fatalf("nfqd digest = %q, want %q", opts.NfqdSHA256, wantDigest)
 		}
+		if opts.VerdictAuthKey != identity.VerdictAuthKey {
+			t.Fatalf("verdict authentication key was not bound to the instance")
+		}
+		if opts.BootstrapHostDir != bootstrapDir {
+			t.Fatalf("bootstrap host dir = %q, want %q", opts.BootstrapHostDir, bootstrapDir)
+		}
 		return "generated", nil
 	}
 	t.Cleanup(func() { cliGenerateConfig = oldGenerate })
 
-	generated, err := generateConfigForInstance(cfg, project, nil, 39285)
+	generated, err := generateConfigForInstanceWithIdentity(cfg, project, nil, 39285, identity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,6 +597,38 @@ func TestSaveAndAssessAppliedPolicySnapshot(t *testing.T) {
 	}
 }
 
+func TestAppliedPolicySnapshotDetectsEffectiveUIDMismatch(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("Watermelon VM creation requires an unprivileged effective host UID")
+	}
+	project := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", privateTempDir(t))
+	t.Setenv("LIMA_HOME", t.TempDir())
+	cfg := config.NewConfig()
+
+	host, err := resolveAppliedPolicyHostContext(project, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentUID := uint32(os.Geteuid())
+	if host.Recorded.EffectiveUID != currentUID {
+		t.Fatalf("recorded effective UID = %d, want %d", host.Recorded.EffectiveUID, currentUID)
+	}
+	alternateUID := currentUID + 1
+	if alternateUID == 0 || alternateUID == ^uint32(0) {
+		alternateUID = currentUID - 1
+	}
+	host.Recorded.EffectiveUID = alternateUID
+	if err := saveAppliedPolicySnapshotWithHost(host, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	assessment := assessAppliedPolicy(project, lima.StatusRunning, cfg)
+	if assessment.State != policyStale {
+		t.Fatalf("effective UID mismatch state = %v, want stale (error: %v)", assessment.State, assessment.Err)
+	}
+}
+
 func TestExistingVMLegacySnapshotFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", privateTempDir(t))
@@ -554,6 +657,71 @@ func TestExistingVMLegacySnapshotFailsClosed(t *testing.T) {
 	err = requireCurrentAppliedPolicy(dir, lima.StatusRunning, cfg)
 	if err == nil || !strings.Contains(err.Error(), recreatePolicyCommand) || !strings.Contains(err.Error(), "does not record") {
 		t.Fatalf("legacy policy error = %v; want fail-closed recreation instruction", err)
+	}
+}
+
+func TestPolicyRecoveryCommandsPreserveCustomVMName(t *testing.T) {
+	dir := t.TempDir()
+	vmName := "shared-dev"
+	recreate := recreatePolicyCommandForVM(dir, vmName)
+	if !strings.Contains(recreate, "destroy --name shared-dev") || !strings.Contains(recreate, "run --name shared-dev") {
+		t.Fatalf("custom recreate command = %q", recreate)
+	}
+	restart := restartPolicyCommandForVM(dir, vmName)
+	if !strings.Contains(restart, "stop --name shared-dev") || !strings.Contains(restart, "run --name shared-dev") {
+		t.Fatalf("custom restart command = %q", restart)
+	}
+
+	derived := lima.VMNameFromPath(dir)
+	if got := recreatePolicyCommandForVM(dir, derived); got != recreatePolicyCommand {
+		t.Fatalf("derived recreate command = %q, want %q", got, recreatePolicyCommand)
+	}
+	if got := restartPolicyCommandForVM(dir, derived); got != "watermelon stop && watermelon run" {
+		t.Fatalf("derived restart command = %q", got)
+	}
+}
+
+func TestPolicyRecoveryCommandsPreserveExplicitDerivedSelection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", privateTempDir(t))
+	t.Setenv("LIMA_HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, ".watermelon.toml"), []byte("[vm]\nname = \"configured-other\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	derived := lima.VMNameFromPath(dir)
+	target, err := resolveConfiguredTarget(dir, derived)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !target.NameExplicit || target.VMName != derived {
+		t.Fatalf("selection = %+v, want explicit derived VM %q", target, derived)
+	}
+
+	wantDestroy := "watermelon destroy --name " + derived + " --force"
+	wantRun := "watermelon run --name " + derived
+	wantStop := "watermelon stop --name " + derived
+	if got := destroyPolicyCommandForVM(dir, derived, target.NameExplicit); got != wantDestroy {
+		t.Fatalf("explicit derived destroy command = %q, want %q", got, wantDestroy)
+	}
+	if got := recreatePolicyCommandForVM(dir, derived, target.NameExplicit); got != wantDestroy+" && "+wantRun {
+		t.Fatalf("explicit derived recreate command = %q", got)
+	}
+	if got := restartPolicyCommandForVM(dir, derived, target.NameExplicit); got != wantStop+" && "+wantRun {
+		t.Fatalf("explicit derived restart command = %q", got)
+	}
+
+	policyErr := requireCurrentAppliedPolicyForVM(dir, derived, lima.StatusStopped, target.Config, target.NameExplicit)
+	if policyErr == nil || !strings.Contains(policyErr.Error(), wantDestroy+" && "+wantRun) {
+		t.Fatalf("snapshot recovery error = %v, want explicit derived selection", policyErr)
+	}
+
+	oldVerify := cliVerifyPolicy
+	cliVerifyPolicy = func(string) error { return errors.New("marker missing") }
+	t.Cleanup(func() { cliVerifyPolicy = oldVerify })
+	runtimeErr := requireRuntimePolicyApplied(dir, derived, false, target.NameExplicit)
+	if runtimeErr == nil || !strings.Contains(runtimeErr.Error(), wantStop+" && "+wantRun) ||
+		!strings.Contains(runtimeErr.Error(), wantDestroy+" && "+wantRun) {
+		t.Fatalf("runtime recovery error = %v, want explicit restart and recreate commands", runtimeErr)
 	}
 }
 
@@ -1437,6 +1605,73 @@ func TestNewVMStartFailureStopsCreatedRunningInstanceWithoutSavingPolicy(t *test
 	}
 	if _, statErr := os.Stat(snapshotPath); !os.IsNotExist(statErr) {
 		t.Fatalf("failed creation recorded applied policy: %v", statErr)
+	}
+}
+
+func TestNewVMIncompleteProvisioningStopsBeforeSavingPolicySnapshot(t *testing.T) {
+	project := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", privateTempDir(t))
+	t.Setenv("LIMA_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(project, ".watermelon.toml"), []byte("[network]\nallow = []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDir) })
+
+	oldStatus, oldProjectSource := cliGetVMStatus, cliProjectMountSource
+	oldStart, oldStop, oldVerify := cliStartVM, cliStopVM, cliVerifyPolicy
+	oldGenerate, oldSave := cliGenerateConfig, cliSavePolicySnapshot
+	statusCalls := 0
+	cliGetVMStatus = func(string) lima.VMStatus {
+		statusCalls++
+		if statusCalls == 1 {
+			return lima.StatusNotFound
+		}
+		return lima.StatusRunning
+	}
+	cliProjectMountSource = func(string) (string, error) { return project, nil }
+	cliStartVM = func(string, string) error { return nil }
+	cliGenerateConfig = func(*config.Config, string, map[string]string, lima.GenerateOptions) (string, error) {
+		return "generated", nil
+	}
+	completionErr := errors.New("completion marker missing")
+	cliVerifyPolicy = func(string) error { return completionErr }
+	stopCalls := 0
+	cliStopVM = func(string) error {
+		stopCalls++
+		return nil
+	}
+	saveCalls := 0
+	cliSavePolicySnapshot = func(appliedPolicyHostContext, *config.Config) error {
+		saveCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		cliGetVMStatus = oldStatus
+		cliProjectMountSource = oldProjectSource
+		cliStartVM = oldStart
+		cliStopVM = oldStop
+		cliVerifyPolicy = oldVerify
+		cliGenerateConfig = oldGenerate
+		cliSavePolicySnapshot = oldSave
+	})
+
+	err = runRunWithOptions(runOptions{OpenShell: false})
+	if !errors.Is(err, completionErr) || !strings.Contains(err.Error(), "sandbox provisioning is not complete") || !strings.Contains(err.Error(), "VM was stopped") {
+		t.Fatalf("run error = %v, want fail-closed provisioning error and stop notice", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stop calls = %d, want 1", stopCalls)
+	}
+	if saveCalls != 0 {
+		t.Fatalf("snapshot save calls = %d, want 0 before provisioning attestation", saveCalls)
 	}
 }
 

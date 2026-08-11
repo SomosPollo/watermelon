@@ -1,10 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,7 +16,8 @@ import (
 )
 
 func NewStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var name string
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show sandbox VM status for current project",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -24,19 +25,45 @@ func NewStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runStatus(os.Stdout, dir)
+			return runStatusForName(os.Stdout, dir, name)
 		},
 	}
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the path-derived name)")
+	return cmd
 }
 
 func runStatus(out io.Writer, dir string) error {
-	canonicalDir, err := canonicalProjectRoot(dir)
+	return runStatusForName(out, dir, "")
+}
+
+func runStatusForName(out io.Writer, dir, name string) error {
+	target, err := resolveManagementTarget(dir, name)
 	if err != nil {
 		return err
 	}
-	dir = canonicalDir
-	vmName := lima.VMNameFromPath(dir)
+	if target.Config != nil {
+		target, err = prepareTargetProvisionScripts(target)
+		if err != nil {
+			return fmt.Errorf("preparing provision scripts for status: %w", err)
+		}
+	}
+	dir = target.ProjectRoot
+	vmName := target.VMName
+	lifecycleLock, err := acquireVMLifecycleLock(vmName)
+	if err != nil {
+		return fmt.Errorf("locking VM %q lifecycle: %w", vmName, err)
+	}
+	defer lifecycleLock.Release()
 	status := cliGetVMStatus(vmName)
+	var staleIdentity *namedVMInstanceIdentity
+	if status == lima.StatusNotFound {
+		instance, identityErr := loadOwnedNamedVMIdentity(dir, vmName)
+		if identityErr == nil {
+			staleIdentity = &instance
+		} else if !errors.Is(identityErr, os.ErrNotExist) {
+			return fmt.Errorf("loading stale VM identity for %q: %w", vmName, identityErr)
+		}
+	}
 	if status != lima.StatusNotFound {
 		if err := requireVMProjectBinding(dir, vmName); err != nil {
 			return err
@@ -50,32 +77,20 @@ func runStatus(out io.Writer, dir string) error {
 		fmt.Fprintf(out, "SSH Host: %s\n", lima.GetSSHHost(vmName))
 	}
 
-	cfg, err := loadProjectConfig(dir)
-	if err != nil {
-		assessment := assessAppliedPolicy(dir, status, nil)
-		if _, statErr := os.Stat(filepath.Join(dir, ".watermelon.toml")); os.IsNotExist(statErr) {
-			fmt.Fprintln(out, "Config:   missing (.watermelon.toml not found; run 'watermelon init')")
-			fmt.Fprintln(out, "Configured Policy: unavailable (config missing)")
-			if status == lima.StatusNotFound {
-				fmt.Fprintln(out, "Next:     watermelon init")
-			}
-		} else {
-			fmt.Fprintf(out, "Config:   unreadable (%v)\n", err)
-			fmt.Fprintln(out, "Configured Policy: unavailable (config unreadable)")
+	cfg := target.Config
+	if cfg == nil {
+		assessment := assessAppliedPolicyForVM(dir, vmName, status, nil)
+		fmt.Fprintln(out, "Config:   missing (.watermelon.toml not found; run 'watermelon init')")
+		fmt.Fprintln(out, "Configured Policy: unavailable (config missing)")
+		if staleIdentity != nil {
+			fmt.Fprintf(out, "Next:     %s; then watermelon init\n", destroyPolicyCommandForVM(dir, vmName, target.NameExplicit))
+		} else if status == lima.StatusNotFound {
+			fmt.Fprintln(out, "Next:     watermelon init")
 		}
 		fmt.Fprintf(out, "Applied Policy:    %s\n", formatAppliedPolicy(assessment))
 		return nil
 	}
-
-	if err := config.Validate(cfg); err != nil {
-		assessment := assessAppliedPolicy(dir, status, nil)
-		fmt.Fprintf(out, "Config:   invalid (%v)\n", err)
-		fmt.Fprintf(out, "Configured Policy: %s (config invalid)\n", config.DescribeEnforcement(cfg.Security.Enforcement))
-		fmt.Fprintf(out, "Applied Policy:    %s\n", formatAppliedPolicy(assessment))
-		return nil
-	}
-
-	assessment := assessAppliedPolicy(dir, status, cfg)
+	assessment := assessAppliedPolicyForVM(dir, vmName, status, cfg)
 	fmt.Fprintf(out, "Config:   %s\n", configSnapshotStatus(assessment))
 	fmt.Fprintf(out, "Configured Policy: %s\n", config.DescribeEnforcement(cfg.Security.Enforcement))
 	fmt.Fprintf(out, "Applied Policy:    %s\n", formatAppliedPolicy(assessment))
@@ -90,11 +105,23 @@ func runStatus(out io.Writer, dir string) error {
 		countLabel(cfg.Resources.CPUs, "CPU", "CPUs"),
 		cfg.Resources.Disk,
 	)
-	fmt.Fprintf(out, "Logs:     %s\n", logStatus(dir))
-	if status == lima.StatusNotFound {
-		fmt.Fprintln(out, "Next:     watermelon run")
+	logPath := logs.LogPath(dir)
+	if staleIdentity != nil {
+		logPath = staleIdentity.Paths.GuestNetworkLogPath
+	} else if status != lima.StatusNotFound {
+		resolved, err := resolvedNetworkLogPath(target)
+		if err != nil {
+			return err
+		}
+		logPath = resolved
+	}
+	fmt.Fprintf(out, "Logs:     %s\n", logStatusPath(logPath))
+	if staleIdentity != nil {
+		fmt.Fprintf(out, "Next:     %s\n", recreatePolicyCommandForVM(dir, vmName, target.NameExplicit))
+	} else if status == lima.StatusNotFound {
+		fmt.Fprintf(out, "Next:     %s\n", runPolicyCommandForVM(dir, vmName, target.NameExplicit))
 	} else if policyRequiresRecreation(assessment.State) {
-		fmt.Fprintf(out, "Next:     %s\n", recreatePolicyCommand)
+		fmt.Fprintf(out, "Next:     %s\n", recreatePolicyCommandForVM(dir, vmName, target.NameExplicit))
 	}
 
 	return nil
@@ -183,7 +210,11 @@ func formatPorts(ports []int) string {
 }
 
 func logStatus(dir string) string {
-	lines, err := logs.Read(dir)
+	return logStatusPath(logs.LogPath(dir))
+}
+
+func logStatusPath(path string) string {
+	lines, err := logs.ReadPath(path)
 	if err != nil {
 		return fmt.Sprintf("unavailable (%v)", err)
 	}

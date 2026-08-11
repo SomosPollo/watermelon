@@ -9,6 +9,7 @@ func TestBuildIDECommand(t *testing.T) {
 		name     string
 		ideCmd   string
 		sshHost  string
+		workdir  string
 		wantCmd  string
 		wantArgs []string
 	}{
@@ -16,21 +17,31 @@ func TestBuildIDECommand(t *testing.T) {
 			name:     "vscode",
 			ideCmd:   "code",
 			sshHost:  "lima-watermelon-test-12345678",
+			workdir:  "/project",
 			wantCmd:  "code",
-			wantArgs: []string{"--remote", "ssh-remote+lima-watermelon-test-12345678", "/project"},
+			wantArgs: []string{"--wait", "--remote", "ssh-remote+lima-watermelon-test-12345678", "/project"},
 		},
 		{
 			name:     "cursor",
 			ideCmd:   "cursor",
 			sshHost:  "lima-watermelon-test-12345678",
+			workdir:  "/workspace/app",
 			wantCmd:  "cursor",
-			wantArgs: []string{"--remote", "ssh-remote+lima-watermelon-test-12345678", "/project"},
+			wantArgs: []string{"--wait", "--remote", "ssh-remote+lima-watermelon-test-12345678", "/workspace/app"},
+		},
+		{
+			name:     "guest home",
+			ideCmd:   "code",
+			sshHost:  "lima-watermelon-test-12345678",
+			workdir:  "",
+			wantCmd:  "code",
+			wantArgs: []string{"--wait", "--remote", "ssh-remote+lima-watermelon-test-12345678"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd, args := buildIDECommand(tt.ideCmd, tt.sshHost)
+			cmd, args := buildIDECommand(tt.ideCmd, tt.sshHost, tt.workdir)
 			if cmd != tt.wantCmd {
 				t.Errorf("buildIDECommand() cmd = %q, want %q", cmd, tt.wantCmd)
 			}

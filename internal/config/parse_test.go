@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +58,70 @@ enforcement = "fail"
 	}
 }
 
+func TestParseRejectsUnknownKeys(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "top level", data: "mystery = true\n", want: "mystery"},
+		{name: "unknown table field", data: "[resources]\ncpu = 4\n", want: "resources.cpu"},
+		{name: "mount project typo", data: "[vm]\nmount_projet = false\n", want: "vm.mount_projet"},
+		{name: "nested mount field", data: "[mounts]\n\"./cache\" = { target = \"/mnt/watermelon/cache\", modd = \"rw\" }\n", want: `mounts."./cache".modd`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Parse([]byte(test.data))
+			if err == nil || !strings.Contains(err.Error(), "unknown key") || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Parse() error = %v, want unknown key containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestParseStrictKeysAllowsDynamicMaps(t *testing.T) {
+	cfg, err := Parse([]byte(`
+[network.process]
+node = ["registry.npmjs.org"]
+
+[tools]
+"node:20-slim" = ["node", "npm"]
+
+[mounts]
+"./cache" = { target = "/mnt/watermelon/cache", mode = "rw" }
+`))
+	if err != nil {
+		t.Fatalf("Parse() rejected dynamic map keys: %v", err)
+	}
+	if len(cfg.Network.Process["node"]) != 1 || len(cfg.Tools["node:20-slim"]) != 2 || cfg.Mounts["./cache"].Mode != "rw" {
+		t.Fatalf("dynamic maps were not decoded: process=%#v tools=%#v mounts=%#v", cfg.Network.Process, cfg.Tools, cfg.Mounts)
+	}
+}
+
+func TestDocumentedExampleConfigsUseKnownValidKeys(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", "docs", "examples", "*", ".watermelon.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no documented example configs found")
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Parse(data)
+			if err != nil {
+				t.Fatalf("Parse(%s): %v", path, err)
+			}
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("Validate(%s): %v", path, err)
+			}
+		})
+	}
+}
+
 func TestParseConfigMergesDefaults(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, ".watermelon.toml")
@@ -98,6 +163,7 @@ func TestParseIDEConfig(t *testing.T) {
 	tomlData := `
 [ide]
 command = "cursor"
+workdir = "/workspace/ide"
 `
 	cfg, err := Parse([]byte(tomlData))
 	if err != nil {
@@ -105,6 +171,51 @@ command = "cursor"
 	}
 	if cfg.IDE.Command != "cursor" {
 		t.Errorf("expected IDE.Command = 'cursor', got %q", cfg.IDE.Command)
+	}
+	if cfg.IDE.Workdir != "/workspace/ide" {
+		t.Errorf("expected IDE.Workdir = '/workspace/ide', got %q", cfg.IDE.Workdir)
+	}
+}
+
+func TestParseVMEnhancements(t *testing.T) {
+	tomlData := `
+[vm]
+name = "shared.dev-1"
+image = "ubuntu-24.04"
+mount_project = false
+workdir = "/workspace/app"
+
+[provision]
+scripts = ["./scripts/bootstrap.sh", "./vm/setup.sh"]
+`
+	cfg, err := Parse([]byte(tomlData))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if cfg.VM.Name != "shared.dev-1" {
+		t.Errorf("VM.Name = %q", cfg.VM.Name)
+	}
+	if cfg.VM.Image != "ubuntu-24.04" {
+		t.Errorf("VM.Image = %q", cfg.VM.Image)
+	}
+	if MountProjectEnabled(&cfg.VM) {
+		t.Error("MountProjectEnabled() = true, want false")
+	}
+	if cfg.VM.Workdir != "/workspace/app" {
+		t.Errorf("VM.Workdir = %q", cfg.VM.Workdir)
+	}
+	if len(cfg.Provision.Scripts) != 2 || cfg.Provision.Scripts[0] != "./scripts/bootstrap.sh" || cfg.Provision.Scripts[1] != "./vm/setup.sh" {
+		t.Errorf("Provision.Scripts = %#v", cfg.Provision.Scripts)
+	}
+}
+
+func TestParseMountProjectDefaultsToEnabled(t *testing.T) {
+	cfg, err := Parse([]byte("[vm]\nname = \"dev\"\n"))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if !MountProjectEnabled(&cfg.VM) {
+		t.Error("MountProjectEnabled() = false, want true")
 	}
 }
 

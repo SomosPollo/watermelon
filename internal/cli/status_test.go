@@ -83,6 +83,80 @@ disk = "15GB"
 	}
 }
 
+func TestStatusReportsStaleNamedIdentityLogAndCleanupRemedy(t *testing.T) {
+	useNoVMStatus(t)
+	project, _, _ := setupNamedVMIdentityTest(t)
+	cfg := config.NewConfig()
+	cfg.VM.Name = "stale-status-vm"
+	cfg.VM.MountProject = boolPointerCLI(false)
+	instance, err := reserveNamedVMIdentity(project, cfg.VM.Name, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configText := "[vm]\nname = \"" + cfg.VM.Name + "\"\nmount_project = false\n"
+	if err := os.WriteFile(filepath.Join(project, ".watermelon.toml"), []byte(configText), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(instance.Paths.GuestNetworkLogPath, []byte("blocked\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runStatusForName(&out, project, cfg.VM.Name); err != nil {
+		t.Fatalf("status stale named identity: %v", err)
+	}
+	rendered := out.String()
+	for _, want := range []string{
+		"Status:   Not found",
+		"Logs:     1 entry",
+		"Next:     watermelon destroy --name stale-status-vm --force && watermelon run --name stale-status-vm",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("status output missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestStatusRecoveryKeepsExplicitPathDerivedSelection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", privateTempDir(t))
+	t.Setenv("LIMA_HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, ".watermelon.toml"), []byte("[vm]\nname = \"configured-other\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	derived := lima.VMNameFromPath(dir)
+
+	oldStatus, oldProjectSource := cliGetVMStatus, cliProjectMountSource
+	cliGetVMStatus = func(name string) lima.VMStatus {
+		if name != derived {
+			t.Fatalf("status checked for VM %q, want explicitly selected %q", name, derived)
+		}
+		return lima.StatusStopped
+	}
+	cliProjectMountSource = func(name string) (string, error) {
+		if name != derived {
+			t.Fatalf("project mount checked for VM %q, want %q", name, derived)
+		}
+		return dir, nil
+	}
+	t.Cleanup(func() {
+		cliGetVMStatus = oldStatus
+		cliProjectMountSource = oldProjectSource
+	})
+
+	var out bytes.Buffer
+	if err := runStatusForName(&out, dir, derived); err != nil {
+		t.Fatalf("runStatusForName() error = %v", err)
+	}
+	want := "Next:     watermelon destroy --name " + derived + " --force && watermelon run --name " + derived
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("status output missing safe explicit-selection remedy %q:\n%s", want, out.String())
+	}
+	if strings.Contains(out.String(), "Next:     "+recreatePolicyCommand) {
+		t.Fatalf("status output contains unsafe implicit remedy:\n%s", out.String())
+	}
+}
+
 func TestFormatAppliedPolicyDistinguishesCurrentStaleAndLegacy(t *testing.T) {
 	current := formatAppliedPolicy(appliedPolicyAssessment{
 		State: policyCurrent,
@@ -128,10 +202,11 @@ func TestStatusReportsUnreadableConfig(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runStatus(&out, dir); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
+	err := runStatus(&out, dir)
+	if err == nil || !strings.Contains(err.Error(), "parsing config") {
+		t.Fatalf("runStatus() error = %v, want fail-closed parse error", err)
 	}
-	if !strings.Contains(out.String(), "Config:   unreadable") {
-		t.Errorf("status output should mention unreadable config:\n%s", out.String())
+	if out.Len() != 0 {
+		t.Errorf("status must not report a path-derived VM after config failure:\n%s", out.String())
 	}
 }

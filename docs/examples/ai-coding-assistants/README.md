@@ -28,6 +28,28 @@ pip = ["aider-chat"]
 
 This runs `npm install -g` and `pip install` during initial VM creation or recreation, then creates command wrappers for the provisioned CLIs.
 
+### Custom Setup Scripts
+
+For setup that is not covered by the package fields, add an idempotent host script:
+
+```toml
+[provision]
+npm = ["@anthropic-ai/claude-code", "@openai/codex"]
+pip = ["aider-chat"]
+scripts = ["./vm/setup.sh"]
+```
+
+```bash
+#!/bin/sh
+set -eu
+
+# This remains safe when Lima runs provisioning again.
+install -d -m 0755 /opt/assistant-work
+git config --system core.editor vim
+```
+
+Scripts are embedded when the VM is created and run as root after Watermelon's network policy is active. Review them as trusted configuration, make them idempotent, and recreate the VM after changes. Keep the configured host files present and readable while the VM exists: Watermelon rereads their exact bytes for status and before policy-checked execution, and refuses or fail-closed stops a VM when it cannot verify them. Script paths must be project-relative, contain no `..` component, and contain no symlink component. Watermelon accepts only current-user-owned regular files, requires UTF-8 without NUL bytes, and limits scripts to 1 MiB each and 4 MiB total. Editing a script at the same path makes the applied configuration stale. Any network downloads performed by a script still need matching `[network].allow` entries under this example's strict `fail` policy.
+
 ### Per-Process Network Access
 
 The `[network.process]` section gives specific processes additional network access:

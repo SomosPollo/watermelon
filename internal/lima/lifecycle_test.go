@@ -1,28 +1,69 @@
 package lima
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/saeta-eth/watermelon/internal/config"
 )
+
+func limaStringRecord(values ...string) string {
+	fields := make([]string, 0, len(values))
+	for _, value := range values {
+		encoded, _ := json.Marshal(value) // JSON string marshaling cannot fail.
+		fields = append(fields, string(encoded))
+	}
+	return strings.Join(fields, "\t")
+}
+
+func limaMountRecord(name, mountsJSON string) string {
+	return limaStringRecord(name) + "\t" + mountsJSON
+}
 
 func TestVMNameFromPath(t *testing.T) {
 	tests := []struct {
-		path     string
-		expected string
+		path string
 	}{
-		{"/Users/test/myproject", "watermelon-myproject"},
-		{"/Users/test/my-project", "watermelon-my-project"},
-		{"/Users/test/My Project", "watermelon-my-project"},
+		{"/Users/test/myproject"},
+		{"/Users/test/my-project"},
+		{"/Users/test/My Project"},
 	}
 
 	for _, tc := range tests {
 		got := VMNameFromPath(tc.path)
-		// Should start with watermelon-
-		if got[:11] != "watermelon-" {
-			t.Errorf("VMNameFromPath(%q) = %q, expected prefix 'watermelon-'", tc.path, got)
+		hash := sha256.Sum256([]byte(tc.path))
+		base := strings.ReplaceAll(strings.ToLower(filepath.Base(tc.path)), " ", "-")
+		want := fmt.Sprintf("watermelon-%s-%s", base, hex.EncodeToString(hash[:])[:8])
+		if got != want {
+			t.Errorf("VMNameFromPath(%q) = %q, want backwards-compatible name %q", tc.path, got, want)
 		}
+	}
+}
+
+func TestVMNameFromPathAlwaysProducesValidBoundedLimaName(t *testing.T) {
+	for _, projectPath := range []string{
+		"/tmp/!!!",
+		"/tmp/crème brûlée 🚀",
+		"/tmp/..multiple___separators--",
+		"/tmp/" + strings.Repeat("a", 300),
+		"/",
+	} {
+		t.Run(projectPath, func(t *testing.T) {
+			got := VMNameFromPath(projectPath)
+			if len(got) > 76 {
+				t.Fatalf("VMNameFromPath() length = %d, want <= 76: %q", len(got), got)
+			}
+			if err := config.ValidateVMName(got); err != nil {
+				t.Fatalf("VMNameFromPath(%q) = %q is invalid: %v", projectPath, got, err)
+			}
+		})
 	}
 }
 
@@ -45,8 +86,8 @@ func TestVMStatus(t *testing.T) {
 }
 
 func TestGetStatusRunning(t *testing.T) {
-	withFakeExec(t, `{"name":"watermelon-other","status":"Stopped"}
-{"name":"watermelon-test-12345678","status":"Running"}`, 0)
+	withFakeExec(t, limaStringRecord("watermelon-other", "Stopped")+"\n"+
+		limaStringRecord("watermelon-test-12345678", "Running"), 0)
 	status := GetStatus("watermelon-test-12345678")
 	if status != StatusRunning {
 		t.Errorf("GetStatus() = %v, want StatusRunning", status)
@@ -54,7 +95,7 @@ func TestGetStatusRunning(t *testing.T) {
 }
 
 func TestGetStatusStopped(t *testing.T) {
-	withFakeExec(t, `{"name":"watermelon-test-12345678","status":"Stopped"}`, 0)
+	withFakeExec(t, limaStringRecord("watermelon-test-12345678", "Stopped"), 0)
 	status := GetStatus("watermelon-test-12345678")
 	if status != StatusStopped {
 		t.Errorf("GetStatus() = %v, want StatusStopped", status)
@@ -62,17 +103,32 @@ func TestGetStatusStopped(t *testing.T) {
 }
 
 func TestGetStatusNotFound(t *testing.T) {
-	withFakeExec(t, `{"name":"watermelon-other","status":"Running"}`, 0)
+	withFakeExec(t, limaStringRecord("watermelon-other", "Running"), 0)
 	status := GetStatus("watermelon-nonexistent")
 	if status != StatusNotFound {
 		t.Errorf("GetStatus() = %v, want StatusNotFound", status)
 	}
 }
 
+func TestGetStatusUsesNarrowTemplateOutput(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, limaStringRecord("custom-dev", "Running"))
+	t.Cleanup(func() { execCommand = old })
+
+	if got := GetStatus("custom-dev"); got != StatusRunning {
+		t.Fatalf("GetStatus() = %v, want StatusRunning", got)
+	}
+	want := "limactl list --format " + statusListFormat
+	if len(captured) != 1 || captured[0] != want {
+		t.Fatalf("GetStatus() commands = %q, want [%q]", captured, want)
+	}
+}
+
 func TestGetStatusTreatsTransitionalBrokenAndCommandErrorsAsUnknown(t *testing.T) {
 	for _, limaStatus := range []string{"Starting", "Stopping", "Broken", "Unknown"} {
 		t.Run(limaStatus, func(t *testing.T) {
-			withFakeExec(t, `{"name":"watermelon-test-12345678","status":"`+limaStatus+`"}`, 0)
+			withFakeExec(t, limaStringRecord("watermelon-test-12345678", limaStatus), 0)
 			if got := GetStatus("watermelon-test-12345678"); got != StatusUnknown {
 				t.Fatalf("GetStatus() = %v, want StatusUnknown", got)
 			}
@@ -95,7 +151,7 @@ func TestGetStatusTreatsTransitionalBrokenAndCommandErrorsAsUnknown(t *testing.T
 }
 
 func TestProjectMountSource(t *testing.T) {
-	withFakeExec(t, `{"name":"watermelon-test-12345678","config":{"mounts":[{"location":"/host/project","mountPoint":"/project","writable":true}]}}`, 0)
+	withFakeExec(t, limaMountRecord("watermelon-test-12345678", `[{"location":"/host/project","mountPoint":"/project","writable":true}]`), 0)
 
 	source, err := ProjectMountSource("watermelon-test-12345678")
 	if err != nil {
@@ -106,23 +162,119 @@ func TestProjectMountSource(t *testing.T) {
 	}
 }
 
+func TestInstanceDirUsesNarrowTemplateOutput(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, limaStringRecord("custom-dev", "/host/.lima/custom-dev"))
+	t.Cleanup(func() { execCommand = old })
+
+	dir, err := InstanceDir("custom-dev")
+	if err != nil {
+		t.Fatalf("InstanceDir() error = %v", err)
+	}
+	if dir != "/host/.lima/custom-dev" {
+		t.Fatalf("InstanceDir() = %q", dir)
+	}
+	want := "limactl list --format " + dirListFormat + " custom-dev"
+	if len(captured) != 1 || captured[0] != want {
+		t.Fatalf("InstanceDir() commands = %q, want [%q]", captured, want)
+	}
+}
+
+func TestMountSourceReturnsDedicatedBootstrapMount(t *testing.T) {
+	withFakeExec(t, limaMountRecord("custom-dev", `[{"location":"/host/runtime/bootstrap","mountPoint":"/mnt/watermelon/bootstrap","writable":false}]`), 0)
+
+	mount, err := InstanceMount("custom-dev", "/mnt/watermelon/bootstrap")
+	if err != nil {
+		t.Fatalf("InstanceMount() error = %v", err)
+	}
+	if mount.Location != "/host/runtime/bootstrap" || mount.Writable {
+		t.Fatalf("InstanceMount() = %+v, want read-only /host/runtime/bootstrap", mount)
+	}
+}
+
+func TestInstanceMountUsesNarrowTemplateOutput(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, limaMountRecord("custom-dev", `[{"location":"/host/project","mountPoint":"/project"}]`))
+	t.Cleanup(func() { execCommand = old })
+
+	if _, err := InstanceMount("custom-dev", "/project"); err != nil {
+		t.Fatalf("InstanceMount() error = %v", err)
+	}
+	want := "limactl list --format " + mountListFormat + " custom-dev"
+	if len(captured) != 1 || captured[0] != want {
+		t.Fatalf("InstanceMount() commands = %q, want [%q]", captured, want)
+	}
+}
+
+func TestInstanceMountParsesRecordLargerThanScannerLimit(t *testing.T) {
+	location := "/host/" + strings.Repeat("x", 70*1024)
+	mounts, err := json.Marshal([]LimaMount{{Location: location, MountPoint: "/project", Writable: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withFakeExec(t, limaMountRecord("custom-dev", string(mounts)), 0)
+
+	mount, err := InstanceMount("custom-dev", "/project")
+	if err != nil {
+		t.Fatalf("InstanceMount() error = %v", err)
+	}
+	if mount.Location != location {
+		t.Fatalf("InstanceMount() location length = %d, want %d", len(mount.Location), len(location))
+	}
+}
+
+func TestMountSourceRejectsMissingEmptyAndDuplicateMounts(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want string
+	}{
+		{
+			name: "missing",
+			json: limaMountRecord("custom-dev", `[]`),
+			want: "has no /mnt/watermelon/bootstrap mount",
+		},
+		{
+			name: "empty source",
+			json: limaMountRecord("custom-dev", `[{"location":"","mountPoint":"/mnt/watermelon/bootstrap"}]`),
+			want: "has an empty source",
+		},
+		{
+			name: "duplicate",
+			json: limaMountRecord("custom-dev", `[{"location":"/one","mountPoint":"/mnt/watermelon/bootstrap"},{"location":"/two","mountPoint":"/mnt/watermelon/bootstrap"}]`),
+			want: "has multiple /mnt/watermelon/bootstrap mounts",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withFakeExec(t, tt.json, 0)
+			_, err := MountSource("custom-dev", "/mnt/watermelon/bootstrap")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("MountSource() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectMountSourceRejectsWrongOrAmbiguousInstance(t *testing.T) {
 	t.Run("wrong instance", func(t *testing.T) {
-		withFakeExec(t, `{"name":"watermelon-other","config":{"mounts":[{"location":"/host/project","mountPoint":"/project"}]}}`, 0)
+		withFakeExec(t, limaMountRecord("watermelon-other", `[{"location":"/host/project","mountPoint":"/project"}]`), 0)
 		if _, err := ProjectMountSource("watermelon-test-12345678"); err == nil || !strings.Contains(err.Error(), "watermelon-other") {
 			t.Fatalf("ProjectMountSource() error = %v, want wrong-instance error", err)
 		}
 	})
 
 	t.Run("missing project mount", func(t *testing.T) {
-		withFakeExec(t, `{"name":"watermelon-test-12345678","config":{"mounts":[]}}`, 0)
+		withFakeExec(t, limaMountRecord("watermelon-test-12345678", `[]`), 0)
 		if _, err := ProjectMountSource("watermelon-test-12345678"); err == nil || !strings.Contains(err.Error(), "no /project mount") {
 			t.Fatalf("ProjectMountSource() error = %v, want missing-mount error", err)
 		}
 	})
 
 	t.Run("duplicate project mount", func(t *testing.T) {
-		withFakeExec(t, `{"name":"watermelon-test-12345678","config":{"mounts":[{"location":"/one","mountPoint":"/project"},{"location":"/two","mountPoint":"/project"}]}}`, 0)
+		withFakeExec(t, limaMountRecord("watermelon-test-12345678", `[{"location":"/one","mountPoint":"/project"},{"location":"/two","mountPoint":"/project"}]`), 0)
 		if _, err := ProjectMountSource("watermelon-test-12345678"); err == nil || !strings.Contains(err.Error(), "multiple /project mounts") {
 			t.Fatalf("ProjectMountSource() error = %v, want duplicate-mount error", err)
 		}
@@ -182,7 +334,7 @@ func TestStartWithConfigDoesNotInspectOrReuseExistingVM(t *testing.T) {
 func TestStartRestartsStoppedVMWithTimeout(t *testing.T) {
 	var captured []string
 	old := execCommand
-	execCommand = fakeExecCommandCapture(&captured, `{"name":"watermelon-test-12345678","status":"Stopped"}`)
+	execCommand = fakeExecCommandCapture(&captured, limaStringRecord("watermelon-test-12345678", "Stopped"))
 	t.Cleanup(func() { execCommand = old })
 
 	err := Start("watermelon-test-12345678", "")
@@ -209,7 +361,7 @@ func TestStartWithoutConfigRejectsMissingVM(t *testing.T) {
 }
 
 func TestStartWithoutConfigRejectsUnknownVMState(t *testing.T) {
-	withFakeExec(t, `{"name":"watermelon-test-12345678","status":"Starting"}`, 0)
+	withFakeExec(t, limaStringRecord("watermelon-test-12345678", "Starting"), 0)
 
 	err := Start("watermelon-test-12345678", "")
 	if err == nil || !strings.Contains(err.Error(), "state is unknown") {
@@ -221,31 +373,45 @@ func TestStartWithoutConfigRejectsUnknownVMState(t *testing.T) {
 	}
 }
 
-func TestVerifyPolicyApplied(t *testing.T) {
+func TestVerifyProvisioningComplete(t *testing.T) {
 	var captured []string
 	old := execCommand
 	execCommand = fakeExecCommandCapture(&captured, "")
 	t.Cleanup(func() { execCommand = old })
 
-	if err := VerifyPolicyApplied("watermelon-test-12345678"); err != nil {
-		t.Fatalf("VerifyPolicyApplied() error = %v", err)
+	if err := VerifyProvisioningComplete("watermelon-test-12345678"); err != nil {
+		t.Fatalf("VerifyProvisioningComplete() error = %v", err)
 	}
 	if len(captured) != 1 {
 		t.Fatalf("expected one quiet marker check, got %d commands", len(captured))
 	}
-	for _, want := range []string{"limactl shell watermelon-test-12345678 -- sh -c", "/run/watermelon-policy-applied", "stat -c %u"} {
+	for _, want := range []string{"limactl shell watermelon-test-12345678 -- sh -c", "/run/watermelon-provisioning-complete", "stat -c %u", "stat -c %a", "= 600"} {
 		if !strings.Contains(captured[0], want) {
 			t.Errorf("marker check %q does not contain %q", captured[0], want)
 		}
 	}
 }
 
-func TestVerifyPolicyAppliedRejectsMissingMarker(t *testing.T) {
+func TestVerifyProvisioningCompleteRejectsMissingMarker(t *testing.T) {
 	withFakeExec(t, "", 1)
 
-	err := VerifyPolicyApplied("watermelon-test-12345678")
-	if err == nil || !strings.Contains(err.Error(), "/run/watermelon-policy-applied") {
-		t.Fatalf("VerifyPolicyApplied() error = %v, want marker error", err)
+	err := VerifyProvisioningComplete("watermelon-test-12345678")
+	if err == nil || !strings.Contains(err.Error(), "/run/watermelon-provisioning-complete") {
+		t.Fatalf("VerifyProvisioningComplete() error = %v, want marker error", err)
+	}
+}
+
+func TestVerifyPolicyAppliedUsesStrongerCompletionProbe(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	if err := VerifyPolicyApplied("watermelon-test-12345678"); err != nil {
+		t.Fatalf("VerifyPolicyApplied() compatibility wrapper error = %v", err)
+	}
+	if len(captured) != 1 || !strings.Contains(captured[0], "/run/watermelon-provisioning-complete") {
+		t.Fatalf("compatibility probe = %q, want final provisioning marker", captured)
 	}
 }
 
@@ -282,6 +448,61 @@ func TestDeleteCallsLimactl(t *testing.T) {
 	}
 	if captured[0] != "limactl delete --force watermelon-test-12345678" {
 		t.Errorf("Delete() command = %q, want %q", captured[0], "limactl delete --force watermelon-test-12345678")
+	}
+}
+
+func TestCopyCallsLimactlWithOptionSeparator(t *testing.T) {
+	tests := []struct {
+		name      string
+		src       string
+		dst       string
+		recursive bool
+		want      string
+	}{
+		{
+			name: "host to vm",
+			src:  "./file.txt",
+			dst:  "somospollo-vm:/tmp/",
+			want: "limactl copy -- ./file.txt somospollo-vm:/tmp/",
+		},
+		{
+			name: "vm to host",
+			src:  "somospollo-vm:/tmp/output.log",
+			dst:  "./",
+			want: "limactl copy -- somospollo-vm:/tmp/output.log ./",
+		},
+		{
+			name:      "recursive",
+			src:       "./dir/",
+			dst:       "somospollo-vm:/tmp/",
+			recursive: true,
+			want:      "limactl copy --recursive -- ./dir/ somospollo-vm:/tmp/",
+		},
+		{
+			name: "leading dash remains an operand",
+			src:  "-local-file",
+			dst:  "somospollo-vm:/tmp/",
+			want: "limactl copy -- -local-file somospollo-vm:/tmp/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []string
+			old := execCommand
+			execCommand = fakeExecCommandCapture(&captured, "")
+			t.Cleanup(func() { execCommand = old })
+
+			if err := Copy(tt.src, tt.dst, tt.recursive); err != nil {
+				t.Fatalf("Copy() error = %v", err)
+			}
+			if len(captured) != 1 {
+				t.Fatalf("captured %d commands, want 1", len(captured))
+			}
+			if captured[0] != tt.want {
+				t.Fatalf("Copy() command = %q, want %q", captured[0], tt.want)
+			}
+		})
 	}
 }
 
@@ -322,6 +543,66 @@ func TestExecRunsCompoundSingleStringThroughShell(t *testing.T) {
 	want := "limactl shell --workdir /project watermelon-test-12345678 -- sh -lc npm install && npm test"
 	if captured[0] != want {
 		t.Errorf("Exec() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestShellAndExecHonorExplicitWorkdir(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func() error
+		want string
+	}{
+		{
+			name: "shell custom",
+			run:  func() error { return Shell("custom-dev", "/workspace") },
+			want: "limactl shell --workdir /workspace custom-dev",
+		},
+		{
+			name: "shell guest home",
+			run:  func() error { return Shell("custom-dev", "") },
+			want: "limactl shell custom-dev",
+		},
+		{
+			name: "exec custom",
+			run:  func() error { return Exec("custom-dev", []string{"docker", "ps"}, "/workspace") },
+			want: "limactl shell --workdir /workspace custom-dev -- docker ps",
+		},
+		{
+			name: "exec guest home",
+			run:  func() error { return Exec("custom-dev", []string{"pwd"}, "") },
+			want: "limactl shell custom-dev -- pwd",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []string
+			old := execCommand
+			execCommand = fakeExecCommandCapture(&captured, "")
+			t.Cleanup(func() { execCommand = old })
+			if err := tt.run(); err != nil {
+				t.Fatalf("lifecycle command error = %v", err)
+			}
+			if len(captured) != 1 || captured[0] != tt.want {
+				t.Fatalf("captured = %v, want [%q]", captured, tt.want)
+			}
+		})
+	}
+}
+
+func TestShellAndExecRejectMultipleWorkdirsWithoutCallingLima(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	if err := Shell("custom-dev", "/one", "/two"); err == nil {
+		t.Fatal("Shell() accepted multiple workdirs")
+	}
+	if err := Exec("custom-dev", []string{"pwd"}, "/one", "/two"); err == nil {
+		t.Fatal("Exec() accepted multiple workdirs")
+	}
+	if len(captured) != 0 {
+		t.Fatalf("invalid workdirs invoked Lima: %v", captured)
 	}
 }
 

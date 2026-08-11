@@ -23,12 +23,14 @@ Watermelon provides a Linux VM where your project runs normally, the unmounted h
                    ▼
 ┌─────────────────────────────────────────┐
 │            VM (Linux)                   │
-│  /project/  ← your files (r/w)          │
+│  /project/  ← your files (r/w, default) │
 │  Network: strict allowlist policy       │
 │  (managed DNS + loopback + VM DHCPv4)   │
 │  Host filesystem: ISOLATED              │
 └─────────────────────────────────────────┘
 ```
+
+The project mount is enabled by default. Set `vm.mount_project = false` when the guest should have no access to the host project; shells and containerized-tool wrappers then use the configured guest workdir, or the guest's current directory when no workdir is configured. Watermelon does not create an arbitrary configured workdir, so create it during provisioning with ownership suitable for the `watermelon` guest user before commands try to enter it.
 
 ## Quick Start
 
@@ -57,7 +59,7 @@ go install github.com/saeta-eth/watermelon/cmd/watermelon@latest
 
 ### Upgrading existing sandboxes
 
-VMs created before strict-by-default policy snapshots are deliberately treated as unverified. `watermelon run`, `exec`, and `code` require a one-time recreation:
+VMs whose applied-policy snapshot predates the current schema—including VMs created before strict-by-default snapshots, guest UID and VM mount/workdir settings, or exact provision-script bytes were recorded—are deliberately treated as unverified. `watermelon run`, `exec`, and `code` require a one-time recreation:
 
 ```bash
 watermelon destroy --force && watermelon run
@@ -71,13 +73,14 @@ This deletes VM-local state but preserves the host project. `watermelon status` 
 |---------|-------------|
 | `watermelon init` | Create `.watermelon.toml` config |
 | `watermelon run` | Enter sandbox (creates VM if needed) |
-| `watermelon code` | Open IDE connected to sandbox via SSH |
+| `watermelon code` | Open an IDE and remain foreground until its remote window exits |
 | `watermelon exec <cmd>` | Run command without interactive shell |
 | `watermelon stop` | Stop VM (preserves state) |
 | `watermelon destroy` | Delete VM and all state |
 | `watermelon status` | Show VM status |
 | `watermelon list` | List all watermelon VMs |
 | `watermelon logs` | Show network policy events |
+| `watermelon copy <src> <dst>` | Copy files between the host and a VM |
 
 See [docs/COMMANDS.md](./docs/COMMANDS.md) for detailed usage.
 
@@ -86,6 +89,12 @@ See [docs/COMMANDS.md](./docs/COMMANDS.md) for detailed usage.
 Create `.watermelon.toml` in your project root:
 
 ```toml
+[vm]
+image = "ubuntu-22.04"  # ubuntu-24.04 is also supported
+# name = "my-project-vm"  # Optional fixed, project-owned Lima name
+# mount_project = true
+# workdir = "/project"    # Common run/exec workdir
+
 [network]
 allow = ["registry.npmjs.org", "github.com"]
 
@@ -103,8 +112,15 @@ cpus = 2
 enforcement = "fail"  # Strict: block and record non-allowlisted traffic
 
 [ide]
-command = "code"  # or "cursor", "codium"
+command = "code"  # Must support VS Code-compatible --remote and --wait
+# workdir = "/project"  # Optional IDE-only override
 ```
+
+Fixed names use Watermelon's lowercase, filesystem-safe subset of Lima's instance-name rules and are limited to 76 bytes. Watermelon binds a custom-named VM to the project that created it and rejects unmanaged-name collisions or lifecycle and log commands from a different project. For normal use, `--name` overrides `vm.name` but does not supply a configless default sandbox. `stop` may still stop a securely verified project-owned VM after a config error, and `destroy --name` can recover or remove stale host state using the durable ownership record.
+
+Configured provision scripts run as root in the VM and remain host-side policy inputs after creation. Keep them present, readable, and unchanged while the VM is in use: Watermelon rereads their exact bytes for status and before policy-checked commands, and refuses or fail-closed stops a VM when that verification cannot be completed.
+
+Interactive `ask` enforcement needs one foreground host prompt controller, so `watermelon run --no-shell` is rejected and only one ask-mode `run`, `exec`, or `code` controller can be active for a VM at a time. Keep interactive `run` open; `exec` prompts for the command's duration; and `code` passes `--wait` and stays foreground until the IDE exits. A direct SSH connection neither hosts prompts nor holds Watermelon's session lease. Outside that ask-mode controller limit, Watermelon shell, command, IDE, and copy clients share the VM without blocking non-destructive commands. Both `stop` and `destroy` stop a running VM immediately, ending or interrupting those clients; `destroy` then waits for them to detach before deleting VM state, protecting later name reuse.
 
 See [docs/CONFIG_SPEC.md](./docs/CONFIG_SPEC.md) for full reference.
 
@@ -129,9 +145,9 @@ cp docs/examples/react-app/.watermelon.toml ~/my-project/
 
 **Reduces exposure to:** host credential theft, arbitrary outbound connections, host persistence, and host resource exhaustion.
 
-**Does not protect against:** malicious code inside the VM, attacks on mounted project files, or exfiltration through destinations permitted by policy. Strict mode is a constrained network boundary, not a general-purpose containment guarantee.
+**Does not protect against:** malicious code inside the VM, attacks on project files when the default read-write project mount is enabled, or exfiltration through destinations permitted by policy. Strict mode is a constrained network boundary, not a general-purpose containment guarantee.
 
-Interactive shells and `watermelon exec` commands run as the ordinary VM user. Watermelon uses root privileges for system provisioning, then removes that user's general passwordless `sudo` access. Configured per-process network rules use narrowly authorized, root-owned launcher helpers; they do not grant arbitrary root access.
+Interactive shells and `watermelon exec` commands run as the ordinary VM user. Watermelon uses root privileges for system provisioning—including configured `[provision].scripts`—then removes that user's general passwordless `sudo` access. Configured per-process network rules use narrowly authorized, root-owned launcher helpers; they do not grant arbitrary root access.
 
 See [docs/SECURITY.md](./docs/SECURITY.md) for details.
 

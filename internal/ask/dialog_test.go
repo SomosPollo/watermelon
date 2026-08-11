@@ -2,9 +2,22 @@ package ask
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestDevNullIsNotAnInteractiveTerminal(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+
+	if fileIsTerminal(devNull) {
+		t.Fatal("the null device must not be treated as an interactive terminal")
+	}
+}
 
 func TestBuildAppleScript(t *testing.T) {
 	script := buildAppleScript("npm", "evil.com", 443, "my-app")

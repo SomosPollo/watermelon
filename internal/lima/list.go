@@ -2,13 +2,15 @@ package lima
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+const vmListFormat = "{{json .Name}}\t{{json .Status}}\t{{json .Dir}}"
 
 type VMInfo struct {
 	Name       string
@@ -17,9 +19,11 @@ type VMInfo struct {
 	ProjectDir string
 }
 
-// ListWatermelonVMs returns all VMs created by watermelon
-func ListWatermelonVMs() ([]VMInfo, error) {
-	cmd := execCommand("limactl", "list", "--json")
+// ListAllVMs returns every Lima instance. Callers that own an independent
+// Watermelon registry can use it to recognize custom names that do not carry
+// the historical watermelon- prefix.
+func ListAllVMs() ([]VMInfo, error) {
+	cmd := execCommand("limactl", "list", "--format", vmListFormat)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -30,39 +34,56 @@ func ListWatermelonVMs() ([]VMInfo, error) {
 		return nil, nil
 	}
 
-	// limactl outputs newline-delimited JSON (one object per line)
-	var result []VMInfo
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		var vm struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-			Dir    string `json:"dir"`
-		}
-
-		if err := json.Unmarshal([]byte(line), &vm); err != nil {
-			return nil, err
-		}
-
-		if strings.HasPrefix(vm.Name, "watermelon-") {
-			result = append(result, VMInfo{
-				Name:       vm.Name,
-				Status:     vm.Status,
-				Dir:        vm.Dir,
-				ProjectDir: projectDirFromInstanceDir(vm.Dir),
-			})
-		}
+	// Keep the Lima response narrow: full instance JSON embeds provisioning
+	// scripts and can exceed limactl's internal output-scanner limit.
+	records, err := parseLimaTemplateRecords(out, 3)
+	if err != nil {
+		return nil, fmt.Errorf("decoding Lima instance list: %w", err)
 	}
 
-	if err := scanner.Err(); err != nil {
+	var result []VMInfo
+	for _, record := range records {
+		var name, status, dir string
+		for fieldIndex, destination := range []*string{&name, &status, &dir} {
+			if err := json.Unmarshal(record[fieldIndex], destination); err != nil {
+				return nil, fmt.Errorf("decoding Lima instance list field %d: %w", fieldIndex+1, err)
+			}
+		}
+
+		projectDir := ""
+		// Only historical Watermelon names use /project as their ownership
+		// signal. Do not inspect arbitrary unrelated Lima instance directories;
+		// registered custom names are attributed by the CLI's identity registry.
+		if strings.HasPrefix(name, "watermelon-") {
+			projectDir = projectDirFromInstanceDir(dir)
+		}
+		result = append(result, VMInfo{
+			Name:       name,
+			Status:     status,
+			Dir:        dir,
+			ProjectDir: projectDir,
+		})
+	}
+
+	return result, nil
+}
+
+// ListWatermelonVMs retains the historical prefix-based view. New code that
+// has registry ownership information should filter ListAllVMs by that registry.
+func ListWatermelonVMs() ([]VMInfo, error) {
+	all, err := ListAllVMs()
+	if err != nil {
 		return nil, err
 	}
-
+	result := make([]VMInfo, 0, len(all))
+	for _, vm := range all {
+		if strings.HasPrefix(vm.Name, "watermelon-") {
+			result = append(result, vm)
+		}
+	}
+	if len(result) == 0 {
+		return nil, nil
+	}
 	return result, nil
 }
 

@@ -13,6 +13,9 @@ const defaultConfig = `# Watermelon sandbox configuration
 
 [vm]
 image = "ubuntu-22.04"
+# name = "my-project-vm"       # Optional stable Lima instance name
+# mount_project = true         # Set false to keep the host project out of the VM
+# workdir = "/project"         # Shell/exec directory; guest home when unset without a mount
 
 [network]
 # Domains allowed by policy. Connections to other domains follow [security].
@@ -25,6 +28,11 @@ allow = [
 # Tools run as containers - format: "image:tag" = ["cmd1", "cmd2", ...]
 # "node:20-slim" = ["node", "npm", "npx"]
 # "python:3.12-slim" = ["python", "python3", "pip"]
+
+[provision]
+# Project-relative host scripts embedded into the Lima configuration and run
+# as root. They must be safe to repeat because Lima may reprovision the VM.
+scripts = []
 
 [mounts]
 # Additional host paths to mount (read-only by default). Guest targets must
@@ -49,6 +57,7 @@ enforcement = "fail"
 [ide]
 # IDE command for 'watermelon code' (e.g., "code", "cursor", "codium")
 command = "code"
+# workdir = "/project"         # Optional IDE-only remote directory override
 `
 
 func NewInitCmd() *cobra.Command {
