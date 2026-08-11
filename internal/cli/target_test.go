@@ -155,5 +155,25 @@ func TestResolveConfiguredTargetRejectsInvalidFlagBeforeVMLookup(t *testing.T) {
 
 	if _, err := resolveConfiguredTarget(dir, "bad:name"); err == nil || !strings.Contains(err.Error(), "invalid --name") {
 		t.Fatalf("invalid name error = %v", err)
+	} else if !IsUsageError(err) {
+		t.Fatalf("invalid explicit name error = %T %v, want usage error", err, err)
+	}
+}
+
+func TestResolveManagementTargetMarksOnlyExplicitInvalidNameAsUsageError(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := resolveManagementTarget(dir, "bad:name"); err == nil {
+		t.Fatal("invalid explicit name unexpectedly succeeded")
+	} else if !IsUsageError(err) {
+		t.Fatalf("invalid explicit name error = %T %v, want usage error", err, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, ".watermelon.toml"), []byte("[vm]\nname = \"bad:name\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveManagementTarget(dir, ""); err == nil {
+		t.Fatal("invalid configured name unexpectedly succeeded")
+	} else if IsUsageError(err) {
+		t.Fatalf("invalid configured name error = %T %v, must not be a usage error", err, err)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func TestValidateCopyArgs(t *testing.T) {
@@ -164,6 +166,30 @@ func TestCopyCommandRequiresExactlyTwoOperands(t *testing.T) {
 		cmd.SetArgs(args)
 		if err := cmd.Execute(); err == nil {
 			t.Fatalf("copy with args %q unexpectedly succeeded", args)
+		}
+	}
+}
+
+func TestCopyCommandRejectsInvalidOperandGrammarBeforeHandler(t *testing.T) {
+	for _, args := range [][]string{
+		{"./src", "./dst"},
+		{"vm-one:/src", "vm-two:/dst"},
+		{"bad$name:/src", "./dst"},
+	} {
+		cmd := NewCopyCmd()
+		handlerCalls := 0
+		cmd.RunE = func(*cobra.Command, []string) error {
+			handlerCalls++
+			return nil
+		}
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("copy with args %q unexpectedly passed validation", args)
+		}
+		if handlerCalls != 0 {
+			t.Fatalf("copy with args %q called handler %d times, want 0", args, handlerCalls)
 		}
 	}
 }

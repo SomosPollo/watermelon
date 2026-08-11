@@ -33,7 +33,7 @@ func resolveManagementTarget(dir, flagName string) (targetContext, error) {
 	}
 	if flagName != "" {
 		if err := config.ValidateVMName(flagName); err != nil {
-			return targetContext{}, fmt.Errorf("invalid --name %q: %w", flagName, err)
+			return targetContext{}, NewUsageError(fmt.Errorf("invalid --name %q: %w", flagName, err))
 		}
 	}
 
@@ -86,7 +86,7 @@ func resolveConfiguredTarget(dir, flagName string) (targetContext, error) {
 	}
 	if flagName != "" {
 		if err := config.ValidateVMName(flagName); err != nil {
-			return targetContext{}, fmt.Errorf("invalid --name %q: %w", flagName, err)
+			return targetContext{}, NewUsageError(fmt.Errorf("invalid --name %q: %w", flagName, err))
 		}
 	}
 

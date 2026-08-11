@@ -26,7 +26,7 @@ func NewStopCmd() *cobra.Command {
 			}
 			if name != "" {
 				if err := config.ValidateVMName(name); err != nil {
-					return fmt.Errorf("invalid --name %q: %w", name, err)
+					return NewUsageError(fmt.Errorf("invalid --name %q: %w", name, err))
 				}
 			}
 			target, err := resolveManagementTarget(dir, name)
