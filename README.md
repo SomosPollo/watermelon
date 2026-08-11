@@ -52,9 +52,44 @@ npm install                          # Runs inside the VM
 exit
 ```
 
+The shell installer downloads both the host CLI and the matching Linux
+`watermelon-nfqd` sidecar for the host architecture. The sidecar runs inside
+the Lima guest only when `security.enforcement = "ask"`; `fail`, `silent`, and
+`log` do not use it.
+
 **Alternative:** install with Go directly:
+
 ```bash
 go install github.com/saeta-eth/watermelon/cmd/watermelon@latest
+```
+
+For a tagged Go installation, Watermelon derives its release version from the
+build information embedded by the Go toolchain. Because `go install` installs
+only the host CLI, each new or recreated `ask`-mode VM downloads the exact
+same-version `watermelon-nfqd-linux-<arch>` release asset. Watermelon checks the
+download against the SHA-256 digest in GitHub's release metadata, then verifies
+the sidecar's embedded Go command, module version, Linux architecture, and
+static-release build settings before installing it. Each VM creation download
+requires access to GitHub; non-`ask` modes do not download or require the
+sidecar.
+
+Unreleased, locally modified, or custom builds are not matched to a release
+asset automatically. For `ask` mode, place a matching regular
+`watermelon-nfqd-linux-<Lima-arch>` (or `watermelon-nfqd`) binary beside the
+`watermelon` executable, or set `WATERMELON_NFQD_BINARY` to its path.
+
+From a trusted Watermelon source checkout, build that explicit sidecar for
+Lima's default guest architecture with:
+
+```bash
+case "$(limactl info --yq '.hostArch')" in
+  aarch64|arm64) nfqd_arch=arm64 ;;
+  x86_64|amd64)  nfqd_arch=amd64 ;;
+  *) echo "unsupported Lima architecture" >&2; exit 1 ;;
+esac
+CGO_ENABLED=0 GOOS=linux GOARCH="$nfqd_arch" \
+  go build -o "watermelon-nfqd-linux-$nfqd_arch" ./cmd/watermelon-nfqd
+export WATERMELON_NFQD_BINARY="$PWD/watermelon-nfqd-linux-$nfqd_arch"
 ```
 
 To install without root, choose a writable directory and add it to `PATH`:

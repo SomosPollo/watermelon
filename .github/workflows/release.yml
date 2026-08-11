@@ -99,6 +99,9 @@ jobs:
           CGO_ENABLED: 0
         run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o dist/watermelon-nfqd-linux-amd64 ./cmd/watermelon-nfqd
 
+      - name: Validate release build metadata
+        run: sh ./test/release_buildinfo.sh dist "${GITHUB_REF_NAME}"
+
       - name: Pack release artifacts
         run: tar -czf release-assets.tar.gz -C dist .
 

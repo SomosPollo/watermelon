@@ -21,6 +21,10 @@ brew install lima
 
 **Error:** `go: command not found`
 
+Go is required only when installing with `go install` or building Watermelon
+from source. The shell installer uses prebuilt release binaries for both the
+host CLI and the Linux `watermelon-nfqd` sidecar.
+
 **Solution:**
 ```bash
 # macOS
@@ -28,6 +32,18 @@ brew install go
 ```
 
 Or download from [go.dev](https://go.dev/dl/).
+
+### Go-installed `ask` mode cannot obtain the network interceptor
+
+A tagged `go install` build downloads its exact matching Linux
+`watermelon-nfqd` sidecar for each new or recreated `ask`-mode VM. If that
+download fails, check access to GitHub and retry. You can instead install
+Watermelon with the shell installer, place the matching
+`watermelon-nfqd-linux-<Lima-arch>` (or `watermelon-nfqd`) binary beside the CLI,
+or set `WATERMELON_NFQD_BINARY` to a matching regular binary. Unreleased,
+locally modified, and custom builds require one of those explicit sidecar
+paths. The `fail`, `silent`, and `log` modes do not use this sidecar. The
+source-build command is documented in the README's installation section.
 
 ---
 

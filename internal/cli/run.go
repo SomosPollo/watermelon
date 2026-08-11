@@ -9,9 +9,9 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +55,8 @@ type askTerminalCoordinator interface {
 }
 
 const recreatePolicyCommand = "watermelon destroy --force && watermelon run"
+
+var errNfqdBinaryNotFound = errors.New("packaged network interceptor not found")
 
 func policyCommandNeedsExplicitName(dir, vmName string, nameExplicit []bool) bool {
 	return (len(nameExplicit) > 0 && nameExplicit[0]) || vmName != lima.VMNameFromPath(dir)
@@ -143,6 +145,10 @@ var (
 	cliSavePolicySnapshot = saveAppliedPolicySnapshotWithHost
 	cliSaveVerdictPort    = savePort
 	cliSaveVerdictPortAt  = savePortAt
+	cliNfqdHostArch       = lima.HostArchitecture
+	cliReadBuildInfo      = debug.ReadBuildInfo
+	cliExecutable         = os.Executable
+	cliNewNfqdRelease     = newNfqdReleaseSource
 	cliNewAskCoordinator  = func() askTerminalCoordinator { return ask.NewTerminalCoordinator() }
 	cliStartAskServer     = startAskVerdictServerForExistingVMWithDialog
 )
@@ -164,8 +170,8 @@ func startAskVerdictServerForExistingVMWithDialog(dir, vmName string, dialog ask
 	if err != nil {
 		return nil, fmt.Errorf("loading ask-mode VM runtime state: %w", err)
 	}
-	if _, err := hashPreparedNfqdBinaryAtPath(instance.Paths.NfqdPath); err != nil {
-		return nil, fmt.Errorf("verifying the registered nfqd bootstrap: %w", err)
+	if err := verifyRegisteredNfqdBinary(instance.Paths.NfqdPath); err != nil {
+		return nil, fmt.Errorf("verifying the registered nfqd bootstrap: %w; recreate it with '%s'", err, deferredRecreatePolicyCommandForVM(dir, vmName))
 	}
 	authKey, err := verdictAuthKeyForInstance(instance)
 	if err != nil {
@@ -304,10 +310,10 @@ func runRunWithOptions(opts runOptions) error {
 		}
 		if status == lima.StatusNotFound {
 			if err := ensureNfqdBinaryAtPath(instanceIdentity.Paths.NfqdPath); err != nil {
-				return fmt.Errorf("building nfqd: %w", err)
+				return fmt.Errorf("preparing the ask-mode network interceptor: %w", err)
 			}
-		} else if _, err := hashPreparedNfqdBinaryAtPath(instanceIdentity.Paths.NfqdPath); err != nil {
-			return fmt.Errorf("verifying the registered nfqd bootstrap: %w", err)
+		} else if err := verifyRegisteredNfqdBinary(instanceIdentity.Paths.NfqdPath); err != nil {
+			return fmt.Errorf("verifying the registered nfqd bootstrap: %w; recreate it with '%s'", err, recreatePolicyCommandForVM(dir, vmName, target.NameExplicit))
 		}
 		verdictAuthKey, err = verdictAuthKeyForInstance(*instanceIdentity)
 		if err != nil {
@@ -599,25 +605,67 @@ func ensureNfqdBinaryAtPath(nfqdPath string) error {
 		return err
 	}
 
-	if source, err := findNfqdBinary(); err == nil {
-		fmt.Println("Installing network interceptor for VM...")
-		return copyExecutable(source, nfqdPath)
+	version, officialRelease := goInstallReleaseVersion(cliReadBuildInfo)
+	arch := runtime.GOARCH
+	// An explicit override is sufficient for an unreleased developer build.
+	// Official builds and packaged-sidecar discovery must follow Lima's resolved
+	// default guest architecture, which can differ from the CLI architecture
+	// when the CLI runs through Rosetta or another emulation layer.
+	if os.Getenv("WATERMELON_NFQD_BINARY") == "" || officialRelease {
+		var err error
+		arch, err = cliNfqdHostArch()
+		if err != nil {
+			return err
+		}
 	}
 
-	sourceRoot, err := findWatermelonSourceRoot()
+	releaseSource := cliNewNfqdRelease()
+	source, err := findNfqdBinary(arch)
+	if err == nil {
+		if officialRelease {
+			if validationErr := releaseSource.validateFile(source, version, arch); validationErr != nil {
+				if os.Getenv("WATERMELON_NFQD_BINARY") != "" {
+					return fmt.Errorf("validating network interceptor %q for Watermelon %s: %w", source, version, validationErr)
+				}
+				fmt.Fprintf(os.Stderr, "Warning: ignoring packaged network interceptor %q because it does not match Watermelon %s: %v\n", source, version, validationErr)
+				err = errNfqdBinaryNotFound
+			}
+		}
+		if err == nil {
+			fmt.Println("Installing network interceptor for VM...")
+			return copyExecutable(source, nfqdPath)
+		}
+	}
+	if !errors.Is(err, errNfqdBinaryNotFound) {
+		return err
+	}
+
+	if !officialRelease {
+		return errors.New("watermelon-nfqd sidecar not found; install Watermelon with the release installer, place the matching sidecar beside the CLI, or set WATERMELON_NFQD_BINARY")
+	}
+	fmt.Printf("Downloading matching network interceptor for Watermelon %s...\n", version)
+	if err := releaseSource.install(nfqdPath, version, arch); err != nil {
+		return fmt.Errorf("obtaining the matching network interceptor for Watermelon %s: %w; retry, use the release installer, or set WATERMELON_NFQD_BINARY", version, err)
+	}
+	return nil
+}
+
+func verifyRegisteredNfqdBinary(path string) error {
+	if _, err := hashPreparedNfqdBinaryAtPath(path); err != nil {
+		return err
+	}
+	version, officialRelease := goInstallReleaseVersion(cliReadBuildInfo)
+	if !officialRelease {
+		return nil
+	}
+	arch, err := cliNfqdHostArch()
 	if err != nil {
-		return errors.New("watermelon-nfqd sidecar not found; install the release sidecar or set WATERMELON_NFQD_BINARY")
+		return err
 	}
-
-	fmt.Println("Building network interceptor for VM...")
-	return installBuiltNfqd(nfqdPath, func(outputPath string) error {
-		cmd := exec.Command("go", "build", "-o", outputPath, "./cmd/watermelon-nfqd")
-		cmd.Dir = sourceRoot
-		cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	})
+	if err := cliNewNfqdRelease().validateFile(path, version, arch); err != nil {
+		return fmt.Errorf("registered network interceptor does not match Watermelon %s: %w", version, err)
+	}
+	return nil
 }
 
 func hashPreparedNfqdBinaryAtPath(path string) (string, error) {
@@ -816,60 +864,60 @@ func installBuiltNfqd(dest string, build func(outputPath string) error) error {
 	return os.Rename(tmpPath, dest)
 }
 
-func findNfqdBinary() (string, error) {
+func findNfqdBinary(arch string) (string, error) {
 	if override := os.Getenv("WATERMELON_NFQD_BINARY"); override != "" {
-		if info, err := os.Stat(override); err == nil && !info.IsDir() {
-			return override, nil
+		info, err := os.Lstat(override)
+		if err != nil {
+			return "", fmt.Errorf("WATERMELON_NFQD_BINARY %q cannot be used: %w", override, err)
 		}
-		return "", fmt.Errorf("WATERMELON_NFQD_BINARY %q does not exist", override)
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("WATERMELON_NFQD_BINARY %q must be a regular, non-symlink file", override)
+		}
+		return override, nil
 	}
 
-	exe, err := os.Executable()
+	exe, err := cliExecutable()
 	if err != nil {
 		return "", err
 	}
 	dir := filepath.Dir(exe)
 	for _, name := range []string{
-		"watermelon-nfqd-linux-" + runtime.GOARCH,
+		"watermelon-nfqd-linux-" + arch,
 		"watermelon-nfqd",
 	} {
 		candidate := filepath.Join(dir, name)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		info, err := os.Lstat(candidate)
+		if err == nil {
+			if !info.Mode().IsRegular() {
+				return "", fmt.Errorf("packaged network interceptor %q must be a regular, non-symlink file", candidate)
+			}
 			return candidate, nil
 		}
-	}
-	return "", os.ErrNotExist
-}
-
-func findWatermelonSourceRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		goMod := filepath.Join(dir, "go.mod")
-		nfqdMain := filepath.Join(dir, "cmd", "watermelon-nfqd", "main.go")
-		if data, err := os.ReadFile(goMod); err == nil &&
-			strings.Contains(string(data), "module github.com/saeta-eth/watermelon") {
-			if _, err := os.Stat(nfqdMain); err == nil {
-				return dir, nil
-			}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspecting packaged network interceptor %q: %w", candidate, err)
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
 	}
-	return "", os.ErrNotExist
+	return "", errNfqdBinaryNotFound
 }
 
 func copyExecutable(source, dest string) error {
-	src, err := os.Open(source)
+	fd, err := unix.Open(source, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("opening network interceptor source without following symlinks: %w", err)
+	}
+	src := os.NewFile(uintptr(fd), source)
+	if src == nil {
+		_ = unix.Close(fd)
+		return errors.New("opening network interceptor source: invalid file descriptor")
 	}
 	defer src.Close()
+	info, err := src.Stat()
+	if err != nil {
+		return fmt.Errorf("inspecting network interceptor source: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("network interceptor source %q must be a regular file", source)
+	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(dest), ".watermelon-nfqd-*")
 	if err != nil {

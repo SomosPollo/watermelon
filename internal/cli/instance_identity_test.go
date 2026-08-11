@@ -413,6 +413,48 @@ func TestRemoveNamedVMIdentityRequiresExpectedIdentityAndCleansKnownPaths(t *tes
 }
 
 func TestRemoveNamedVMIdentityHandlesUntrustedGuestStateAndRefusesUnexpectedHostState(t *testing.T) {
+	t.Run("interrupted network interceptor staging is recoverable", func(t *testing.T) {
+		project, _, _ := setupNamedVMIdentityTest(t)
+		instance, err := reserveNamedVMIdentity(project, "cleanup-interrupted-nfqd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{
+			".watermelon-nfqd-build-123456789",
+			".watermelon-nfqd-987654321",
+		} {
+			writeTestRuntimeFile(t, filepath.Join(instance.Paths.BootstrapDir, name), 0600)
+		}
+
+		if err := removeNamedVMIdentity(instance.Identity); err != nil {
+			t.Fatalf("interrupted staging blocked cleanup: %v", err)
+		}
+		if _, err := os.Lstat(instance.Paths.InstanceDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("identity state remains after interrupted-staging cleanup: %v", err)
+		}
+	})
+
+	t.Run("interrupted staging name cannot disguise a symlink", func(t *testing.T) {
+		project, _, _ := setupNamedVMIdentityTest(t)
+		instance, err := reserveNamedVMIdentity(project, "cleanup-interrupted-symlink")
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(filepath.Dir(project), "keep-interrupted-target")
+		writeTestRuntimeFile(t, target, 0600)
+		link := filepath.Join(instance.Paths.BootstrapDir, ".watermelon-nfqd-build-123456789")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := removeNamedVMIdentity(instance.Identity); err == nil || !strings.Contains(err.Error(), "non-regular") {
+			t.Fatalf("cleanup accepted interrupted-temp symlink: %v", err)
+		}
+		if data, err := os.ReadFile(target); err != nil || string(data) != "runtime\n" {
+			t.Fatalf("interrupted-temp symlink target changed: data=%q err=%v", data, err)
+		}
+	})
+
 	t.Run("guest-writable content cannot poison cleanup", func(t *testing.T) {
 		project, _, _ := setupNamedVMIdentityTest(t)
 		instance, err := reserveNamedVMIdentity(project, "cleanup-unexpected")
