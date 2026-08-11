@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -170,6 +171,28 @@ func (h *e2eHarness) runErr(timeout time.Duration, args ...string) string {
 		h.t.Fatalf("watermelon %s unexpectedly succeeded:\n%s", strings.Join(args, " "), out)
 	}
 	return out
+}
+
+func (h *e2eHarness) runErrWithoutControllingTerminal(timeout time.Duration, args ...string) string {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, h.wm, args...)
+	cmd.Dir = h.project
+	cmd.Env = h.env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		h.t.Fatalf("watermelon %s timed out after %s:\n%s", strings.Join(args, " "), timeout, combined.String())
+	}
+	if err == nil {
+		h.t.Fatalf("watermelon %s unexpectedly succeeded without a controlling terminal:\n%s", strings.Join(args, " "), combined.String())
+	}
+	return combined.String()
 }
 
 func (h *e2eHarness) runExitCode(timeout time.Duration, want int, args ...string) string {
@@ -483,8 +506,8 @@ disk = "10GB"
 	// terminal fallback, whose message proves the authenticated verdict request
 	// reached the host and was answered with the fail-closed default.
 	if runtime.GOOS != "darwin" {
-		blockedOut := h.runErr(timings.command, "exec", "--name", vmName, "timeout 30 bash -lc 'echo > /dev/tcp/93.184.216.34/80'")
-		if !strings.Contains(blockedOut, "Watermelon network prompt requires an interactive terminal; blocking by default") {
+		blockedOut := h.runErrWithoutControllingTerminal(timings.command, "exec", "--name", vmName, "timeout 30 bash -lc 'echo > /dev/tcp/93.184.216.34/80'")
+		if !strings.Contains(blockedOut, "Watermelon network prompt requires a foreground controlling terminal; blocking by default") {
 			t.Fatalf("ask-mode TCP attempt did not complete the authenticated non-interactive block flow:\n%s", blockedOut)
 		}
 	}

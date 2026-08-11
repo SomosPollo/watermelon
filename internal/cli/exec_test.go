@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/saeta-eth/watermelon/internal/ask"
 	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
@@ -18,6 +21,17 @@ import (
 
 type testExecGuestExitError struct {
 	code int
+}
+
+type testAskTerminalCoordinator struct {
+	dialogCalls int
+}
+
+func (c *testAskTerminalCoordinator) Run(*exec.Cmd) error { return nil }
+
+func (c *testAskTerminalCoordinator) Dialog(string, string, int, string) string {
+	c.dialogCalls++
+	return "block"
 }
 
 func (e *testExecGuestExitError) Error() string      { return fmt.Sprintf("guest exit %d", e.code) }
@@ -176,6 +190,88 @@ func TestExecWatermelonFlagsMustPrecedeGuestCommand(t *testing.T) {
 	}
 	if got := cmd.Flags().Args(); !reflect.DeepEqual(got, input) {
 		t.Fatalf("guest args = %#v, want %#v", got, input)
+	}
+}
+
+func TestAskExecSharesCoordinatorBetweenServerAndAttachedCommand(t *testing.T) {
+	configureLifecycleLockTest(t)
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, ".watermelon.toml"), []byte("[security]\nenforcement = \"ask\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadProjectConfig(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAppliedPolicySnapshot(project, cfg); err != nil {
+		t.Fatal(err)
+	}
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDir) })
+
+	fakeCoordinator := &testAskTerminalCoordinator{}
+	oldStatus, oldProjectMount, oldVerify := cliGetVMStatus, cliProjectMountSource, cliVerifyPolicy
+	oldExec, oldExecWithRunner := cliExecVM, cliExecVMWithRunner
+	oldCoordinator, oldStartServer := cliNewAskCoordinator, cliStartAskServer
+	cliGetVMStatus = func(string) lima.VMStatus { return lima.StatusRunning }
+	cliProjectMountSource = func(string) (string, error) { return project, nil }
+	cliVerifyPolicy = func(string) error { return nil }
+	cliNewAskCoordinator = func() askTerminalCoordinator { return fakeCoordinator }
+	var serverDialog ask.DialogFunc
+	cliStartAskServer = func(dir, vmName string, dialog ask.DialogFunc) (net.Listener, error) {
+		if dir != project || vmName != lima.VMNameFromPath(project) {
+			t.Fatalf("ask server target = %q %q", dir, vmName)
+		}
+		serverDialog = dialog
+		return net.Listen("tcp", "127.0.0.1:0")
+	}
+	plainExecCalls := 0
+	cliExecVM = func(string, []string, ...string) error {
+		plainExecCalls++
+		return nil
+	}
+	runnerExecCalls := 0
+	cliExecVMWithRunner = func(_ string, args []string, runner lima.CommandRunner, _ ...string) error {
+		runnerExecCalls++
+		if !reflect.DeepEqual(args, []string{"true"}) {
+			t.Fatalf("guest args = %#v, want [true]", args)
+		}
+		if runner != fakeCoordinator {
+			t.Fatalf("attached command runner = %T %p, want shared coordinator %p", runner, runner, fakeCoordinator)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		cliGetVMStatus = oldStatus
+		cliProjectMountSource = oldProjectMount
+		cliVerifyPolicy = oldVerify
+		cliExecVM = oldExec
+		cliExecVMWithRunner = oldExecWithRunner
+		cliNewAskCoordinator = oldCoordinator
+		cliStartAskServer = oldStartServer
+	})
+
+	cmd := NewExecCmd()
+	if err := cmd.RunE(cmd, []string{"true"}); err != nil {
+		t.Fatalf("ask-mode exec error = %v", err)
+	}
+	if runnerExecCalls != 1 || plainExecCalls != 0 {
+		t.Fatalf("runner exec calls = %d, plain exec calls = %d", runnerExecCalls, plainExecCalls)
+	}
+	if serverDialog == nil {
+		t.Fatal("ask-mode exec did not register the coordinator dialog")
+	}
+	if verdict := serverDialog("npm", "example.com", 443, "app"); verdict != "block" {
+		t.Fatalf("registered dialog verdict = %q, want block", verdict)
+	}
+	if fakeCoordinator.dialogCalls != 1 {
+		t.Fatalf("shared coordinator dialog calls = %d, want 1", fakeCoordinator.dialogCalls)
 	}
 }
 

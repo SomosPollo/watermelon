@@ -10,7 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var cliExecVM = lima.Exec
+var (
+	cliExecVM           = lima.Exec
+	cliExecVMWithRunner = lima.ExecWithRunner
+)
 
 func NewExecCmd() *cobra.Command {
 	var name string
@@ -51,8 +54,10 @@ func NewExecCmd() *cobra.Command {
 				return fmt.Errorf("cannot safely use VM %q because its Lima state is unknown", vmName)
 			}
 
+			var terminalCoordinator askTerminalCoordinator
 			if cfg.Security.Enforcement == config.EnforcementAsk {
-				verdictListener, err := startAskVerdictServerForExistingVM(dir, vmName)
+				terminalCoordinator = cliNewAskCoordinator()
+				verdictListener, err := cliStartAskServer(dir, vmName, terminalCoordinator.Dialog)
 				if err != nil {
 					return err
 				}
@@ -89,7 +94,12 @@ func NewExecCmd() *cobra.Command {
 			if err := lifecycleLock.Release(); err != nil {
 				return errors.Join(err, usageLease.Release())
 			}
-			execErr := cliExecVM(vmName, args, target.Workdir)
+			var execErr error
+			if terminalCoordinator != nil {
+				execErr = cliExecVMWithRunner(vmName, args, terminalCoordinator, target.Workdir)
+			} else {
+				execErr = cliExecVM(vmName, args, target.Workdir)
+			}
 			return finishExecCommand(cmd, execErr, usageLease.Release())
 		},
 	}

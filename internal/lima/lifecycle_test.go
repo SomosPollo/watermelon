@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/saeta-eth/watermelon/internal/config"
 )
+
+type commandRunnerFunc func(*exec.Cmd) error
+
+func (run commandRunnerFunc) Run(cmd *exec.Cmd) error { return run(cmd) }
 
 func limaStringRecord(values ...string) string {
 	fields := make([]string, 0, len(values))
@@ -523,6 +528,34 @@ func TestExecPassesArgvCommandDirectly(t *testing.T) {
 	want := "limactl shell --workdir /project watermelon-test-12345678 -- npm install"
 	if captured[0] != want {
 		t.Errorf("Exec() command = %q, want %q", captured[0], want)
+	}
+}
+
+func TestShellAndExecUseAttachedCommandRunner(t *testing.T) {
+	var captured []string
+	old := execCommand
+	execCommand = fakeExecCommandCapture(&captured, "")
+	t.Cleanup(func() { execCommand = old })
+
+	invocations := 0
+	runner := commandRunnerFunc(func(cmd *exec.Cmd) error {
+		invocations++
+		if cmd.Stdin != os.Stdin || cmd.Stdout != os.Stdout || cmd.Stderr != os.Stderr {
+			t.Fatal("attached command runner received detached standard streams")
+		}
+		return nil
+	})
+	if err := ShellWithRunner("runner-test", runner, "/project"); err != nil {
+		t.Fatalf("ShellWithRunner() error = %v", err)
+	}
+	if err := ExecWithRunner("runner-test", []string{"true"}, runner, "/project"); err != nil {
+		t.Fatalf("ExecWithRunner() error = %v", err)
+	}
+	if invocations != 2 {
+		t.Fatalf("runner invoked %d times, want 2", invocations)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("captured %d Lima commands, want 2", len(captured))
 	}
 }
 

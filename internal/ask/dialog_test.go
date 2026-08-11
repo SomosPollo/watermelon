@@ -2,10 +2,51 @@ package ask
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 )
+
+func TestTerminalPromptFailsClosedWithoutControllingTerminal(t *testing.T) {
+	var diagnostic bytes.Buffer
+	called := 0
+	verdict := showTerminalPromptWith(func() (*os.File, error) {
+		called++
+		return nil, errors.New("no controlling terminal")
+	}, &diagnostic, "npm", "example.com", 443, "app")
+
+	if verdict != VerdictBlock {
+		t.Fatalf("terminal prompt verdict = %q, want %q", verdict, VerdictBlock)
+	}
+	if called != 1 {
+		t.Fatalf("terminal opener called %d times, want 1", called)
+	}
+	if !strings.Contains(diagnostic.String(), "foreground controlling terminal") || !strings.Contains(diagnostic.String(), "blocking by default") {
+		t.Fatalf("missing fail-closed terminal diagnostic: %q", diagnostic.String())
+	}
+}
+
+func TestTerminalPromptRejectsAndClosesNonTerminal(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diagnostic bytes.Buffer
+	verdict := showTerminalPromptWith(func() (*os.File, error) {
+		return devNull, nil
+	}, &diagnostic, "npm", "example.com", 443, "app")
+
+	if verdict != VerdictBlock {
+		t.Fatalf("terminal prompt verdict = %q, want %q", verdict, VerdictBlock)
+	}
+	if _, err := devNull.Stat(); err == nil {
+		t.Fatal("terminal prompt did not close the rejected terminal file")
+	}
+	if !strings.Contains(diagnostic.String(), "foreground controlling terminal") {
+		t.Fatalf("missing non-terminal diagnostic: %q", diagnostic.String())
+	}
+}
 
 func TestDevNullIsNotAnInteractiveTerminal(t *testing.T) {
 	devNull, err := os.Open(os.DevNull)

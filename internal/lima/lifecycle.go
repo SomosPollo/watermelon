@@ -57,6 +57,13 @@ type guestCommandExitError struct {
 	code int
 }
 
+// CommandRunner owns the execution of an attached Lima command. The default
+// path calls cmd.Run directly; ask mode supplies a runner that arbitrates host
+// terminal input between limactl and network verdict prompts.
+type CommandRunner interface {
+	Run(cmd *exec.Cmd) error
+}
+
 func (e *guestCommandExitError) Error() string      { return e.err.Error() }
 func (e *guestCommandExitError) Unwrap() error      { return e.err }
 func (e *guestCommandExitError) GuestExitCode() int { return e.code }
@@ -397,6 +404,13 @@ func Copy(src, dst string, recursive bool) error {
 // retains the historical /project default; an explicitly empty workdir lets
 // Lima select the guest user's login directory.
 func Shell(vmName string, workdir ...string) error {
+	return ShellWithRunner(vmName, nil, workdir...)
+}
+
+// ShellWithRunner opens an interactive shell using runner when one is
+// provided. Keeping terminal arbitration outside the Lima package lets the
+// ask UI own that policy without changing ordinary shell behavior.
+func ShellWithRunner(vmName string, runner CommandRunner, workdir ...string) error {
 	resolved, err := resolveLifecycleWorkdir(workdir)
 	if err != nil {
 		return err
@@ -410,7 +424,7 @@ func Shell(vmName string, workdir ...string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err = cmd.Run()
+	err = runAttachedCommand(cmd, runner)
 	// Ignore normal shell exit codes (0, 130=SIGINT, 143=SIGTERM)
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		code := exitErr.ExitCode()
@@ -424,6 +438,11 @@ func Shell(vmName string, workdir ...string) error {
 // Exec runs a command in the VM. Workdir follows Shell's compatibility and
 // explicit-empty semantics.
 func Exec(vmName string, args []string, workdir ...string) error {
+	return ExecWithRunner(vmName, args, nil, workdir...)
+}
+
+// ExecWithRunner runs a guest command using runner when one is provided.
+func ExecWithRunner(vmName string, args []string, runner CommandRunner, workdir ...string) error {
 	resolved, err := resolveLifecycleWorkdir(workdir)
 	if err != nil {
 		return err
@@ -441,7 +460,7 @@ func Exec(vmName string, args []string, workdir ...string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err = cmd.Run()
+	err = runAttachedCommand(cmd, runner)
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		code := exitErr.ExitCode()
 		if code >= 1 && code <= 255 {
@@ -449,6 +468,13 @@ func Exec(vmName string, args []string, workdir ...string) error {
 		}
 	}
 	return err
+}
+
+func runAttachedCommand(cmd *exec.Cmd, runner CommandRunner) error {
+	if runner == nil {
+		return cmd.Run()
+	}
+	return runner.Run(cmd)
 }
 
 func resolveLifecycleWorkdir(values []string) (string, error) {
