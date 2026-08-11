@@ -17,6 +17,7 @@ func NewCodeCmd() *cobra.Command {
 		Use:   "code",
 		Short: "Open project in IDE (VS Code by default)",
 		Long:  "Launch your IDE connected to the sandbox VM via SSH. Configure with [ide] command in .watermelon.toml",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCodeWithName(name)
 		},
