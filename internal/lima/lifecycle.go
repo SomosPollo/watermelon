@@ -48,6 +48,19 @@ type StartError struct {
 func (e *StartError) Error() string { return e.Err.Error() }
 func (e *StartError) Unwrap() error { return e.Err }
 
+// guestCommandExitError marks a numeric status returned by the limactl shell
+// process that was launched specifically for a guest command. The distinctive
+// marker method lets the top-level CLI propagate this status without treating
+// exit errors from unrelated Watermelon subprocesses as guest results.
+type guestCommandExitError struct {
+	err  *exec.ExitError
+	code int
+}
+
+func (e *guestCommandExitError) Error() string      { return e.err.Error() }
+func (e *guestCommandExitError) Unwrap() error      { return e.err }
+func (e *guestCommandExitError) GuestExitCode() int { return e.code }
+
 func (s VMStatus) String() string {
 	switch s {
 	case StatusRunning:
@@ -428,7 +441,14 @@ func Exec(vmName string, args []string, workdir ...string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	err = cmd.Run()
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code := exitErr.ExitCode()
+		if code >= 1 && code <= 255 {
+			return &guestCommandExitError{err: exitErr, code: code}
+		}
+	}
+	return err
 }
 
 func resolveLifecycleWorkdir(values []string) (string, error) {

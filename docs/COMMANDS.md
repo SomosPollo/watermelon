@@ -164,7 +164,10 @@ watermelon exec --name dev -- docker run --name web nginx
 - Runs in `[vm].workdir`, `/project` by default when mounted, or the guest login directory when no workdir is configured; an explicit workdir must already exist in the guest
 - Preserves flags after the guest command starts; for example, Docker's `--name` is not interpreted as Watermelon's flag
 - In `ask` mode, runs the host prompt server for the command's full duration, then shuts it down when the command exits; another foreground ask prompt controller for that VM prevents this command from starting
-- Returns the command's exit code
+- Returns `0` when the guest command succeeds and propagates numeric guest exit statuses from `1` through `255` unchanged
+- Reports a guest command terminated by signal `N` using the Unix shell convention `128+N` (for example, `SIGINT` is `130` and `SIGTERM` is `143`)
+- Returns `1` for failures Watermelon detects while preparing or attaching the command (including invocation, configuration, policy, and VM startup failures) or while releasing its VM usage lease
+- Treats `255` as inherently ambiguous: it can be an explicit guest status or a Lima/SSH transport failure after command handoff
 - Useful for CI/CD pipelines and scripts
 
 ---

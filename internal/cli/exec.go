@@ -90,7 +90,7 @@ func NewExecCmd() *cobra.Command {
 				return errors.Join(err, usageLease.Release())
 			}
 			execErr := cliExecVM(vmName, args, target.Workdir)
-			return errors.Join(execErr, usageLease.Release())
+			return finishExecCommand(cmd, execErr, usageLease.Release())
 		},
 	}
 
@@ -102,4 +102,28 @@ func NewExecCmd() *cobra.Command {
 	cmd.Flags().SetInterspersed(false)
 
 	return cmd
+}
+
+type guestExitCoder interface {
+	GuestExitCode() int
+}
+
+// finishExecCommand keeps a clean guest result as the top-level error so main
+// can propagate its status. Usage-lease cleanup failures are Watermelon-owned
+// failures and deliberately take the ordinary CLI error path instead.
+func finishExecCommand(cmd *cobra.Command, execErr, leaseErr error) error {
+	if leaseErr != nil {
+		return errors.Join(execErr, leaseErr)
+	}
+	if guestErr, ok := execErr.(guestExitCoder); ok {
+		code := guestErr.GuestExitCode()
+		if code >= 1 && code <= 255 {
+			// A non-zero guest status is the requested command's result, not a
+			// Watermelon invocation error. Keep Cobra from adding error/usage
+			// noise to the guest's own output.
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+		}
+	}
+	return execErr
 }
