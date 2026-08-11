@@ -34,6 +34,7 @@ Thumbs.db
 
 # Binary output
 # (covered by /watermelon above)
+/dist/
 
 # Cross-compiled VM binaries
 .watermelon/bin/

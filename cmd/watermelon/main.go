@@ -3,13 +3,15 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/saeta-eth/watermelon/internal/cli"
 	"github.com/spf13/cobra"
 )
 
-// Version is set at build time via -ldflags
+// Version is set for release assets via -ldflags. Go-installed binaries fall
+// back to the main module version embedded by the Go toolchain.
 var Version = "dev"
 
 func newRootCmd() *cobra.Command {
@@ -17,7 +19,7 @@ func newRootCmd() *cobra.Command {
 		Use:           "watermelon",
 		Short:         "Sandbox that isolates your project inside a Linux VM",
 		Long:          "Watermelon is a sandbox that isolates your project inside a Linux VM.",
-		Version:       Version,
+		Version:       resolvedVersion(Version, debug.ReadBuildInfo),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
@@ -37,6 +39,48 @@ func newRootCmd() *cobra.Command {
 		return cli.NewUsageError(err)
 	})
 	return rootCmd
+}
+
+type buildInfoReader func() (*debug.BuildInfo, bool)
+
+func resolvedVersion(linked string, readBuildInfo buildInfoReader) string {
+	if linked != "" && linked != "dev" {
+		return linked
+	}
+	if readBuildInfo == nil {
+		return "dev"
+	}
+	info, ok := readBuildInfo()
+	if !ok || info == nil {
+		return "dev"
+	}
+	if version := info.Main.Version; version != "" && version != "(devel)" {
+		return version
+	}
+
+	// Older Go toolchains can expose VCS settings while leaving the main module
+	// version as "(devel)". Keep those builds identifiable too.
+	var revision string
+	modified := false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	if revision == "" {
+		return "dev"
+	}
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	version := "dev-" + revision
+	if modified {
+		version += "+dirty"
+	}
+	return version
 }
 
 func configureGeneratedCommands(rootCmd *cobra.Command) {

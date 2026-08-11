@@ -90,6 +90,50 @@ func TestVMStatus(t *testing.T) {
 	}
 }
 
+func TestHostArchitectureMapsLimaArchitecture(t *testing.T) {
+	for _, test := range []struct {
+		hostArch string
+		want     string
+	}{
+		{hostArch: "aarch64", want: "arm64"},
+		{hostArch: "arm64", want: "arm64"},
+		{hostArch: "x86_64", want: "amd64"},
+		{hostArch: "amd64", want: "amd64"},
+	} {
+		t.Run(test.hostArch, func(t *testing.T) {
+			withFakeExec(t, fmt.Sprintf(`{"hostArch":%q}`, test.hostArch), 0)
+			got, err := HostArchitecture()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("HostArchitecture() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestHostArchitectureRejectsUnavailableMalformedAndUnsupportedInfo(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		output  string
+		code    int
+		wantErr string
+	}{
+		{name: "command failure", code: 1, wantErr: "reading Lima host architecture"},
+		{name: "malformed", output: "{", wantErr: "decoding Lima host architecture"},
+		{name: "missing", output: `{}`, wantErr: "did not report"},
+		{name: "unsupported", output: `{"hostArch":"riscv64"}`, wantErr: `unsupported Lima host architecture "riscv64"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			withFakeExec(t, test.output, test.code)
+			if _, err := HostArchitecture(); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("HostArchitecture() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestGetStatusRunning(t *testing.T) {
 	withFakeExec(t, limaStringRecord("watermelon-other", "Stopped")+"\n"+
 		limaStringRecord("watermelon-test-12345678", "Running"), 0)

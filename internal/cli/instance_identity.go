@@ -436,15 +436,16 @@ func removeNamedVMIdentity(expected namedVMIdentity) error {
 	if current.Identity != expected {
 		return fmt.Errorf("%w: refusing to remove VM %q identity because the stored instance changed", errNamedVMIdentityMismatch, expected.VMName)
 	}
-	if err := preflightNamedVMIdentityCleanup(current.Paths); err != nil {
+	interruptedTemps, err := preflightNamedVMIdentityCleanup(current.Paths)
+	if err != nil {
 		return err
 	}
 
-	for _, path := range []string{
+	for _, path := range append(interruptedTemps, []string{
 		current.Paths.NfqdPath,
 		current.Paths.VerdictPortPath,
 		current.Paths.VerdictAuthKeyPath,
-	} {
+	}...) {
 		if err := removeOptionalOwnedRegularFile(path); err != nil {
 			return err
 		}
@@ -826,7 +827,7 @@ func cleanupUncommittedNamedVMIdentity(paths namedVMIdentityPaths) {
 	_ = os.Remove(paths.InstanceDir)
 }
 
-func preflightNamedVMIdentityCleanup(paths namedVMIdentityPaths) error {
+func preflightNamedVMIdentityCleanup(paths namedVMIdentityPaths) ([]string, error) {
 	if err := requireOnlyDirectoryEntries(paths.InstanceDir, map[string]struct{}{
 		"identity.json":    {},
 		"bootstrap":        {},
@@ -834,13 +835,11 @@ func preflightNamedVMIdentityCleanup(paths namedVMIdentityPaths) error {
 		"verdict-port":     {},
 		"verdict-auth-key": {},
 	}); err != nil {
-		return err
+		return nil, err
 	}
-	if err := requireOnlyDirectoryEntries(paths.BootstrapDir, map[string]struct{}{
-		"identity.json":   {},
-		"watermelon-nfqd": {},
-	}); err != nil {
-		return err
+	interruptedTemps, err := preflightBootstrapDirectoryCleanup(paths.BootstrapDir)
+	if err != nil {
+		return nil, err
 	}
 	// GuestStateDir is a writable mount in the sandbox, so arbitrary entries
 	// (including symlinks) are expected and must not be able to poison host
@@ -848,10 +847,56 @@ func preflightNamedVMIdentityCleanup(paths namedVMIdentityPaths) error {
 	// itself is a private real directory at the exact derived path.
 	for _, path := range []string{paths.NfqdPath, paths.VerdictPortPath, paths.VerdictAuthKeyPath} {
 		if err := validateOptionalOwnedRegularFile(path); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return interruptedTemps, nil
+}
+
+func preflightBootstrapDirectoryCleanup(path string) ([]string, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading named VM identity directory %q: %w", path, err)
+	}
+	var interruptedTemps []string
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "identity.json", "watermelon-nfqd":
+			continue
+		}
+		if !isInterruptedNfqdTempName(entry.Name()) {
+			return nil, fmt.Errorf("refusing to remove named VM identity directory %q containing unexpected entry %q", path, entry.Name())
+		}
+		tempPath := filepath.Join(path, entry.Name())
+		if err := validateOptionalOwnedRegularFile(tempPath); err != nil {
+			return nil, err
+		}
+		interruptedTemps = append(interruptedTemps, tempPath)
+	}
+	return interruptedTemps, nil
+}
+
+func isInterruptedNfqdTempName(name string) bool {
+	for _, prefix := range []string{".watermelon-nfqd-build-", ".watermelon-nfqd-"} {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		suffix := strings.TrimPrefix(name, prefix)
+		if suffix == "" {
+			continue
+		}
+		allDigits := true
+		for _, char := range suffix {
+			if char < '0' || char > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return true
+		}
+	}
+	return false
 }
 
 func makeGuestWritableStateRemovable(root string) error {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -21,6 +22,95 @@ func TestMainBuilds(t *testing.T) {
 	cmd := exec.Command("go", "build", "-o", "/dev/null", ".")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to build: %v", err)
+	}
+}
+
+func TestResolvedVersionPrefersLinkedVersion(t *testing.T) {
+	readCalled := false
+	got := resolvedVersion("v9.8.7", func() (*debug.BuildInfo, bool) {
+		readCalled = true
+		return &debug.BuildInfo{Main: debug.Module{Version: "v0.3.0"}}, true
+	})
+
+	if got != "v9.8.7" {
+		t.Fatalf("resolvedVersion() = %q, want linked version %q", got, "v9.8.7")
+	}
+	if readCalled {
+		t.Fatal("resolvedVersion() read build information despite an explicit linked version")
+	}
+}
+
+func TestResolvedVersionUsesMainModuleVersion(t *testing.T) {
+	for _, version := range []string{
+		"v0.3.0",
+		"v0.3.1-0.20260811192051-d3e5b3a7ffe0",
+		"v0.3.1-0.20260811192051-d3e5b3a7ffe0+dirty",
+	} {
+		t.Run(version, func(t *testing.T) {
+			got := resolvedVersion("dev", func() (*debug.BuildInfo, bool) {
+				return &debug.BuildInfo{Main: debug.Module{Version: version}}, true
+			})
+			if got != version {
+				t.Fatalf("resolvedVersion() = %q, want main module version %q", got, version)
+			}
+		})
+	}
+}
+
+func TestResolvedVersionFallsBackToDirtyVCSRevision(t *testing.T) {
+	got := resolvedVersion("dev", func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			Main: debug.Module{Version: "(devel)"},
+			Settings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "d3e5b3a7ffe0f1f6cd5e6e5270fe0d9aba272127"},
+				{Key: "vcs.modified", Value: "true"},
+			},
+		}, true
+	})
+
+	if got != "dev-d3e5b3a7ffe0+dirty" {
+		t.Fatalf("resolvedVersion() = %q, want dirty VCS fallback", got)
+	}
+}
+
+func TestResolvedVersionFallsBackToDev(t *testing.T) {
+	tests := []struct {
+		name          string
+		readBuildInfo buildInfoReader
+	}{
+		{name: "nil reader"},
+		{
+			name: "unavailable build information",
+			readBuildInfo: func() (*debug.BuildInfo, bool) {
+				return &debug.BuildInfo{Main: debug.Module{Version: "v0.3.0"}}, false
+			},
+		},
+		{
+			name: "nil build information",
+			readBuildInfo: func() (*debug.BuildInfo, bool) {
+				return nil, true
+			},
+		},
+		{
+			name: "empty module version",
+			readBuildInfo: func() (*debug.BuildInfo, bool) {
+				return &debug.BuildInfo{}, true
+			},
+		},
+		{
+			name: "development module without revision",
+			readBuildInfo: func() (*debug.BuildInfo, bool) {
+				return &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}}, true
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolvedVersion("dev", tt.readBuildInfo); got != "dev" {
+				t.Fatalf("resolvedVersion() = %q, want %q", got, "dev")
+			}
+		})
 	}
 }
 

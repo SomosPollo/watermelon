@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -78,6 +79,34 @@ func (s VMStatus) String() string {
 		return "Unknown"
 	default:
 		return "Not found"
+	}
+}
+
+// HostArchitecture returns the Go architecture corresponding to Lima's host
+// architecture. Watermelon emits "arch: default", so guest bootstrap
+// executables must target this architecture even when the Watermelon CLI is
+// running through an emulation layer.
+func HostArchitecture() (string, error) {
+	cmd := execCommand("limactl", "info")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("reading Lima host architecture: %w", err)
+	}
+	var info struct {
+		HostArch string `json:"hostArch"`
+	}
+	if err := json.Unmarshal(out, &info); err != nil {
+		return "", fmt.Errorf("decoding Lima host architecture: %w", err)
+	}
+	switch info.HostArch {
+	case "aarch64", "arm64":
+		return "arm64", nil
+	case "x86_64", "amd64":
+		return "amd64", nil
+	case "":
+		return "", errors.New("Lima did not report its host architecture")
+	default:
+		return "", fmt.Errorf("unsupported Lima host architecture %q", info.HostArch)
 	}
 }
 
