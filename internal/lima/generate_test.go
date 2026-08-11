@@ -11,13 +11,20 @@ import (
 	"github.com/saeta-eth/watermelon/internal/config"
 )
 
-const testNfqdSHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const (
+	testNfqdSHA256     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testVerdictAuthKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
 
 func generateConfigForTest(cfg *config.Config, projectDir string, verdictServerPort ...int) (string, error) {
 	if cfg.Security.Enforcement != "ask" {
 		return GenerateConfig(cfg, projectDir, verdictServerPort...)
 	}
-	opts := GenerateOptions{NfqdSHA256: testNfqdSHA256}
+	opts := GenerateOptions{
+		NfqdSHA256:       testNfqdSHA256,
+		VerdictAuthKey:   testVerdictAuthKey,
+		BootstrapHostDir: "/test/watermelon-bootstrap",
+	}
 	if len(verdictServerPort) > 0 {
 		opts.VerdictServerPort = verdictServerPort[0]
 	}
@@ -30,6 +37,15 @@ func withHostGOOS(t *testing.T, goos string) {
 	hostGOOS = goos
 	t.Cleanup(func() {
 		hostGOOS = old
+	})
+}
+
+func withHostEffectiveUID(t *testing.T, uid int64) {
+	t.Helper()
+	old := hostEffectiveUID
+	hostEffectiveUID = func() int64 { return uid }
+	t.Cleanup(func() {
+		hostEffectiveUID = old
 	})
 }
 
@@ -208,6 +224,7 @@ func TestGenerateConfigRejectsUnsafeMountSourceRepresentations(t *testing.T) {
 
 func TestGenerateLimaConfig(t *testing.T) {
 	withHostGOOS(t, "darwin")
+	withHostEffectiveUID(t, 1000)
 
 	cfg := config.NewConfig()
 	cfg.VM.Image = "ubuntu-22.04"
@@ -285,20 +302,33 @@ func TestGenerateConfigRejectsUnsupportedHostOS(t *testing.T) {
 	}
 }
 
-func TestGenerateConfigHasBashrcProvision(t *testing.T) {
+func TestGenerateConfigAttestsBashrcProvisionAsSystemStage(t *testing.T) {
 	cfg := config.NewConfig()
 	yaml, err := GenerateConfig(cfg, "/test/project")
 	if err != nil {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	// Check for user-mode provision that sets up /project cd
-	if !strings.Contains(yaml, "mode: user") {
-		t.Error("expected user-mode provision in yaml")
+	// Lima runs all user-mode provisions after all system-mode provisions even
+	// when they appear earlier in YAML. Keeping the bashrc update in the system
+	// sequence lets the final root marker cover it.
+	if strings.Contains(yaml, "mode: user") {
+		t.Error("generated bashrc provision must not run after the completion marker as a Lima user provision")
 	}
-	if !strings.Contains(yaml, "cd /project") {
-		t.Error("expected 'cd /project' in bashrc provision")
+	for _, want := range []string{
+		"cd /project",
+		"refusing unsafe $_WM_BASHRC",
+		"/run/watermelon-provisioning/workdir.complete",
+		"/run/watermelon-provisioning-complete",
+	} {
+		if !strings.Contains(yaml, want) {
+			t.Errorf("generated bashrc attestation missing %q", want)
+		}
 	}
+	assertRenderedBefore(t, yaml,
+		"/run/watermelon-provisioning/workdir.complete",
+		"/usr/bin/install -o root -g root -m 0600 /dev/null /run/watermelon-provisioning-complete",
+	)
 }
 
 func TestGenerateConfigWithNetworkProcess(t *testing.T) {
@@ -710,11 +740,13 @@ func TestGenerateConfigSmartWrapperYamlIndentation(t *testing.T) {
 
 	// Regression check: smart-wrapper heredoc body must remain indented
 	// inside the YAML block scalar.
-	if strings.Contains(yaml, "\n#!/bin/bash\n# Base images are pulled") {
+	if strings.Contains(yaml, "\n#!/bin/bash\n") || strings.Contains(yaml, "\n# Base images are pulled") {
 		t.Error("expected smart wrapper script body to be indented in YAML")
 	}
-	if !strings.Contains(yaml, "\n      #!/bin/bash\n      # Base images are pulled") {
-		t.Error("expected indented smart wrapper script body in YAML output")
+	for _, line := range []string{"\n      #!/bin/bash\n", "\n      # Base images are pulled"} {
+		if !strings.Contains(yaml, line) {
+			t.Errorf("expected indented smart wrapper line %q in YAML output", line)
+		}
 	}
 }
 
@@ -1044,6 +1076,8 @@ func TestGenerateConfigUsesNarrowRootOwnedProcessHelpers(t *testing.T) {
 }
 
 func TestGenerateConfigDeterminesFixedVMIdentityWithoutTools(t *testing.T) {
+	withHostEffectiveUID(t, 1000)
+
 	generated, err := GenerateConfig(config.NewConfig(), "/test/project")
 	if err != nil {
 		t.Fatalf("GenerateConfig() error = %v", err)
@@ -1060,6 +1094,44 @@ func TestGenerateConfigDeterminesFixedVMIdentityWithoutTools(t *testing.T) {
 		if !strings.Contains(generated, want) {
 			t.Errorf("fixed VM identity setup missing %q", want)
 		}
+	}
+}
+
+func TestGenerateConfigBindsFixedGuestIdentityToEffectiveHostUID(t *testing.T) {
+	withHostEffectiveUID(t, 501)
+
+	generated, err := GenerateConfig(config.NewConfig(), "/test/project")
+	if err != nil {
+		t.Fatalf("GenerateConfig() error = %v", err)
+	}
+	for _, want := range []string{
+		`uid: 501`,
+		`if [ "$_WM_UID" != "501" ] || [ "$_WM_GID" = 0 ]; then`,
+	} {
+		if !strings.Contains(generated, want) {
+			t.Errorf("host-bound VM identity setup missing %q", want)
+		}
+	}
+}
+
+func TestGenerateConfigRejectsInvalidEffectiveHostUID(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		uid  int64
+		want string
+	}{
+		{name: "unavailable", uid: -1, want: "is invalid"},
+		{name: "root", uid: 0, want: "unprivileged host user"},
+		{name: "reserved all ones", uid: 1<<32 - 1, want: "outside the supported guest UID range"},
+		{name: "larger than uid_t", uid: 1 << 32, want: "outside the supported guest UID range"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			withHostEffectiveUID(t, tt.uid)
+			_, err := GenerateConfig(config.NewConfig(), "/test/project")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("GenerateConfig() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -1320,13 +1392,18 @@ func TestGenerateConfigAskMode(t *testing.T) {
 	}
 
 	// Should copy the nfqd binary
-	if !strings.Contains(yaml, "/project/.watermelon/bin/watermelon-nfqd") {
-		t.Error("expected yaml to copy nfqd binary from project mount")
+	if !strings.Contains(yaml, "/mnt/watermelon/bootstrap/watermelon-nfqd") {
+		t.Error("expected yaml to copy nfqd binary from the read-only bootstrap mount")
 	}
 	for _, want := range []string{
 		`/usr/bin/sha256sum "$_WM_NFQD_TMP"`,
 		`if [ "$_WM_NFQD_ACTUAL" != "` + testNfqdSHA256 + `" ]; then`,
 		`/usr/local/libexec/watermelon/nfqd`,
+		`iptables -w -A WM_OUTPUT -p tcp -d "$_WM_GW" --dport 39285 -m owner --uid-owner 0 -j ACCEPT`,
+		`/bin/chmod 0600 "$_WM_VERDICT_KEY_TMP"`,
+		`/bin/mv -f "$_WM_VERDICT_KEY_TMP" '/etc/watermelon/verdict-auth-key'`,
+		`ExecStart=/usr/local/libexec/watermelon/nfqd -server ${_WM_GW}:39285 -auth-key-file /etc/watermelon/verdict-auth-key`,
+		`watermelon verdict authentication key must be a root-owned regular 0600 file`,
 	} {
 		if !strings.Contains(yaml, want) {
 			t.Errorf("ask sidecar installation missing %q", want)
@@ -1342,6 +1419,14 @@ func TestGenerateConfigAskMode(t *testing.T) {
 	if exitOnMismatch < 0 {
 		t.Error("an nfqd digest mismatch does not fail before publishing the privileged executable")
 	}
+	serviceStart := strings.Index(yaml, `ExecStart=/usr/local/libexec/watermelon/nfqd`)
+	if serviceStart < 0 {
+		t.Fatal("missing nfqd service command")
+	}
+	serviceLine := strings.SplitN(yaml[serviceStart:], "\n", 2)[0]
+	if strings.Contains(serviceLine, testVerdictAuthKey) {
+		t.Fatal("nfqd service command exposed the authentication key in argv")
+	}
 }
 
 func TestGenerateConfigAskModeRequiresValidNfqdDigest(t *testing.T) {
@@ -1350,7 +1435,7 @@ func TestGenerateConfigAskModeRequiresValidNfqdDigest(t *testing.T) {
 
 	for _, digest := range []string{"", "abc", strings.Repeat("A", 64), strings.Repeat("g", 64)} {
 		t.Run(strconv.Quote(digest), func(t *testing.T) {
-			_, err := GenerateConfigForInstance(cfg, "/test/project", nil, GenerateOptions{NfqdSHA256: digest})
+			_, err := GenerateConfigForInstance(cfg, "/test/project", nil, GenerateOptions{NfqdSHA256: digest, VerdictAuthKey: testVerdictAuthKey})
 			if err == nil || !strings.Contains(err.Error(), "lowercase SHA-256") {
 				t.Fatalf("GenerateConfigForInstance() error = %v, want digest rejection", err)
 			}
@@ -1359,6 +1444,23 @@ func TestGenerateConfigAskModeRequiresValidNfqdDigest(t *testing.T) {
 
 	if _, err := GenerateConfig(cfg, "/test/project"); err == nil {
 		t.Fatal("legacy convenience API generated ask mode without an authenticated sidecar")
+	}
+}
+
+func TestGenerateConfigAskModeRequiresValidVerdictAuthKey(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Security.Enforcement = config.EnforcementAsk
+	for _, key := range []string{"", "abc", strings.Repeat("A", 64), strings.Repeat("g", 64)} {
+		t.Run(strconv.Quote(key), func(t *testing.T) {
+			_, err := GenerateConfigForInstance(cfg, "/test/project", nil, GenerateOptions{
+				NfqdSHA256:       testNfqdSHA256,
+				VerdictAuthKey:   key,
+				BootstrapHostDir: "/test/watermelon-bootstrap",
+			})
+			if err == nil || !strings.Contains(err.Error(), "authentication key") {
+				t.Fatalf("GenerateConfigForInstance() error = %v, want authentication-key rejection", err)
+			}
+		})
 	}
 }
 
@@ -1841,6 +1943,12 @@ func TestGenerateConfigSystemProvisionIsValidBash(t *testing.T) {
 			}
 			cfg.Provision.Npm = []string{"typescript"}
 		}},
+		{name: "no-mount tool with spaced workdir", configure: func(cfg *config.Config) {
+			mountProject := false
+			cfg.VM.MountProject = &mountProject
+			cfg.VM.Workdir = "/home/watermelon/work space"
+			cfg.Tools = map[string][]string{"alpine:3.20": {"sh"}}
+		}},
 	}
 
 	for _, tt := range tests {
@@ -1855,14 +1963,15 @@ func TestGenerateConfigSystemProvisionIsValidBash(t *testing.T) {
 				t.Fatalf("GenerateConfig() error = %v", err)
 			}
 
-			script := extractSystemProvisionScript(t, yaml)
-			if !strings.HasPrefix(script, "#!/bin/bash\n") {
-				t.Fatalf("system provision script must select Bash before using pipefail:\n%s", script)
-			}
-			cmd := exec.Command("bash", "-n")
-			cmd.Stdin = strings.NewReader(script)
-			if output, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("generated %s system provision is not valid bash: %v\n%s", tt.name, err, output)
+			for index, script := range extractSystemProvisionScripts(t, yaml) {
+				if !strings.HasPrefix(script, "#!/bin/bash\n") {
+					t.Fatalf("system provision script %d must select Bash before using pipefail:\n%s", index, script)
+				}
+				cmd := exec.Command("bash", "-n")
+				cmd.Stdin = strings.NewReader(script)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("generated %s system provision %d is not valid bash: %v\n%s", tt.name, index, err, output)
+				}
 			}
 		})
 	}
@@ -1940,6 +2049,33 @@ func TestGenerateConfigDiscoveryDNSModes(t *testing.T) {
 			}
 			if !strings.Contains(yaml, "-j REDIRECT --to-ports 5354") {
 				t.Error("direct DNS must still be mediated by the managed resolver")
+			}
+		})
+	}
+}
+
+func TestGenerateConfigAdmitsRedirectedDNSBeforeReject(t *testing.T) {
+	for _, mode := range []string{"fail", "silent", "log", "ask"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := config.NewConfig()
+			cfg.Security.Enforcement = mode
+
+			yaml, err := generateConfigForTest(cfg, "/test/project")
+			if err != nil {
+				t.Fatalf("GenerateConfig() error = %v", err)
+			}
+
+			for _, protocol := range []string{"tcp", "udp"} {
+				accept := `iptables -w -A WM_OUTPUT -p ` + protocol + ` -d 127.0.0.1 --dport 5354 -m owner ! --uid-owner "$_WM_DNS_UID" -j ACCEPT`
+				rejectExternalDNS := "iptables -w -A WM_OUTPUT -p " + protocol + " --dport 53 -j REJECT"
+				assertRenderedBefore(t, yaml, accept, rejectExternalDNS)
+			}
+
+			if mode != "log" {
+				assertRenderedBefore(t, yaml,
+					`iptables -w -A WM_OUTPUT -p udp -d 127.0.0.1 --dport 5354 -m owner ! --uid-owner "$_WM_DNS_UID" -j ACCEPT`,
+					"iptables -w -A WM_OUTPUT -j REJECT",
+				)
 			}
 		})
 	}
@@ -2028,30 +2164,36 @@ func extractHeredocBody(t *testing.T, rendered, startMarker, endMarker string) s
 
 func extractSystemProvisionScript(t *testing.T, rendered string) string {
 	t.Helper()
-	const startMarker = "  - mode: system\n    script: |\n"
-	const endMarker = "\n  - mode: user\n"
-	start := strings.Index(rendered, startMarker)
-	if start < 0 {
+	scripts := extractSystemProvisionScripts(t, rendered)
+	if len(scripts) == 0 {
 		t.Fatal("generated config has no system provision script")
 	}
-	body := rendered[start+len(startMarker):]
-	end := strings.Index(body, endMarker)
-	if end < 0 {
-		t.Fatal("generated config has no user provision marker")
-	}
-	body = body[:end]
+	return scripts[0]
+}
 
-	lines := strings.Split(body, "\n")
-	for i, line := range lines {
-		if line == "" {
+func extractSystemProvisionScripts(t *testing.T, rendered string) []string {
+	t.Helper()
+	lines := strings.Split(rendered, "\n")
+	var scripts []string
+	for index := 0; index+1 < len(lines); index++ {
+		if lines[index] != "  - mode: system" || lines[index+1] != "    script: |" {
 			continue
 		}
-		if !strings.HasPrefix(line, "      ") {
-			t.Fatalf("system provision line is outside YAML block indentation: %q", line)
+		var body []string
+		for cursor := index + 2; cursor < len(lines); cursor++ {
+			line := lines[cursor]
+			if line == "" {
+				body = append(body, line)
+				continue
+			}
+			if !strings.HasPrefix(line, "      ") {
+				break
+			}
+			body = append(body, strings.TrimPrefix(line, "      "))
 		}
-		lines[i] = strings.TrimPrefix(line, "      ")
+		scripts = append(scripts, strings.Join(body, "\n"))
 	}
-	return strings.Join(lines, "\n")
+	return scripts
 }
 
 func assertRenderedBefore(t *testing.T, rendered, first, second string) {

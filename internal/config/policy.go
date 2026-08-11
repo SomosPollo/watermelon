@@ -17,7 +17,7 @@ const (
 	EnforcementSilent = "silent"
 	EnforcementAsk    = "ask"
 
-	AppliedPolicySnapshotVersion = 2
+	AppliedPolicySnapshotVersion = 3
 )
 
 // ErrLegacyAppliedPolicySnapshot identifies the old raw SHA-256 snapshot
@@ -84,12 +84,14 @@ type AppliedConfig struct {
 	Security  SecurityConfig      `json:"security"`
 }
 
-// AppliedHostContext records canonical host paths that affect which VM and
-// host resources an applied configuration refers to. MountSources is keyed by
-// the source spelling from Config.Mounts and contains its canonical host path.
+// AppliedHostContext records host values that affect which VM and host
+// resources an applied configuration refers to. EffectiveUID is the host UID
+// assigned to the fixed guest account. MountSources is keyed by the source
+// spelling from Config.Mounts and contains its canonical host path.
 type AppliedHostContext struct {
 	ProjectRoot  string            `json:"project_root"`
 	LimaHome     string            `json:"lima_home"`
+	EffectiveUID uint32            `json:"effective_uid"`
 	MountSources map[string]string `json:"mount_sources"`
 }
 
@@ -124,17 +126,19 @@ func NormalizeAppliedConfig(cfg *Config) AppliedConfig {
 	sort.Ints(ports)
 
 	return AppliedConfig{
-		VM: cfg.VM,
+		VM: normalizeVMConfig(cfg),
 		Network: NetworkConfig{
 			Allow:   networkAllow,
 			Process: networkProcess,
 		},
 		Provision: ProvisionConfig{
-			Npm:   cloneStrings(cfg.Provision.Npm),
-			Pip:   cloneStrings(cfg.Provision.Pip),
-			Cargo: cloneStrings(cfg.Provision.Cargo),
-			Go:    cloneStrings(cfg.Provision.Go),
-			Gem:   cloneStrings(cfg.Provision.Gem),
+			Npm:          cloneStrings(cfg.Provision.Npm),
+			Pip:          cloneStrings(cfg.Provision.Pip),
+			Cargo:        cloneStrings(cfg.Provision.Cargo),
+			Go:           cloneStrings(cfg.Provision.Go),
+			Gem:          cloneStrings(cfg.Provision.Gem),
+			Scripts:      cloneStrings(cfg.Provision.Scripts),
+			ScriptSHA256: cloneStrings(cfg.Provision.ScriptSHA256),
 		},
 		Tools:  tools,
 		Mounts: mounts,
@@ -143,6 +147,20 @@ func NormalizeAppliedConfig(cfg *Config) AppliedConfig {
 		},
 		Resources: cfg.Resources,
 		Security:  cfg.Security,
+	}
+}
+
+func normalizeVMConfig(cfg *Config) VMConfig {
+	mountProject := MountProjectEnabled(&cfg.VM)
+	image := cfg.VM.Image
+	if image == "" {
+		image = "ubuntu-22.04"
+	}
+	return VMConfig{
+		Name:         cfg.VM.Name,
+		Image:        image,
+		MountProject: &mountProject,
+		Workdir:      DefaultWorkdir(cfg),
 	}
 }
 
@@ -252,6 +270,9 @@ func validateAppliedHostContext(applied AppliedConfig, host AppliedHostContext) 
 	}
 	if err := validateCanonicalSnapshotPath("Lima home", host.LimaHome); err != nil {
 		return err
+	}
+	if host.EffectiveUID == 0 || host.EffectiveUID == ^uint32(0) {
+		return fmt.Errorf("snapshot effective host UID %d is outside the supported range 1..%d", host.EffectiveUID, uint64(1)<<32-2)
 	}
 	if len(host.MountSources) != len(applied.Mounts) {
 		return errors.New("snapshot canonical mount sources do not match normalized config")

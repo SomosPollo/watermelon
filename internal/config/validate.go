@@ -3,11 +3,21 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 )
+
+const maxVMNameLength = 76
+
+// Restrict public names to lowercase even though Lima accepts uppercase. Lima
+// stores instances by name under LIMA_HOME; on the case-insensitive filesystems
+// common on macOS, case variants alias the same directory and cannot be locked
+// or owned independently.
+var vmNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
 
 // NetworkRule is a validated network allow-list entry.
 type NetworkRule struct {
@@ -19,13 +29,28 @@ type NetworkRule struct {
 
 // Validate checks config for errors
 func Validate(cfg *Config) error {
+	if cfg.VM.Name != "" {
+		if err := ValidateVMName(cfg.VM.Name); err != nil {
+			return fmt.Errorf("invalid vm.name: %w", err)
+		}
+	}
+
 	// Validate enforcement against the same descriptors used by the CLI.
 	if _, ok := LookupEnforcement(cfg.Security.Enforcement); !ok {
 		return fmt.Errorf("invalid enforcement %q: must be log, fail, silent, or ask", cfg.Security.Enforcement)
 	}
 
-	if cfg.VM.Image != "ubuntu-22.04" {
-		return fmt.Errorf("unsupported vm.image %q: only ubuntu-22.04 is supported", cfg.VM.Image)
+	switch cfg.VM.Image {
+	case "", "ubuntu-22.04", "ubuntu-24.04":
+		// An empty value uses the default image during generation.
+	default:
+		return fmt.Errorf("unsupported vm.image %q: must be ubuntu-22.04 or ubuntu-24.04", cfg.VM.Image)
+	}
+
+	if cfg.VM.Workdir != "" {
+		if err := ValidateGuestWorkdir(cfg.VM.Workdir); err != nil {
+			return fmt.Errorf("invalid vm.workdir: %w", err)
+		}
 	}
 
 	// Validate resources
@@ -45,6 +70,11 @@ func Validate(cfg *Config) error {
 	}
 	if strings.ContainsAny(cfg.IDE.Command, ShellMetacharacters) {
 		return fmt.Errorf("IDE command contains invalid characters")
+	}
+	if cfg.IDE.Workdir != "" {
+		if err := ValidateGuestWorkdir(cfg.IDE.Workdir); err != nil {
+			return fmt.Errorf("invalid ide.workdir: %w", err)
+		}
 	}
 
 	for image, commands := range cfg.Tools {
@@ -118,6 +148,19 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("invalid gem package: %w", err)
 		}
 	}
+	for _, script := range cfg.Provision.Scripts {
+		if err := ValidateProvisionScript(script); err != nil {
+			return fmt.Errorf("invalid provision script: %w", err)
+		}
+	}
+	if len(cfg.Provision.ScriptSHA256) != 0 && len(cfg.Provision.ScriptSHA256) != len(cfg.Provision.Scripts) {
+		return fmt.Errorf("internal provision script digest count does not match scripts")
+	}
+	for _, digest := range cfg.Provision.ScriptSHA256 {
+		if !isSHA256(digest) || digest != strings.ToLower(digest) {
+			return fmt.Errorf("internal provision script digest must be a lowercase SHA-256 value")
+		}
+	}
 
 	// Validate provision tool dependencies
 	if len(cfg.Provision.Npm) > 0 && !hasToolImage(cfg.Tools, "node") {
@@ -136,6 +179,76 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("provision.gem requires a ruby image in [tools]")
 	}
 
+	return nil
+}
+
+// ValidateVMName checks a name against Lima's instance-name restrictions.
+func ValidateVMName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+	if len(name) > maxVMNameLength {
+		return fmt.Errorf("name is too long: %d bytes (maximum %d)", len(name), maxVMNameLength)
+	}
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
+		return fmt.Errorf("name %q must not end in .yaml or .yml", name)
+	}
+	if !vmNamePattern.MatchString(name) {
+		return fmt.Errorf("name %q must match %s", name, vmNamePattern.String())
+	}
+	return nil
+}
+
+// ValidateGuestWorkdir checks a guest directory independently of the host OS.
+// Guest paths are always Linux paths, even when Watermelon runs on macOS.
+func ValidateGuestWorkdir(workdir string) error {
+	if workdir == "" {
+		return fmt.Errorf("workdir cannot be empty")
+	}
+	if !utf8.ValidString(workdir) {
+		return fmt.Errorf("workdir must be valid UTF-8")
+	}
+	if strings.IndexByte(workdir, 0) >= 0 {
+		return fmt.Errorf("workdir cannot contain a NUL byte")
+	}
+	if strings.ContainsAny(workdir, safePathDisallowed) {
+		return fmt.Errorf("workdir %q contains invalid characters", workdir)
+	}
+	if !path.IsAbs(workdir) {
+		return fmt.Errorf("workdir %q must be an absolute Linux path", workdir)
+	}
+	if cleaned := path.Clean(workdir); cleaned != workdir {
+		return fmt.Errorf("workdir %q must be a clean path (use %q)", workdir, cleaned)
+	}
+	return nil
+}
+
+// ValidateProvisionScript checks a project-relative script path before it is
+// resolved and read by the Lima config generator. Provision files are limited
+// to the project so a repository cannot make Watermelon copy an arbitrary host
+// file into its VM merely by naming an absolute path or traversing upward.
+func ValidateProvisionScript(script string) error {
+	if script == "" {
+		return fmt.Errorf("script path cannot be empty")
+	}
+	if !utf8.ValidString(script) {
+		return fmt.Errorf("script path must be valid UTF-8")
+	}
+	if strings.IndexByte(script, 0) >= 0 {
+		return fmt.Errorf("script path cannot contain a NUL byte")
+	}
+	if strings.ContainsAny(script, safePathDisallowed) {
+		return fmt.Errorf("script path %q contains invalid characters", script)
+	}
+	if filepath.IsAbs(script) {
+		return fmt.Errorf("script path %q must be relative to the project root", script)
+	}
+	for _, component := range strings.Split(filepath.ToSlash(script), "/") {
+		if component == ".." {
+			return fmt.Errorf("script path %q must not traverse outside the project root", script)
+		}
+	}
 	return nil
 }
 

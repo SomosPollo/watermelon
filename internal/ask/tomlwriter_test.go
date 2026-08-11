@@ -141,3 +141,24 @@ disk = "10GB"
 		t.Error("expected config to still contain original domain")
 	}
 }
+
+func TestAddDomainToConfigRejectsInvalidPromptedRule(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, ".watermelon.toml")
+	original := []byte("[network]\nallow = []\n")
+	if err := os.WriteFile(configPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, domain := range []string{"bad domain", "*.example.com", "example.com:443", "127.0.0.1; touch /tmp/pwned"} {
+		if err := AddDomainToConfig(configPath, domain); err == nil {
+			t.Errorf("AddDomainToConfig(%q) unexpectedly succeeded", domain)
+		}
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("invalid prompted rule changed config: %q", got)
+	}
+}

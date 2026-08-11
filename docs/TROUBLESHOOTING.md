@@ -35,16 +35,29 @@ Or download from [go.dev](https://go.dev/dl/).
 
 ### VM won't start
 
-**Check Lima status:**
+**Check Watermelon and Lima status:**
 ```bash
+watermelon status
+watermelon list
 limactl list
 ```
 
-**If Lima has issues:**
+If recreation is necessary, first preserve any needed VM-local data. Then stop and recreate the current configured project through Watermelon so ownership records, applied-policy state, and active clients are handled together:
+
 ```bash
-limactl stop watermelon-*  # Stop all watermelon VMs
-limactl delete watermelon-* # Delete and recreate
+watermelon stop
+watermelon destroy --force
+watermelon run
 ```
+
+For a fixed name when the local configuration is missing or invalid, run the ownership-verified recovery commands from its owning project directory:
+
+```bash
+watermelon stop --name my-project-vm
+watermelon destroy --name my-project-vm --force
+```
+
+Do not use `limactl stop/delete watermelon-*` as a recovery shortcut. The shell wildcard does not enumerate Lima instance names, fixed names need not have the `watermelon-` prefix, and direct Lima deletion bypasses Watermelon's ownership checks, session coordination, and host identity cleanup. A raw deletion can leave a registered name reserved and unable to be recreated until its stale Watermelon state is cleaned up.
 
 ### VM creation is slow
 
@@ -97,8 +110,43 @@ npm = ["typescript"]
 ```
 
 ```bash
+# fail, log, or silent enforcement
 watermelon destroy --force && watermelon run --no-shell
+
+# ask enforcement: keep the resulting shell and prompt controller open
+watermelon destroy --force && watermelon run
 ```
+
+### Configured guest workdir does not exist
+
+Watermelon validates an explicit `vm.workdir`, `ide.workdir`, or `run --workdir` path but does not create it. In no-mount mode, create a persistent configured workdir during provisioning and give it to the ordinary guest user:
+
+```toml
+[vm]
+mount_project = false
+workdir = "/home/watermelon/work"
+
+[provision]
+scripts = ["./vm/setup.sh"]
+```
+
+```bash
+#!/bin/sh
+set -eu
+install -d -o watermelon -g watermelon -m 0755 /home/watermelon/work
+```
+
+Recreate the VM after adding the provisioning script. A one-off `run --workdir` path must be created in the guest before it is selected.
+
+### Provision script cannot be read
+
+Provision scripts remain host-side policy inputs after VM creation. `status`, `run`, `exec`, and `code` reread their exact bytes; moving, deleting, changing ownership of, or otherwise invalidating a configured script prevents verification. Restore the expected current-user-owned file to its configured project-relative path, or update the config and recreate the VM. Policy-checked execution refuses an unverifiable VM and may stop a securely bound running instance; `stop` and explicit-name `destroy` remain available for recovery.
+
+### Sandbox provisioning is not complete
+
+Lima can report a VM as running even when one of its provision scripts returned an error. Watermelon independently requires a root-owned completion marker covering its built-in setup, every configured `[provision].scripts` entry, and the generated workdir setup. If any stage fails, Watermelon does not record an applied-policy snapshot or enter the VM, and it stops a securely bound running instance.
+
+Review the provisioning error printed during `watermelon run` and fix the failing script or configuration. For a transient failure, retry the exact `stop` and `run` commands printed with the error. If it persists, use the printed `destroy --force` and `run` commands to recreate the immutable VM; preserve any needed VM-local data first. In `ask` mode, keep the retrying `watermelon run` session in the foreground so its prompt controller remains available.
 
 ### `sudo` is denied inside the VM
 
@@ -140,7 +188,7 @@ allow = [
 enforcement = "fail"
 ```
 
-Network policy changes require VM reprovisioning: `watermelon destroy --force && watermelon run --no-shell`. This removes VM-local state but preserves project files on the host.
+Network policy changes require VM reprovisioning. In `fail`, `log`, or `silent`, run `watermelon destroy --force && watermelon run --no-shell`. In `ask`, omit `--no-shell` and keep the resulting interactive Watermelon shell open as the sole foreground prompt controller. Reprovisioning removes VM-local state but preserves project files on the host.
 
 ### Common domains by package manager
 

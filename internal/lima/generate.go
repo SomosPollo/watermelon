@@ -3,18 +3,24 @@ package lima
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/template"
 	"unicode/utf8"
 
 	"github.com/saeta-eth/watermelon/internal/config"
+	"golang.org/x/sys/unix"
 )
 
 // findImageForCommand returns the container image that provides a given command
@@ -72,24 +78,42 @@ user:
   shell: /bin/bash
 
 images:
+{{- if eq .Image "ubuntu-24.04" }}
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: x86_64
+{{- else }}
   - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-arm64.img"
     arch: aarch64
   - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
     arch: x86_64
+{{- end }}
 
+{{- if or .MountProject .Mounts .BootstrapHostDir .LogHostDir }}
 mounts:
+{{- if .MountProject }}
   - location: {{ yamlQuote .ProjectDir }}
     mountPoint: /project
     writable: true
+{{- end }}
 {{- range .Mounts }}
   - location: {{ yamlQuote .Location }}
     mountPoint: {{ yamlQuote .Target }}
     writable: {{ .Writable }}
 {{- end }}
-{{- if .ToolsDir }}
-  - location: {{ yamlQuote .ToolsDir }}
-    mountPoint: /tools
+{{- if .BootstrapHostDir }}
+  - location: {{ yamlQuote .BootstrapHostDir }}
+    mountPoint: /mnt/watermelon/bootstrap
     writable: false
+{{- end }}
+{{- if .LogHostDir }}
+  - location: {{ yamlQuote .LogHostDir }}
+    mountPoint: /mnt/watermelon/state
+    writable: true
+{{- end }}
+{{- else }}
+mounts: []
 {{- end }}
 
 provision:
@@ -100,6 +124,14 @@ provision:
       set -o pipefail
       export PATH=/usr/sbin:/usr/bin:/sbin:/bin
       export DEBIAN_FRONTEND=noninteractive
+
+      # Lima records provision failures but continues with later scripts and
+      # may still report the guest as ready. Reset Watermelon's own per-boot
+      # attestation before doing any work so a partial retry cannot inherit a
+      # success marker from an earlier provisioning pass.
+      /bin/rm -f -- /run/watermelon-provisioning-complete
+      /bin/rm -rf -- /run/watermelon-provisioning
+      /usr/bin/install -d -o root -g root -m 0700 /run/watermelon-provisioning
       if [ -f /run/watermelon-policy-applied ]; then
         exit 0
       fi
@@ -204,7 +236,7 @@ provision:
           fi
         done
         case "$_WM_NERDCTL_SOURCE" in
-          ""|/project|/project/*|/mnt/watermelon|/mnt/watermelon/*|/tmp|/tmp/*|/var/tmp|/var/tmp/*|/run/user|/run/user/*|/dev/shm|/dev/shm/*|"$_WM_HOME"|"$_WM_HOME"/*)
+          ""{{ if .MountProject }}|/project|/project/*{{ end }}|/mnt/watermelon|/mnt/watermelon/*|/tmp|/tmp/*|/var/tmp|/var/tmp/*|/run/user|/run/user/*|/dev/shm|/dev/shm/*|"$_WM_HOME"|"$_WM_HOME"/*)
             echo "nerdctl resolved to an unsafe guest-writable location" >&2
             exit 1
             ;;
@@ -428,16 +460,31 @@ provision:
 {{- end }}
 {{- if .LogUnknown }}
       if [ "$_WM_FIRST_BOOT" = true ]; then
-      # Forward kernel firewall logs into the project-visible watermelon log file.
+      # Forward kernel firewall logs into the instance's durable log path.
+{{- if eq .LogDir "/project/.watermelon" }}
       /usr/sbin/runuser -u "$_WM_USER" -- /bin/mkdir -p /project/.watermelon
       /usr/sbin/runuser -u "$_WM_USER" -- /usr/bin/touch /project/.watermelon/logs.log
+{{- else }}
+{{- if .LogInGuest }}
+      /bin/mkdir -p -- {{ shellQuote .LogDir }}
+      /bin/chown "$_WM_USER:$_WM_USER" -- {{ shellQuote .LogDir }}
+{{- end }}
+      /usr/sbin/runuser -u "$_WM_USER" -- /bin/mkdir -p -- {{ shellQuote .LogDir }}
+      /usr/sbin/runuser -u "$_WM_USER" -- /usr/bin/touch -- {{ shellQuote .LogPath }}
+{{- end }}
       _WM_LOG_WRITER_TMP=$(/usr/bin/mktemp /usr/local/libexec/watermelon/.log-writer.XXXXXX)
       /bin/cat > "$_WM_LOG_WRITER_TMP" << 'LOGWRITER'
       #!/bin/bash
       export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+{{- if eq .LogDir "/project/.watermelon" }}
       mkdir -p /project/.watermelon
       touch /project/.watermelon/logs.log
       exec journalctl -kf -o short-iso | awk '/watermelon-net / { print; fflush(); }' >> /project/.watermelon/logs.log
+{{- else }}
+      mkdir -p -- {{ shellQuote .LogDir }}
+      touch -- {{ shellQuote .LogPath }}
+      exec journalctl -kf -o short-iso | awk '/watermelon-net / { print; fflush(); }' >> {{ shellQuote .LogPath }}
+{{- end }}
       LOGWRITER
       /bin/chown root:root "$_WM_LOG_WRITER_TMP"
       /bin/chmod 0755 "$_WM_LOG_WRITER_TMP"
@@ -529,6 +576,12 @@ provision:
       iptables -w -N WM_OUTPUT
       iptables -w -t nat -A WM_DNS_OUT -p tcp --dport 53 -m owner ! --uid-owner "$_WM_DNS_UID" -j REDIRECT --to-ports 5354
       iptables -w -t nat -A WM_DNS_OUT -p udp --dport 53 -m owner ! --uid-owner "$_WM_DNS_UID" -j REDIRECT --to-ports 5354
+      # In the local OUTPUT path, REDIRECT updates the destination and port
+      # before filter evaluation, but Linux does not recalculate the output
+      # interface until after that hook finishes. Admit the translated packet
+      # by its loopback destination instead of relying only on "-o lo".
+      iptables -w -A WM_OUTPUT -p tcp -d 127.0.0.1 --dport 5354 -m owner ! --uid-owner "$_WM_DNS_UID" -j ACCEPT
+      iptables -w -A WM_OUTPUT -p udp -d 127.0.0.1 --dport 5354 -m owner ! --uid-owner "$_WM_DNS_UID" -j ACCEPT
       iptables -w -A WM_OUTPUT -p tcp -d 8.8.8.8 --dport 53 -m owner --uid-owner "$_WM_DNS_UID" -j ACCEPT
       iptables -w -A WM_OUTPUT -p udp -d 8.8.8.8 --dport 53 -m owner --uid-owner "$_WM_DNS_UID" -j ACCEPT
       iptables -w -A WM_OUTPUT -p tcp -d 8.8.4.4 --dport 53 -m owner --uid-owner "$_WM_DNS_UID" -j ACCEPT
@@ -566,7 +619,7 @@ provision:
         echo "ask enforcement requires an IPv4 default gateway" >&2
         exit 1
       fi
-      iptables -w -A WM_OUTPUT -p tcp -d "$_WM_GW" --dport {{ .VerdictServerPort }} -j ACCEPT
+      iptables -w -A WM_OUTPUT -p tcp -d "$_WM_GW" --dport {{ .VerdictServerPort }} -m owner --uid-owner 0 -j ACCEPT
       iptables -w -A WM_OUTPUT -p tcp --syn -j NFQUEUE --queue-num 0
       # Queue inbound DNS responses for domain snooping
       iptables -w -A INPUT -p udp --sport 53 -j NFQUEUE --queue-num 1
@@ -585,8 +638,20 @@ provision:
 {{- if eq .Enforcement "ask" }}
       if [ "$_WM_FIRST_BOOT" = true ]; then
       # Set up NFQUEUE verdict daemon
+      if [ ! -f {{ shellQuote .NfqdBinaryPath }} ] || [ -L {{ shellQuote .NfqdBinaryPath }} ]; then
+        echo "watermelon-nfqd bootstrap source must be a regular, non-symlink file" >&2
+        exit 1
+      fi
+      _WM_NFQD_OWNER=$(/usr/bin/stat -c %u -- {{ shellQuote .NfqdBinaryPath }})
+      case "$_WM_NFQD_OWNER" in
+        0|"$_WM_UID") ;;
+        *)
+          echo "watermelon-nfqd bootstrap source has an unexpected owner" >&2
+          exit 1
+          ;;
+      esac
       _WM_NFQD_TMP=$(/usr/bin/mktemp /usr/local/libexec/watermelon/.nfqd.XXXXXX)
-      /bin/cp -- {{ .NfqdBinaryPath }} "$_WM_NFQD_TMP"
+      /bin/cp --no-preserve=mode,ownership,timestamps -- {{ shellQuote .NfqdBinaryPath }} "$_WM_NFQD_TMP"
       _WM_NFQD_ACTUAL=$(/usr/bin/sha256sum "$_WM_NFQD_TMP" | /usr/bin/awk '{print $1}')
       if [ "$_WM_NFQD_ACTUAL" != "{{ .NfqdSHA256 }}" ]; then
         /bin/rm -f "$_WM_NFQD_TMP"
@@ -596,6 +661,18 @@ provision:
       /bin/chown root:root "$_WM_NFQD_TMP"
       /bin/chmod 0755 "$_WM_NFQD_TMP"
       /bin/mv -f "$_WM_NFQD_TMP" /usr/local/libexec/watermelon/nfqd
+
+      # Keep the shared verdict key out of argv and away from the unprivileged
+      # workload user. The immutable host config provisions it directly into a
+      # root-only guest file and validates that file again on every boot.
+      /bin/mkdir -p /etc/watermelon
+      /bin/chown root:root /etc/watermelon
+      /bin/chmod 0755 /etc/watermelon
+      _WM_VERDICT_KEY_TMP=$(/usr/bin/mktemp /etc/watermelon/.verdict-auth-key.XXXXXX)
+      printf '%s' '{{ .VerdictAuthKey }}' > "$_WM_VERDICT_KEY_TMP"
+      /bin/chown root:root "$_WM_VERDICT_KEY_TMP"
+      /bin/chmod 0600 "$_WM_VERDICT_KEY_TMP"
+      /bin/mv -f "$_WM_VERDICT_KEY_TMP" {{ shellQuote .VerdictAuthKeyPath }}
       _WM_GW=$_WM_DEFAULT_GW
       cat > /etc/systemd/system/watermelon-nfqd.service << NFQDEOF
       [Unit]
@@ -603,7 +680,7 @@ provision:
       After=network.target
 
       [Service]
-      ExecStart=/usr/local/libexec/watermelon/nfqd -server ${_WM_GW}:{{ .VerdictServerPort }}
+      ExecStart=/usr/local/libexec/watermelon/nfqd -server ${_WM_GW}:{{ .VerdictServerPort }} -auth-key-file {{ .VerdictAuthKeyPath }}
       Restart=on-failure
       RestartSec=1
 
@@ -612,6 +689,14 @@ provision:
       NFQDEOF
       systemctl daemon-reload
       systemctl enable watermelon-nfqd
+      fi
+      if [ ! -f {{ shellQuote .VerdictAuthKeyPath }} ] || [ -L {{ shellQuote .VerdictAuthKeyPath }} ] || [ "$(/usr/bin/stat -c %u -- {{ shellQuote .VerdictAuthKeyPath }})" != 0 ] || [ "$(/usr/bin/stat -c %a -- {{ shellQuote .VerdictAuthKeyPath }})" != 600 ] || [ "$(/usr/bin/stat -c %s -- {{ shellQuote .VerdictAuthKeyPath }})" != 64 ]; then
+        echo "watermelon verdict authentication key must be a root-owned regular 0600 file containing exactly 64 bytes" >&2
+        exit 1
+      fi
+      if [ "$(/bin/cat -- {{ shellQuote .VerdictAuthKeyPath }})" != "{{ .VerdictAuthKey }}" ]; then
+        echo "watermelon verdict authentication key failed integrity verification" >&2
+        exit 1
       fi
       systemctl restart watermelon-nfqd
 {{- end }}
@@ -639,7 +724,7 @@ provision:
       # Create wrapper scripts for containerized tools.
 {{- range $image, $cmds := .Tools }}
 {{- range $cmd := $cmds }}
-      printf '%s\n' '#!/bin/bash' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ $image }} {{ $cmd }} "$@"' 'else' '    exec nerdctl run --rm --network=host -v /project:/project -w /project {{ $image }} {{ $cmd }} "$@"' 'fi' > /usr/local/bin/{{ $cmd }}
+      printf '%s\n' '#!/bin/bash' 'set -euo pipefail'{{ if $.DynamicWorkdir }} '_WM_WORKDIR=$(/bin/pwd -P)' 'case "$_WM_WORKDIR" in /*) ;; *) echo "unable to resolve the guest workspace" >&2; exit 1 ;; esac'{{ end }} '# watermelon-image: {{ $image }}' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host {{ $.ContainerWorkdirArgs }} {{ $image }} {{ $cmd }} "$@"' 'else' '    exec nerdctl run --rm --network=host {{ $.ContainerWorkdirArgs }} {{ $image }} {{ $cmd }} "$@"' 'fi' > /usr/local/bin/{{ $cmd }}
       chmod +x /usr/local/bin/{{ $cmd }}
 {{- end }}
 {{- end }}
@@ -661,7 +746,7 @@ provision:
             ;;
         esac
         [ -f "/usr/local/bin/$_bin" ] && continue
-        printf '%s\n' '#!/bin/bash' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'else' '    exec nerdctl run --rm --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'fi' > "/usr/local/bin/$_bin"
+        printf '%s\n' '#!/bin/bash' 'set -euo pipefail'{{ if $.DynamicWorkdir }} '_WM_WORKDIR=$(/bin/pwd -P)' 'case "$_WM_WORKDIR" in /*) ;; *) echo "unable to resolve the guest workspace" >&2; exit 1 ;; esac'{{ end }} '# watermelon-image: {{ .CustomTag }}' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host {{ $.ContainerWorkdirArgs }} {{ .CustomTag }} '"$_bin"' "$@"' 'else' '    exec nerdctl run --rm --network=host {{ $.ContainerWorkdirArgs }} {{ .CustomTag }} '"$_bin"' "$@"' 'fi' > "/usr/local/bin/$_bin"
         chmod +x "/usr/local/bin/$_bin"
       done < <(/usr/bin/comm -z -13 "$_WM_BASE_BINS_FILE" "$_WM_CUSTOM_BINS_FILE")
       /bin/rm -f "$_WM_BASE_BINS_FILE" "$_WM_CUSTOM_BINS_FILE"
@@ -669,7 +754,7 @@ provision:
       # Ensure wrappers exist for provisioned package commands.
       for _bin in {{ join .ExposeBins " " }}; do
         [ -f "/usr/local/bin/$_bin" ] && continue
-        printf '%s\n' '#!/bin/bash' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'else' '    exec nerdctl run --rm --network=host -v /project:/project -w /project {{ .CustomTag }} '"$_bin"' "$@"' 'fi' > "/usr/local/bin/$_bin"
+        printf '%s\n' '#!/bin/bash' 'set -euo pipefail'{{ if $.DynamicWorkdir }} '_WM_WORKDIR=$(/bin/pwd -P)' 'case "$_WM_WORKDIR" in /*) ;; *) echo "unable to resolve the guest workspace" >&2; exit 1 ;; esac'{{ end }} '# watermelon-image: {{ .CustomTag }}' 'if [ -t 0 ]; then' '    exec nerdctl run --rm -it --network=host {{ $.ContainerWorkdirArgs }} {{ .CustomTag }} '"$_bin"' "$@"' 'else' '    exec nerdctl run --rm --network=host {{ $.ContainerWorkdirArgs }} {{ .CustomTag }} '"$_bin"' "$@"' 'fi' > "/usr/local/bin/$_bin"
         chmod +x "/usr/local/bin/$_bin"
       done
 {{- end }}
@@ -679,6 +764,14 @@ provision:
       # Smart {{ .Cmd }} wrapper: persists global installs via nerdctl commit.
       cat > /usr/local/bin/{{ .Cmd }} << 'WATERMELON_SMART_WRAPPER_{{ .Cmd }}'
       #!/bin/bash
+      # watermelon-image: {{ .CustomTag }}
+{{ if $.DynamicWorkdir }}
+      _WM_WORKDIR=$(/bin/pwd -P)
+      case "$_WM_WORKDIR" in
+        /*) ;;
+        *) echo "unable to resolve the guest workspace" >&2; exit 1 ;;
+      esac
+{{ end }}
       # Base images are pulled during trusted bootstrap; never pull lazily here.
       if ! nerdctl image inspect "{{ .CustomTag }}" >/dev/null 2>&1; then
         if ! nerdctl image inspect "{{ .BaseImage }}" >/dev/null 2>&1; then
@@ -696,9 +789,9 @@ provision:
         # Global install: run in named container, then commit to persist.
         nerdctl rm -f {{ .CustomTag }}-adhoc 2>/dev/null || true
         if [ -t 0 ]; then
-          nerdctl run --name {{ .CustomTag }}-adhoc -it --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+          nerdctl run --name {{ .CustomTag }}-adhoc -it --network=host {{ $.ContainerWorkdirArgs }} "{{ .CustomTag }}" {{ .Cmd }} "$@"
         else
-          nerdctl run --name {{ .CustomTag }}-adhoc --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+          nerdctl run --name {{ .CustomTag }}-adhoc --network=host {{ $.ContainerWorkdirArgs }} "{{ .CustomTag }}" {{ .Cmd }} "$@"
         fi
         _wm_exit=$?
         if [ $_wm_exit -eq 0 ]; then
@@ -712,9 +805,9 @@ provision:
       else
         # Regular {{ .Cmd }} command: ephemeral container.
         if [ -t 0 ]; then
-          exec nerdctl run --rm -it --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+          exec nerdctl run --rm -it --network=host {{ $.ContainerWorkdirArgs }} "{{ .CustomTag }}" {{ .Cmd }} "$@"
         else
-          exec nerdctl run --rm --network=host -v /project:/project -w /project "{{ .CustomTag }}" {{ .Cmd }} "$@"
+          exec nerdctl run --rm --network=host {{ $.ContainerWorkdirArgs }} "{{ .CustomTag }}" {{ .Cmd }} "$@"
         fi
       fi
       WATERMELON_SMART_WRAPPER_{{ .Cmd }}
@@ -839,7 +932,7 @@ provision:
         IFS= read -r _WM_PROC_IMAGE < "$_WM_PROC_IMAGE_STATE" || true
       fi
       if [ -z "$_WM_PROC_IMAGE" ] && [ -f "/usr/local/bin/{{ $proc }}" ]; then
-        _WM_PROC_IMAGE=$(/usr/bin/awk '$1 == "exec" && $2 == "nerdctl" { for (i = 1; i < NF; i++) if ($i == "-w" && $(i + 1) == "/project") { print $(i + 2); exit } }' "/usr/local/bin/{{ $proc }}")
+        _WM_PROC_IMAGE=$(/usr/bin/awk '$1 == "#" && $2 == "watermelon-image:" { print $3; exit }' "/usr/local/bin/{{ $proc }}")
       fi
       case "$_WM_PROC_IMAGE" in
         *[!A-Za-z0-9._/@:+-]*) _WM_PROC_IMAGE="" ;;
@@ -855,20 +948,27 @@ provision:
         /bin/cat > "$_WM_HELPER_TMP" << CONTAINERHELPER
       #!/bin/bash -p
       set -euo pipefail
+{{- if $.DynamicWorkdir }}
+      _WM_WORKDIR=\$(/bin/pwd -P)
+      case "\$_WM_WORKDIR" in
+        /*) ;;
+        *) echo "unable to resolve the guest workspace" >&2; exit 1 ;;
+      esac
+{{- end }}
       if [ -t 0 ]; then
         exec /usr/bin/env -i HOME=/var/empty XDG_CONFIG_HOME=/var/empty PATH=/usr/sbin:/usr/bin:/sbin:/bin \
           /usr/local/libexec/watermelon/nerdctl --address /run/containerd/containerd.sock --namespace default \
           run --rm -it --pull=never --network=ns:/var/run/netns/wmns-{{ $kernelID }} --dns 10.200.{{ $netIndex }}.1 \
           --user $_WM_UID:$_WM_GID --cap-drop=ALL --security-opt=no-new-privileges \
           --env HOME=/tmp --env USER=$_WM_USER --env LOGNAME=$_WM_USER \
-          -v /project:/project -w /project -- "$_WM_PROC_IMAGE" "{{ $proc }}" "\$@"
+          {{ $.HelperWorkdirArgs }} -- "$_WM_PROC_IMAGE" "{{ $proc }}" "\$@"
       else
         exec /usr/bin/env -i HOME=/var/empty XDG_CONFIG_HOME=/var/empty PATH=/usr/sbin:/usr/bin:/sbin:/bin \
           /usr/local/libexec/watermelon/nerdctl --address /run/containerd/containerd.sock --namespace default \
           run --rm --pull=never --network=ns:/var/run/netns/wmns-{{ $kernelID }} --dns 10.200.{{ $netIndex }}.1 \
           --user $_WM_UID:$_WM_GID --cap-drop=ALL --security-opt=no-new-privileges \
           --env HOME=/tmp --env USER=$_WM_USER --env LOGNAME=$_WM_USER \
-          -v /project:/project -w /project -- "$_WM_PROC_IMAGE" "{{ $proc }}" "\$@"
+          {{ $.HelperWorkdirArgs }} -- "$_WM_PROC_IMAGE" "{{ $proc }}" "\$@"
       fi
       CONTAINERHELPER
         /bin/chown root:root "$_WM_HELPER_TMP"
@@ -941,11 +1041,89 @@ provision:
         touch /var/lib/watermelon/bootstrap-complete
       fi
       touch /run/watermelon-policy-applied
-  - mode: user
+
+{{- range .ProvisionScripts }}
+  # Configured provision scripts must be idempotent: Lima may run provisions again.
+  # Execute the exact audited bytes as a child payload so a successful exit
+  # still returns to this wrapper and publishes the stage marker, while any
+  # non-zero result leaves the stage unmarked.
+  - mode: system
     script: |
-      if ! grep -q 'cd /project' ~/.bashrc 2>/dev/null; then
-        echo '[ -d /project ] && cd /project' >> ~/.bashrc
+      #!/bin/bash
+      set -euo pipefail
+      export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+      # Ubuntu mounts /run with noexec, so keep only attestation markers there
+      # and stage the executable payload in Watermelon's root-owned helper dir.
+      _WM_PAYLOAD=$(/usr/bin/mktemp /usr/local/libexec/watermelon/.provision-{{ .Name }}.XXXXXX)
+      wm_cleanup_provision_payload() {
+        /bin/rm -f -- "$_WM_PAYLOAD"
+      }
+      trap wm_cleanup_provision_payload EXIT
+      /usr/bin/base64 --decode > "$_WM_PAYLOAD" <<'WATERMELON_PROVISION_PAYLOAD'
+{{ indent 6 .Base64 }}
+      WATERMELON_PROVISION_PAYLOAD
+      /bin/chown root:root "$_WM_PAYLOAD"
+      /bin/chmod 0700 "$_WM_PAYLOAD"
+      "$_WM_PAYLOAD"
+      wm_cleanup_provision_payload
+      trap - EXIT
+      /usr/bin/install -o root -g root -m 0600 /dev/null /run/watermelon-provisioning/{{ .Name }}.complete
+{{- end }}
+
+{{- if .Workdir }}
+  # Lima executes all system provisions before all user provisions regardless
+  # of their YAML order. Keep this generated user-home change in the system
+  # sequence so the final root-owned marker attests it as well.
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+      _WM_UID=$(/usr/bin/id -u {{ .VMUser }})
+      _WM_GID=$(/usr/bin/id -g {{ .VMUser }})
+      _WM_BASHRC={{ .VMUserHome }}/.bashrc
+      if [ -e "$_WM_BASHRC" ] || [ -L "$_WM_BASHRC" ]; then
+        if [ ! -f "$_WM_BASHRC" ] || [ -L "$_WM_BASHRC" ] || [ "$(/usr/bin/stat -c %u "$_WM_BASHRC")" != "$_WM_UID" ]; then
+          echo "Watermelon: refusing unsafe $_WM_BASHRC" >&2
+          exit 1
+        fi
+      else
+        /usr/bin/install -o "$_WM_UID" -g "$_WM_GID" -m 0644 /dev/null "$_WM_BASHRC"
       fi
+{{- if eq .Workdir "/project" }}
+      _WM_WORKDIR_LINE='[ -d /project ] && cd /project'
+{{- else }}
+      _WM_WORKDIR_LINE={{ shellQuote (printf "[ -d %s ] && cd %s" (shellQuote .Workdir) (shellQuote .Workdir)) }}
+{{- end }}
+      if ! /usr/bin/grep -Fqx -- "$_WM_WORKDIR_LINE" "$_WM_BASHRC" 2>/dev/null; then
+        /usr/bin/printf '%s\n' "$_WM_WORKDIR_LINE" >> "$_WM_BASHRC"
+      fi
+      /usr/bin/install -o root -g root -m 0600 /dev/null /run/watermelon-provisioning/workdir.complete
+{{- end }}
+
+  # Lima's own ready signal does not prove its provision scripts succeeded.
+  # Publish Watermelon's marker only after every generated stage has left a
+  # root-owned success marker in this boot's root-only runtime directory.
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+      wm_require_provision_stage() {
+        _wm_stage="$1"
+        if [ ! -f "$_wm_stage" ] || [ -L "$_wm_stage" ] || [ "$(/usr/bin/stat -c %u "$_wm_stage" 2>/dev/null)" != 0 ]; then
+          echo "Watermelon provisioning stage did not complete: $_wm_stage" >&2
+          exit 1
+        fi
+      }
+      wm_require_provision_stage /run/watermelon-policy-applied
+{{- range .ProvisionScripts }}
+      wm_require_provision_stage /run/watermelon-provisioning/{{ .Name }}.complete
+{{- end }}
+{{- if .Workdir }}
+      wm_require_provision_stage /run/watermelon-provisioning/workdir.complete
+{{- end }}
+      /usr/bin/install -o root -g root -m 0600 /dev/null /run/watermelon-provisioning-complete
 
 networks: []
 
@@ -980,6 +1158,11 @@ type smartWrapper struct {
 	GlobalCheck string // shell snippet setting _wm_global=true
 }
 
+type provisionScript struct {
+	Name   string
+	Base64 string
+}
+
 type mountData struct {
 	Location string
 	Target   string
@@ -989,13 +1172,23 @@ type mountData struct {
 type templateData struct {
 	VMType               string
 	VMUser               string
-	VMUserUID            int
+	VMUserUID            uint32
 	VMUserHome           string
 	CPUs                 int
 	Memory               string
 	Disk                 string
+	Image                string
+	MountProject         bool
 	ProjectDir           string
-	ToolsDir             string
+	Workdir              string
+	DynamicWorkdir       bool
+	ContainerWorkdirArgs string
+	HelperWorkdirArgs    string
+	BootstrapHostDir     string
+	LogHostDir           string
+	LogDir               string
+	LogPath              string
+	LogInGuest           bool
 	Mounts               []mountData
 	NetworkRules         []config.NetworkRule
 	NetworkProcessRules  map[string][]config.NetworkRule
@@ -1012,6 +1205,8 @@ type templateData struct {
 	LogUnknown           bool
 	RejectUnknown        bool
 	VerdictServerPort    int
+	VerdictAuthKey       string
+	VerdictAuthKeyPath   string
 	NfqdBinaryPath       string
 	NfqdSHA256           string
 	GlobalWildcardRules  []config.NetworkRule // wildcard domains from NetworkRules
@@ -1020,16 +1215,165 @@ type templateData struct {
 	ProcessDNSExactHosts map[string][]string
 	ProcessDNSWildcards  map[string][]string
 	DNSAllowlistOnly     bool
+	ProvisionScripts     []provisionScript
 }
 
-var hostGOOS = runtime.GOOS
+var (
+	hostGOOS         = runtime.GOOS
+	hostEffectiveUID = func() int64 { return int64(os.Geteuid()) }
+)
 
-// GenerateOptions contains values bound to a specific Lima instance at
-// creation time. NfqdSHA256 is required in ask mode because the sidecar is
-// staged through the writable project mount before being installed in the VM.
+const (
+	maxProvisionScriptSize  = 1 << 20
+	maxProvisionScriptsSize = 4 << 20
+	nfqdGuestDir            = "/mnt/watermelon/bootstrap"
+	logStateGuestDir        = "/mnt/watermelon/state"
+	verdictAuthKeyGuestPath = "/etc/watermelon/verdict-auth-key"
+)
+
+// PreparedProvisionScripts binds the exact host bytes embedded into a Lima
+// config to their ordered SHA-256 digests. The CLI carries this single read
+// through generation, identity reservation, and applied-policy snapshots.
+type PreparedProvisionScripts struct {
+	Contents []string
+	SHA256   []string
+}
+
+// PrepareProvisionScripts opens configured scripts beneath a real project
+// directory without following any symlink component or blocking on a special
+// file. Scripts run as root in the VM and Lima may retry them, so callers must
+// author them to be idempotent.
+func PrepareProvisionScripts(projectDir string, scripts []string) (PreparedProvisionScripts, error) {
+	contents := make([]string, 0, len(scripts))
+	digests := make([]string, 0, len(scripts))
+	if len(scripts) == 0 {
+		return PreparedProvisionScripts{Contents: contents, SHA256: digests}, nil
+	}
+	total := 0
+	canonicalProjectDir, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		return PreparedProvisionScripts{}, fmt.Errorf("resolving project directory for provision scripts: %w", err)
+	}
+	projectFD, err := unix.Open(canonicalProjectDir, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return PreparedProvisionScripts{}, fmt.Errorf("opening project directory for provision scripts: %w", err)
+	}
+	defer unix.Close(projectFD)
+	for _, script := range scripts {
+		if err := config.ValidateProvisionScript(script); err != nil {
+			return PreparedProvisionScripts{}, err
+		}
+		fd, err := openProvisionScriptAt(projectFD, script)
+		if err != nil {
+			return PreparedProvisionScripts{}, err
+		}
+		file := os.NewFile(uintptr(fd), filepath.Join(canonicalProjectDir, script))
+		if file == nil {
+			_ = unix.Close(fd)
+			return PreparedProvisionScripts{}, fmt.Errorf("opening provision script %q: invalid file descriptor", script)
+		}
+
+		info, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			return PreparedProvisionScripts{}, fmt.Errorf("inspecting provision script %q: %w", script, statErr)
+		}
+		if !info.Mode().IsRegular() {
+			_ = file.Close()
+			return PreparedProvisionScripts{}, fmt.Errorf("provision script %q must be a regular file, got %s", script, info.Mode().Type())
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Geteuid()) {
+			_ = file.Close()
+			return PreparedProvisionScripts{}, fmt.Errorf("provision script %q must be owned by the current user", script)
+		}
+		if info.Size() > maxProvisionScriptSize {
+			_ = file.Close()
+			return PreparedProvisionScripts{}, fmt.Errorf("provision script %q exceeds the %d-byte limit", script, maxProvisionScriptSize)
+		}
+
+		data, readErr := io.ReadAll(io.LimitReader(file, maxProvisionScriptSize+1))
+		closeErr := file.Close()
+		if readErr != nil {
+			return PreparedProvisionScripts{}, fmt.Errorf("reading provision script %q: %w", script, readErr)
+		}
+		if closeErr != nil {
+			return PreparedProvisionScripts{}, fmt.Errorf("closing provision script %q: %w", script, closeErr)
+		}
+		if len(data) > maxProvisionScriptSize {
+			return PreparedProvisionScripts{}, fmt.Errorf("provision script %q exceeds the %d-byte limit", script, maxProvisionScriptSize)
+		}
+		if !utf8.Valid(data) {
+			return PreparedProvisionScripts{}, fmt.Errorf("provision script %q must contain valid UTF-8", script)
+		}
+		if bytes.IndexByte(data, 0) >= 0 {
+			return PreparedProvisionScripts{}, fmt.Errorf("provision script %q contains a NUL byte", script)
+		}
+		total += len(data)
+		if total > maxProvisionScriptsSize {
+			return PreparedProvisionScripts{}, fmt.Errorf("provision scripts exceed the %d-byte total limit", maxProvisionScriptsSize)
+		}
+		contents = append(contents, string(data))
+		digest := sha256.Sum256(data)
+		digests = append(digests, fmt.Sprintf("%x", digest[:]))
+	}
+	return PreparedProvisionScripts{Contents: contents, SHA256: digests}, nil
+}
+
+func openProvisionScriptAt(projectFD int, script string) (int, error) {
+	components := strings.Split(filepath.Clean(script), string(filepath.Separator))
+	dirFD := projectFD
+	ownedDirFD := -1
+	defer func() {
+		if ownedDirFD >= 0 {
+			_ = unix.Close(ownedDirFD)
+		}
+	}()
+
+	for _, component := range components[:len(components)-1] {
+		nextFD, err := unix.Openat(dirFD, component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return -1, fmt.Errorf("opening provision script %q directory component %q without following symlinks: %w", script, component, err)
+		}
+		if ownedDirFD >= 0 {
+			_ = unix.Close(ownedDirFD)
+		}
+		ownedDirFD = nextFD
+		dirFD = nextFD
+	}
+
+	fileFD, err := unix.Openat(dirFD, components[len(components)-1], unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return -1, fmt.Errorf("opening provision script %q without following symlinks: %w", script, err)
+	}
+	return fileFD, nil
+}
+
+func readProvisionScripts(projectDir string, scripts []string) ([]string, error) {
+	prepared, err := PrepareProvisionScripts(projectDir, scripts)
+	if err != nil {
+		return nil, err
+	}
+	return prepared.Contents, nil
+}
+
+// GenerateOptions contains host paths and values bound to a specific Lima
+// instance at creation time. BootstrapHostDir is mounted read-only at the
+// fixed bootstrap path and is required with NfqdSHA256 and VerdictAuthKey in
+// ask mode. It may also carry immutable instance identity in other enforcement
+// modes. LogHostDir, when set, is mounted read-write at the fixed instance-state
+// path.
 type GenerateOptions struct {
 	VerdictServerPort int
+	VerdictAuthKey    string
 	NfqdSHA256        string
+	BootstrapHostDir  string
+	// NfqdHostDir is a deprecated compatibility alias for BootstrapHostDir.
+	NfqdHostDir string
+	LogHostDir  string
+	// PreparedProvisionScripts supplies the exact bytes already audited by the
+	// CLI. The generator verifies every digest before embedding them.
+	PreparedProvisionScripts *PreparedProvisionScripts
 }
 
 // GenerateConfig creates Lima YAML from watermelon config. Mount sources are
@@ -1104,11 +1448,33 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 	if err != nil {
 		return "", err
 	}
+	mountProject := config.MountProjectEnabled(&cfg.VM)
+	if err := validateInternalMountTargets(mounts, mountProject); err != nil {
+		return "", err
+	}
 
 	vmType, err := hostVMType(hostGOOS)
 	if err != nil {
 		return "", err
 	}
+	// Lima's writable mounts preserve host ownership. Bind the fixed guest
+	// account to the effective host UID so a project owned by a non-1000 macOS
+	// or Linux user remains writable from the sandbox. The account name and
+	// home stay fixed and are still verified by the root provisioning script.
+	hostUID := hostEffectiveUID()
+	if hostUID < 0 {
+		return "", fmt.Errorf("effective host UID %d is invalid", hostUID)
+	}
+	if hostUID == 0 {
+		return "", errors.New("watermelon must run as an unprivileged host user to create a Lima VM")
+	}
+	// Linux and Darwin expose 32-bit uid_t values. The all-ones value represents
+	// an invalid/unset identity and must not be assigned to the guest account.
+	const maxVMUserUID = int64(1<<32 - 2)
+	if hostUID > maxVMUserUID {
+		return "", fmt.Errorf("effective host UID %d is outside the supported guest UID range 1..%d", hostUID, maxVMUserUID)
+	}
+	vmUserUID := uint32(hostUID)
 
 	// Build provision data: custom images and tool image overrides
 	type provSpec struct {
@@ -1168,8 +1534,9 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 	}
 
 	funcMap := template.FuncMap{
-		"add":       func(a, b int) int { return a + b },
-		"yamlQuote": strconv.Quote,
+		"add":        func(a, b int) int { return a + b },
+		"yamlQuote":  strconv.Quote,
+		"shellQuote": shellQuote,
 		"indent": func(n int, s string) string {
 			pad := strings.Repeat(" ", n)
 			return pad + strings.ReplaceAll(s, "\n", "\n"+pad)
@@ -1223,7 +1590,72 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 		uniqueImages = collectUniqueImages(tools)
 	}
 
+	image := cfg.VM.Image
+	if image == "" {
+		image = "ubuntu-22.04"
+	}
+	workdir := config.DefaultWorkdir(cfg)
+	containerWorkdirArgs := ""
+	helperWorkdirArgs := ""
+	if workdir == "" {
+		containerWorkdirArgs = `-v "$_WM_WORKDIR:$_WM_WORKDIR" -w "$_WM_WORKDIR"`
+		helperWorkdirArgs = `-v "\$_WM_WORKDIR:\$_WM_WORKDIR" -w "\$_WM_WORKDIR"`
+	} else {
+		if workdir == "/project" {
+			containerWorkdirArgs = "-v /project:/project -w /project"
+		} else {
+			// These arguments are embedded both in generated scripts and inside
+			// single-quoted printf operands that create tool wrappers. Validated
+			// guest paths cannot contain a double quote, backslash, dollar, or
+			// backtick, so strconv.Quote remains safe in both contexts and keeps
+			// spaces within one argument.
+			containerWorkdirArgs = "-v " + strconv.Quote(workdir+":"+workdir) + " -w " + strconv.Quote(workdir)
+		}
+		helperWorkdirArgs = containerWorkdirArgs
+	}
+
+	preparedScripts := opts.PreparedProvisionScripts
+	if preparedScripts == nil {
+		prepared, err := PrepareProvisionScripts(projectDir, cfg.Provision.Scripts)
+		if err != nil {
+			return "", err
+		}
+		preparedScripts = &prepared
+	}
+	if err := validatePreparedProvisionScripts(cfg, preparedScripts); err != nil {
+		return "", err
+	}
+	provisionScripts := make([]provisionScript, len(preparedScripts.Contents))
+	for index, content := range preparedScripts.Contents {
+		provisionScripts[index] = provisionScript{
+			Name:   fmt.Sprintf("script-%08d", index),
+			Base64: encodeProvisionScript(content),
+		}
+	}
+
+	bootstrapHostDir := opts.BootstrapHostDir
+	if opts.NfqdHostDir != "" {
+		if bootstrapHostDir != "" && bootstrapHostDir != opts.NfqdHostDir {
+			return "", fmt.Errorf("bootstrap host directory and deprecated nfqd host directory disagree")
+		}
+		bootstrapHostDir = opts.NfqdHostDir
+	}
+	if bootstrapHostDir != "" {
+		if err := validateProjectDir(bootstrapHostDir); err != nil {
+			return "", fmt.Errorf("invalid bootstrap host directory: %w", err)
+		}
+		if hostPathsOverlap(bootstrapHostDir, projectDir) {
+			return "", fmt.Errorf("bootstrap host directory must not overlap the project directory")
+		}
+		for _, mount := range mounts {
+			if mount.Writable && hostPathsOverlap(bootstrapHostDir, mount.Location) {
+				return "", fmt.Errorf("bootstrap host directory must not overlap writable mount %q", mount.Location)
+			}
+		}
+	}
+
 	verdictPort := 0
+	verdictAuthKey := ""
 	nfqdPath := ""
 	nfqdSHA256 := ""
 	if cfg.Security.Enforcement == "ask" {
@@ -1236,14 +1668,50 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 		if verdictPort == 0 {
 			verdictPort = 39285 // fallback
 		}
-		nfqdPath = "/project/.watermelon/bin/watermelon-nfqd"
 		if !validLowerSHA256(opts.NfqdSHA256) {
 			return "", fmt.Errorf("ask enforcement requires a lowercase SHA-256 digest for watermelon-nfqd")
 		}
+		if !validLowerSHA256(opts.VerdictAuthKey) {
+			return "", fmt.Errorf("ask enforcement requires a 32-byte lowercase hexadecimal verdict authentication key")
+		}
+		if bootstrapHostDir == "" {
+			return "", fmt.Errorf("ask enforcement requires a dedicated watermelon-nfqd host bootstrap directory")
+		}
+		nfqdPath = path.Join(nfqdGuestDir, "watermelon-nfqd")
 		nfqdSHA256 = opts.NfqdSHA256
-	} else if opts.NfqdSHA256 != "" && !validLowerSHA256(opts.NfqdSHA256) {
-		return "", fmt.Errorf("watermelon-nfqd SHA-256 digest must be 64 lowercase hexadecimal characters")
+		verdictAuthKey = opts.VerdictAuthKey
+	} else if opts.NfqdSHA256 != "" || opts.VerdictAuthKey != "" {
+		return "", fmt.Errorf("watermelon-nfqd digest and verdict authentication key are only valid with ask enforcement")
 	}
+
+	logHostDir := opts.LogHostDir
+	if logHostDir != "" {
+		if err := validateProjectDir(logHostDir); err != nil {
+			return "", fmt.Errorf("invalid log host directory: %w", err)
+		}
+		if hostPathsOverlap(logHostDir, projectDir) {
+			return "", fmt.Errorf("log host directory must not overlap the project directory")
+		}
+		if bootstrapHostDir != "" && hostPathsOverlap(logHostDir, bootstrapHostDir) {
+			return "", fmt.Errorf("log host directory must not overlap the read-only watermelon-nfqd bootstrap directory")
+		}
+		for _, mount := range mounts {
+			if hostPathsOverlap(logHostDir, mount.Location) {
+				return "", fmt.Errorf("log host directory must not overlap configured mount %q", mount.Location)
+			}
+		}
+	}
+	logDir := logStateGuestDir
+	logInGuest := false
+	if logHostDir == "" {
+		if mountProject {
+			logDir = "/project/.watermelon"
+		} else {
+			logDir = "/var/log/watermelon"
+			logInGuest = true
+		}
+	}
+	logPath := path.Join(logDir, "logs.log")
 
 	sortedProcessNames := make([]string, 0, len(networkProcessRules))
 	for proc := range networkProcessRules {
@@ -1261,13 +1729,23 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 	data := templateData{
 		VMType:               vmType,
 		VMUser:               "watermelon",
-		VMUserUID:            1000,
+		VMUserUID:            vmUserUID,
 		VMUserHome:           "/home/watermelon",
 		CPUs:                 cfg.Resources.CPUs,
 		Memory:               convertMemory(cfg.Resources.Memory),
 		Disk:                 convertDisk(cfg.Resources.Disk),
+		Image:                image,
+		MountProject:         mountProject,
 		ProjectDir:           projectDir,
-		ToolsDir:             "",
+		Workdir:              workdir,
+		DynamicWorkdir:       workdir == "",
+		ContainerWorkdirArgs: containerWorkdirArgs,
+		HelperWorkdirArgs:    helperWorkdirArgs,
+		BootstrapHostDir:     bootstrapHostDir,
+		LogHostDir:           logHostDir,
+		LogDir:               logDir,
+		LogPath:              logPath,
+		LogInGuest:           logInGuest,
 		Mounts:               mounts,
 		NetworkRules:         networkRules,
 		NetworkProcessRules:  networkProcessRules,
@@ -1284,6 +1762,8 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 		LogUnknown:           logUnknown,
 		RejectUnknown:        rejectUnknown,
 		VerdictServerPort:    verdictPort,
+		VerdictAuthKey:       verdictAuthKey,
+		VerdictAuthKeyPath:   verdictAuthKeyGuestPath,
 		NfqdBinaryPath:       nfqdPath,
 		NfqdSHA256:           nfqdSHA256,
 		GlobalWildcardRules:  globalWildcardRules,
@@ -1292,6 +1772,7 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 		ProcessDNSExactHosts: processDNSExactHosts,
 		ProcessDNSWildcards:  processDNSWildcards,
 		DNSAllowlistOnly:     cfg.Security.Enforcement == "fail" || cfg.Security.Enforcement == "silent",
+		ProvisionScripts:     provisionScripts,
 	}
 
 	var buf bytes.Buffer
@@ -1327,6 +1808,88 @@ func validateProjectDir(projectDir string) error {
 		return fmt.Errorf("project directory %q must be a clean path", projectDir)
 	}
 	return nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+// encodeProvisionScript keeps the exact audited script bytes out of both the
+// Watermelon and Lima template languages. The generated wrapper decodes the
+// payload into a root-only per-boot path before executing it.
+func encodeProvisionScript(value string) string {
+	encoded := base64.StdEncoding.EncodeToString([]byte(value))
+	const lineWidth = 76
+	if len(encoded) <= lineWidth {
+		return encoded
+	}
+	var lines []string
+	for len(encoded) > lineWidth {
+		lines = append(lines, encoded[:lineWidth])
+		encoded = encoded[lineWidth:]
+	}
+	if encoded != "" {
+		lines = append(lines, encoded)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func validatePreparedProvisionScripts(cfg *config.Config, prepared *PreparedProvisionScripts) error {
+	if prepared == nil {
+		return errors.New("prepared provision scripts cannot be nil")
+	}
+	if len(prepared.Contents) != len(cfg.Provision.Scripts) || len(prepared.SHA256) != len(cfg.Provision.Scripts) {
+		return fmt.Errorf("prepared provision script count does not match configured scripts")
+	}
+	total := 0
+	for index, content := range prepared.Contents {
+		data := []byte(content)
+		if len(data) > maxProvisionScriptSize {
+			return fmt.Errorf("prepared provision script %q exceeds the %d-byte limit", cfg.Provision.Scripts[index], maxProvisionScriptSize)
+		}
+		if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+			return fmt.Errorf("prepared provision script %q is not valid NUL-free UTF-8", cfg.Provision.Scripts[index])
+		}
+		total += len(data)
+		if total > maxProvisionScriptsSize {
+			return fmt.Errorf("prepared provision scripts exceed the %d-byte total limit", maxProvisionScriptsSize)
+		}
+		digest := sha256.Sum256(data)
+		actual := fmt.Sprintf("%x", digest[:])
+		if prepared.SHA256[index] != actual {
+			return fmt.Errorf("prepared provision script %q does not match its SHA-256 digest", cfg.Provision.Scripts[index])
+		}
+		if len(cfg.Provision.ScriptSHA256) != 0 && cfg.Provision.ScriptSHA256[index] != actual {
+			return fmt.Errorf("prepared provision script %q does not match the applied configuration digest", cfg.Provision.Scripts[index])
+		}
+	}
+	return nil
+}
+
+func validateInternalMountTargets(mounts []mountData, mountProject bool) error {
+	for _, mount := range mounts {
+		if mountProject && path.Clean(mount.Target) == "/project" {
+			return fmt.Errorf("mount target %q duplicates Watermelon's project mount", mount.Target)
+		}
+		for _, internal := range []string{nfqdGuestDir, logStateGuestDir} {
+			if guestPathsOverlap(mount.Target, internal) {
+				return fmt.Errorf("mount target %q overlaps Watermelon-managed guest path %q", mount.Target, internal)
+			}
+		}
+	}
+	return nil
+}
+
+func guestPathsOverlap(first, second string) bool {
+	first = path.Clean(first)
+	second = path.Clean(second)
+	return first == second || strings.HasPrefix(first, second+"/") || strings.HasPrefix(second, first+"/")
+}
+
+func hostPathsOverlap(first, second string) bool {
+	first = filepath.Clean(first)
+	second = filepath.Clean(second)
+	return first == second || strings.HasPrefix(first, second+string(filepath.Separator)) || strings.HasPrefix(second, first+string(filepath.Separator))
 }
 
 func validLowerSHA256(value string) bool {

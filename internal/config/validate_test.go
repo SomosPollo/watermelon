@@ -63,15 +63,155 @@ func TestValidateResources(t *testing.T) {
 }
 
 func TestValidateVMImage(t *testing.T) {
-	cfg := NewConfig()
-	cfg.VM.Image = "ubuntu-24.04"
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("expected unsupported VM image to be rejected")
+	tests := []struct {
+		image   string
+		wantErr bool
+	}{
+		{image: ""},
+		{image: "ubuntu-22.04"},
+		{image: "ubuntu-24.04"},
+		{image: "debian-12", wantErr: true},
 	}
-	if !strings.Contains(err.Error(), "unsupported vm.image") {
-		t.Errorf("expected error to mention unsupported vm.image, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.image, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.VM.Image = tt.image
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "unsupported vm.image") {
+				t.Errorf("expected error to mention unsupported vm.image, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateVMName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{name: "dev"},
+		{name: "dev_01.foo-bar"},
+		{name: "Dev_01.foo-bar", wantErr: true},
+		{name: strings.Repeat("a", 76)},
+		{name: "", wantErr: true},
+		{name: strings.Repeat("a", 77), wantErr: true},
+		{name: "-dev", wantErr: true},
+		{name: "dev-", wantErr: true},
+		{name: "dev..one", wantErr: true},
+		{name: "dev--one", wantErr: true},
+		{name: "dev/name", wantErr: true},
+		{name: "dev name", wantErr: true},
+		{name: "dév", wantErr: true},
+		{name: "dev.yml", wantErr: true},
+		{name: "DEV.YAML", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateVMName(tt.name)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateVMName(%q) error = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateConfigVMName(t *testing.T) {
+	cfg := NewConfig()
+	cfg.VM.Name = "bad/name"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "vm.name") {
+		t.Fatalf("Validate() error = %v, want vm.name error", err)
+	}
+}
+
+func TestValidateGuestWorkdir(t *testing.T) {
+	tests := []struct {
+		name    string
+		workdir string
+		wantErr bool
+	}{
+		{name: "root", workdir: "/"},
+		{name: "project", workdir: "/project"},
+		{name: "spaces", workdir: "/workspace/my project"},
+		{name: "unicode", workdir: "/workspace/café"},
+		{name: "empty", workdir: "", wantErr: true},
+		{name: "relative", workdir: "workspace/app", wantErr: true},
+		{name: "windows", workdir: `C:\workspace`, wantErr: true},
+		{name: "dot component", workdir: "/workspace/./app", wantErr: true},
+		{name: "traversal", workdir: "/workspace/../etc", wantErr: true},
+		{name: "trailing slash", workdir: "/workspace/", wantErr: true},
+		{name: "duplicate slash", workdir: "/workspace//app", wantErr: true},
+		{name: "shell metacharacter", workdir: "/workspace/$HOME", wantErr: true},
+		{name: "newline", workdir: "/workspace/\napp", wantErr: true},
+		{name: "nul", workdir: "/workspace/\x00app", wantErr: true},
+		{name: "invalid utf8", workdir: "/workspace/\xff", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateGuestWorkdir(tt.workdir)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateGuestWorkdir(%q) error = %v, wantErr %v", tt.workdir, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateConfiguredWorkdirs(t *testing.T) {
+	tests := []struct {
+		name        string
+		vmWorkdir   string
+		ideWorkdir  string
+		errorPrefix string
+	}{
+		{name: "empty values use defaults"},
+		{name: "valid independent values", vmWorkdir: "/workspace", ideWorkdir: "/workspace/ide"},
+		{name: "invalid VM value", vmWorkdir: "relative", errorPrefix: "invalid vm.workdir"},
+		{name: "invalid IDE value", ideWorkdir: "relative", errorPrefix: "invalid ide.workdir"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.VM.Workdir = tt.vmWorkdir
+			cfg.IDE.Workdir = tt.ideWorkdir
+			err := Validate(cfg)
+			if tt.errorPrefix == "" && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if tt.errorPrefix != "" && (err == nil || !strings.Contains(err.Error(), tt.errorPrefix)) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.errorPrefix)
+			}
+		})
+	}
+}
+
+func TestValidateProvisionScripts(t *testing.T) {
+	tests := []struct {
+		name    string
+		script  string
+		wantErr bool
+	}{
+		{name: "relative", script: "./scripts/setup.sh"},
+		{name: "absolute", script: "/opt/setup.sh", wantErr: true},
+		{name: "parent traversal", script: "../setup.sh", wantErr: true},
+		{name: "embedded parent traversal", script: "scripts/../../setup.sh", wantErr: true},
+		{name: "space", script: "./scripts/setup dev.sh"},
+		{name: "empty", script: "", wantErr: true},
+		{name: "shell metacharacter", script: "./setup.sh;reboot", wantErr: true},
+		{name: "quote", script: `./setup"dev.sh`, wantErr: true},
+		{name: "nul", script: "./setup\x00.sh", wantErr: true},
+		{name: "invalid utf8", script: "./setup\xff.sh", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Provision.Scripts = []string{tt.script}
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 

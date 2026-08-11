@@ -15,6 +15,7 @@ func testAppliedHostContext(cfg *Config) AppliedHostContext {
 	return AppliedHostContext{
 		ProjectRoot:  "/host/project",
 		LimaHome:     "/host/.lima",
+		EffectiveUID: 1000,
 		MountSources: mounts,
 	}
 }
@@ -62,6 +63,9 @@ func TestAppliedPolicySnapshotRoundTrip(t *testing.T) {
 	if parsed.Version != AppliedPolicySnapshotVersion || parsed.Enforcement != EnforcementFail {
 		t.Fatalf("parsed snapshot = %#v", parsed)
 	}
+	if parsed.Host.EffectiveUID != host.EffectiveUID {
+		t.Fatalf("parsed effective UID = %d, want %d", parsed.Host.EffectiveUID, host.EffectiveUID)
+	}
 	matches, err := parsed.MatchesConfig(cfg, host)
 	if err != nil || !matches {
 		t.Fatalf("MatchesConfig() = %v, %v; want true, nil", matches, err)
@@ -103,6 +107,83 @@ func TestAppliedPolicyDigestUsesNormalizedVMConfig(t *testing.T) {
 	}
 }
 
+func TestAppliedPolicyDigestIncludesNewAppliedFields(t *testing.T) {
+	base := NewConfig()
+	baseDigest, err := AppliedConfigDigest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		change func(*Config)
+	}{
+		{name: "VM name", change: func(cfg *Config) { cfg.VM.Name = "dev" }},
+		{name: "VM image", change: func(cfg *Config) { cfg.VM.Image = "ubuntu-24.04" }},
+		{name: "mount project", change: func(cfg *Config) { disabled := false; cfg.VM.MountProject = &disabled }},
+		{name: "VM workdir", change: func(cfg *Config) { cfg.VM.Workdir = "/workspace" }},
+		{name: "provision scripts", change: func(cfg *Config) { cfg.Provision.Scripts = []string{"./setup.sh"} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			tt.change(cfg)
+			digest, err := AppliedConfigDigest(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if digest == baseDigest {
+				t.Errorf("changing %s did not change applied config digest", tt.name)
+			}
+		})
+	}
+}
+
+func TestAppliedPolicyDigestIncludesProvisionScriptBytes(t *testing.T) {
+	first := NewConfig()
+	first.Provision.Scripts = []string{"./setup.sh"}
+	first.Provision.ScriptSHA256 = []string{strings.Repeat("a", 64)}
+	second := NewConfig()
+	second.Provision.Scripts = []string{"./setup.sh"}
+	second.Provision.ScriptSHA256 = []string{strings.Repeat("b", 64)}
+
+	firstDigest, err := AppliedConfigDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := AppliedConfigDigest(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == secondDigest {
+		t.Fatal("same-path provision script byte change did not change the applied config digest")
+	}
+}
+
+func TestAppliedPolicyDigestNormalizesVMDefaultsAndExcludesIDEWorkdir(t *testing.T) {
+	implicit := NewConfig()
+	implicit.VM.Image = ""
+	implicit.VM.MountProject = nil
+	implicit.IDE.Workdir = "/ide/one"
+
+	explicit := NewConfig()
+	explicit.VM.Image = "ubuntu-22.04"
+	explicit.VM.Workdir = "/project"
+	explicit.IDE.Workdir = "/ide/two"
+
+	implicitDigest, err := AppliedConfigDigest(implicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitDigest, err := AppliedConfigDigest(explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if implicitDigest != explicitDigest {
+		t.Errorf("semantically equivalent VM defaults or IDE-only workdirs changed digest: %s != %s", implicitDigest, explicitDigest)
+	}
+}
+
 func TestAppliedPolicyDigestCanonicalizesReadOnlyMountDefault(t *testing.T) {
 	implicit := NewConfig()
 	implicit.Mounts = map[string]Mount{
@@ -132,8 +213,9 @@ func TestAppliedPolicySnapshotIncludesCanonicalHostContext(t *testing.T) {
 		"/host/cache-link": {Target: "/cache", Mode: "ro"},
 	}
 	firstHost := AppliedHostContext{
-		ProjectRoot: "/host/project",
-		LimaHome:    "/host/.lima",
+		ProjectRoot:  "/host/project",
+		LimaHome:     "/host/.lima",
+		EffectiveUID: 1000,
 		MountSources: map[string]string{
 			"/host/cache-link": "/host/cache-a",
 		},
@@ -159,21 +241,39 @@ func TestAppliedPolicySnapshotIncludesCanonicalHostContext(t *testing.T) {
 	if matches, err := snapshot.MatchesConfig(cfg, differentProject); err != nil || matches {
 		t.Fatalf("different project match = %v, %v; want false, nil", matches, err)
 	}
+
+	differentUID := firstHost
+	differentUID.EffectiveUID = 501
+	if matches, err := snapshot.MatchesConfig(cfg, differentUID); err != nil || matches {
+		t.Fatalf("different effective UID match = %v, %v; want false, nil", matches, err)
+	}
 }
 
-func TestParseAppliedPolicySnapshotRejectsIncompleteHostContext(t *testing.T) {
-	cfg := NewConfig()
-	snapshot, err := NewAppliedPolicySnapshot(cfg, testAppliedHostContext(cfg))
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot.Host.ProjectRoot = ""
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ParseAppliedPolicySnapshot(data); err == nil || !strings.Contains(err.Error(), "project root") {
-		t.Fatalf("incomplete host context error = %v", err)
+func TestParseAppliedPolicySnapshotRejectsInvalidHostContext(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		change func(*AppliedHostContext)
+		want   string
+	}{
+		{name: "project root", change: func(host *AppliedHostContext) { host.ProjectRoot = "" }, want: "project root"},
+		{name: "zero effective UID", change: func(host *AppliedHostContext) { host.EffectiveUID = 0 }, want: "effective host UID"},
+		{name: "reserved effective UID", change: func(host *AppliedHostContext) { host.EffectiveUID = ^uint32(0) }, want: "effective host UID"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			snapshot, err := NewAppliedPolicySnapshot(cfg, testAppliedHostContext(cfg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.change(&snapshot.Host)
+			data, err := json.Marshal(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseAppliedPolicySnapshot(data); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("incomplete host context error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -181,6 +281,22 @@ func TestParseAppliedPolicySnapshotRejectsLegacyDigest(t *testing.T) {
 	_, err := ParseAppliedPolicySnapshot([]byte(strings.Repeat("a", 64) + "\n"))
 	if !errors.Is(err, ErrLegacyAppliedPolicySnapshot) {
 		t.Fatalf("legacy digest error = %v, want ErrLegacyAppliedPolicySnapshot", err)
+	}
+}
+
+func TestParseAppliedPolicySnapshotRejectsVersionTwo(t *testing.T) {
+	cfg := NewConfig()
+	snapshot, err := NewAppliedPolicySnapshot(cfg, testAppliedHostContext(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Version = 2
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseAppliedPolicySnapshot(data); err == nil || !strings.Contains(err.Error(), "unsupported applied-policy snapshot version 2") {
+		t.Fatalf("version 2 snapshot error = %v", err)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // DialogFunc is the function signature for showing a verdict dialog.
@@ -47,8 +49,11 @@ func ShowTerminalPrompt(process, domain string, port int, project string) string
 }
 
 func stdinIsTerminal() bool {
-	info, err := os.Stdin.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return fileIsTerminal(os.Stdin)
+}
+
+func fileIsTerminal(file *os.File) bool {
+	return file != nil && term.IsTerminal(int(file.Fd()))
 }
 
 func readTerminalPrompt(in io.Reader, out io.Writer, process, domain string, port int, project string) string {

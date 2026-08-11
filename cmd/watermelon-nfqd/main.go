@@ -1,16 +1,20 @@
 //go:build linux
 
 // watermelon-nfqd is the NFQUEUE interceptor daemon that runs inside the Linux VM.
-// It intercepts TCP SYN packets, performs reverse DNS lookups, and consults the
-// host-side verdict server to decide whether to allow or block each connection.
+// It intercepts TCP SYN packets, correlates names observed in DNS responses,
+// and consults the host-side verdict server to allow or block each connection.
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -22,29 +26,28 @@ import (
 
 	nfqueue "github.com/florianl/go-nfqueue/v2"
 	"github.com/saeta-eth/watermelon/internal/ask"
+	"golang.org/x/sys/unix"
+)
+
+const (
+	verdictWriteTimeout     = 5 * time.Second
+	verdictResponseTimeout  = 10 * time.Minute
+	maxVerdictResponseBytes = 1 << 10
 )
 
 func main() {
 	serverAddr := flag.String("server", "", "verdict server address (host:port)")
+	authKeyFile := flag.String("auth-key-file", "", "root-owned verdict authentication key file")
 	flag.Parse()
 
-	if *serverAddr == "" {
-		fmt.Fprintln(os.Stderr, "usage: watermelon-nfqd -server HOST:PORT")
+	if *serverAddr == "" || *authKeyFile == "" {
+		fmt.Fprintln(os.Stderr, "usage: watermelon-nfqd -server HOST:PORT -auth-key-file PATH")
 		os.Exit(1)
 	}
-
-	// Wait for verdict server to be reachable
-	for {
-		conn, err := net.DialTimeout("tcp", *serverAddr, 2*time.Second)
-		if err == nil {
-			conn.Close()
-			break
-		}
-		log.Printf("waiting for verdict server at %s...", *serverAddr)
-		time.Sleep(time.Second)
+	authKey, err := loadAuthKeyFile(*authKeyFile)
+	if err != nil {
+		log.Fatalf("load verdict authentication key: %v", err)
 	}
-
-	log.Printf("verdict server reachable at %s", *serverAddr)
 
 	var cache sync.Map
 	var dnsCache sync.Map // IP string → domain string
@@ -89,19 +92,11 @@ func main() {
 
 		ipStr := dstIP.String()
 
-		// Look up domain from DNS snooping cache (preferred) or fall back to reverse DNS
-		domain := ipStr
-		if d, ok := dnsCache.Load(ipStr); ok {
-			domain = d.(string)
-		} else {
-			names, lookupErr := net.LookupAddr(ipStr)
-			if lookupErr == nil && len(names) > 0 {
-				domain = names[0]
-				if len(domain) > 0 && domain[len(domain)-1] == '.' {
-					domain = domain[:len(domain)-1]
-				}
-			}
-		}
+		// DNS snooping supplies the original hostname when the workload resolved
+		// one. For a direct-IP connection, prompt with the IP immediately. A
+		// synchronous reverse lookup here would hold the NFQUEUE packet (and the
+		// workload's connect call) before a verdict request can reach the host.
+		domain := verdictDestination(ipStr, &dnsCache)
 
 		// Cache by domain (not IP) so shared-IP domains get independent verdicts
 		cacheKey := fmt.Sprintf("%s:%d", domain, dstPort)
@@ -117,7 +112,7 @@ func main() {
 
 		process := resolveProcess(srcPort)
 
-		verdict := askServer(*serverAddr, ask.VerdictRequest{
+		verdict := askServer(*serverAddr, authKey, ask.VerdictRequest{
 			Domain:  domain,
 			Port:    dstPort,
 			Process: process,
@@ -191,6 +186,15 @@ func main() {
 	cancel()
 }
 
+func verdictDestination(ip string, dnsCache *sync.Map) string {
+	if domain, ok := dnsCache.Load(ip); ok {
+		if rendered, ok := domain.(string); ok && rendered != "" {
+			return rendered
+		}
+	}
+	return ip
+}
+
 // resolveProcess attempts to find the process name that owns the TCP connection
 // with the given source port by reading /proc/net/tcp.
 func resolveProcess(srcPort int) string {
@@ -256,7 +260,12 @@ func resolveProcess(srcPort int) string {
 	return ""
 }
 
-func askServer(addr string, req ask.VerdictRequest) string {
+func askServer(addr string, authKey ask.AuthKey, req ask.VerdictRequest) string {
+	if err := ask.AuthenticateRequest(authKey, &req); err != nil {
+		log.Printf("failed to authenticate verdict request: %v (blocking)", err)
+		return ask.VerdictBlock
+	}
+
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		log.Printf("verdict server unreachable: %v (blocking)", err)
@@ -264,16 +273,89 @@ func askServer(addr string, req ask.VerdictRequest) string {
 	}
 	defer conn.Close()
 
+	if err := conn.SetWriteDeadline(time.Now().Add(verdictWriteTimeout)); err != nil {
+		log.Printf("failed to set verdict request deadline: %v (blocking)", err)
+		return ask.VerdictBlock
+	}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		log.Printf("failed to send request: %v (blocking)", err)
 		return ask.VerdictBlock
 	}
 
-	var resp ask.VerdictResponse
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(verdictResponseTimeout)); err != nil {
+		log.Printf("failed to set verdict response deadline: %v (blocking)", err)
+		return ask.VerdictBlock
+	}
+	resp, err := decodeVerdictResponse(conn)
+	if err != nil {
 		log.Printf("failed to read response: %v (blocking)", err)
+		return ask.VerdictBlock
+	}
+	if !ask.VerifyResponse(authKey, req, resp) {
+		log.Printf("verdict server returned an unauthenticated or invalid response (blocking)")
 		return ask.VerdictBlock
 	}
 
 	return resp.Verdict
+}
+
+func decodeVerdictResponse(conn net.Conn) (ask.VerdictResponse, error) {
+	reader := bufio.NewReaderSize(conn, maxVerdictResponseBytes+1)
+	line, isPrefix, err := reader.ReadLine()
+	if err != nil {
+		return ask.VerdictResponse{}, err
+	}
+	if isPrefix || len(line) > maxVerdictResponseBytes {
+		return ask.VerdictResponse{}, errors.New("verdict response exceeds size limit")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder.DisallowUnknownFields()
+	var resp ask.VerdictResponse
+	if err := decoder.Decode(&resp); err != nil {
+		return ask.VerdictResponse{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return ask.VerdictResponse{}, errors.New("verdict response contains trailing JSON")
+		}
+		return ask.VerdictResponse{}, err
+	}
+	return resp, nil
+}
+
+func loadAuthKeyFile(path string) (ask.AuthKey, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return ask.AuthKey{}, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return ask.AuthKey{}, errors.New("invalid authentication key file descriptor")
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return ask.AuthKey{}, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !info.Mode().IsRegular() || !ok {
+		return ask.AuthKey{}, errors.New("authentication key must be a regular file")
+	}
+	if stat.Uid != 0 {
+		return ask.AuthKey{}, errors.New("authentication key must be owned by root")
+	}
+	if stat.Mode&07777 != 0600 {
+		return ask.AuthKey{}, fmt.Errorf("authentication key has mode %04o; want 0600", stat.Mode&07777)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, ask.AuthKeyBytes*2+1))
+	if err != nil {
+		return ask.AuthKey{}, err
+	}
+	if len(data) != ask.AuthKeyBytes*2 {
+		return ask.AuthKey{}, errors.New("authentication key file has invalid length")
+	}
+	return ask.ParseAuthKey(string(data))
 }
