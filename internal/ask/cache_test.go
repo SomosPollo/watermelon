@@ -117,3 +117,38 @@ func TestCacheConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestCacheEvictsOldestVerdictsAtCapacity(t *testing.T) {
+	c := newCache(2)
+	c.Set("192.0.2.1:443", VerdictBlock)
+	c.Set("192.0.2.2:443", VerdictAlwaysAllow)
+	c.Set("192.0.2.3:443", VerdictBlock)
+
+	if _, ok := c.Get("192.0.2.1:443"); ok {
+		t.Fatal("oldest verdict remained after bounded-cache eviction")
+	}
+	if got, ok := c.Get("192.0.2.2:443"); !ok || got != VerdictAlwaysAllow {
+		t.Fatalf("second verdict = (%q, %v), want cached always-allow", got, ok)
+	}
+	if got, ok := c.Get("192.0.2.3:443"); !ok || got != VerdictBlock {
+		t.Fatalf("newest verdict = (%q, %v), want cached block", got, ok)
+	}
+}
+
+func TestZeroCapacityCacheStillResolvesWaiters(t *testing.T) {
+	c := newCache(0)
+	if ch := c.MarkPending("192.0.2.1:443"); ch != nil {
+		t.Fatal("first MarkPending should return nil")
+	}
+	waiter := c.MarkPending("192.0.2.1:443")
+	c.Set("192.0.2.1:443", VerdictBlock)
+
+	select {
+	case <-waiter:
+	default:
+		t.Fatal("zero-capacity Set did not resolve waiter")
+	}
+	if _, ok := c.Get("192.0.2.1:443"); ok {
+		t.Fatal("zero-capacity cache stored a verdict")
+	}
+}

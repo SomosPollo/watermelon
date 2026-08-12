@@ -156,6 +156,8 @@ aider = ["api.anthropic.com", "api.openai.com"]
 
 **Process-name syntax:** Keys must be at most 255 bytes and match `[A-Za-z0-9_][A-Za-z0-9._+-]*`. They must begin with an ASCII letter, digit, or underscore; leading `-` or `.`, whitespace, control characters, path separators, and shell syntax are rejected.
 
+At most 255 process rules may be configured. Each rule consumes one `/24` subnet beneath Watermelon's fixed `10.200.0.0/16` namespace range.
+
 **Note:** Requires VM reprovisioning (`watermelon destroy --force && watermelon run --no-shell`) to apply changes. With `enforcement = "ask"`, omit `--no-shell` and keep the resulting interactive shell open. Destroying the VM removes its state but does not delete `.watermelon.toml`.
 
 ---
@@ -170,17 +172,20 @@ Declare global CLI packages here and recreate the VM when you need reliable comm
 
 | Field | Type | Requires Tool | Install Command |
 |-------|------|---------------|-----------------|
-| `npm` | string[] | `node` image | `npm install -g <pkg>` |
-| `pip` | string[] | `python` image | `pip install <pkg>` |
-| `cargo` | string[] | `rust` image | `cargo install <pkg>` |
-| `go` | string[] | `go` or `golang` image | `go install <pkg>` |
-| `gem` | string[] | `ruby` image | `gem install <pkg>` |
+| `npm` | string[] | declared `npm` command | `npm install -g <pkg>` |
+| `pip` | string[] | declared `pip` command | `pip install <pkg>` |
+| `cargo` | string[] | declared `cargo` command | `cargo install <pkg>` |
+| `go` | string[] | declared `go` command | `go install <pkg>` |
+| `gem` | string[] | declared `gem` command | `gem install <pkg>` |
 | `scripts` | string[] | none | Embed each host file and run it as root in the VM |
 
 **Validation:**
-- Package names cannot contain shell metacharacters (`;|&$\`\``)
-- Each package manager requires a matching tool image in `[tools]`
+- Package specifications must be NUL-free UTF-8, cannot begin with `-`, and cannot contain whitespace, control characters, quotes, or executable shell syntax
+- Each package manager requires its exact command to be declared by one image in `[tools]`; image-name substrings do not imply capabilities
+- Two active package managers cannot provision the same base image; declare them in separate tool images so each derived image has unambiguous contents
 - If the package manager command is not found at provision time, provisioning fails
+
+Watermelon passes every package specification as one quoted process argument rather than composing a container shell command. Version operators and URL characters such as `<`, `>`, `~`, `*`, `?`, `#`, and `[]` therefore remain literal package-manager input.
 
 ```toml
 [tools]
@@ -233,6 +238,8 @@ Defines containerized tools available in the sandbox. Tools are run via nerdctl 
 **Format:** `"<docker-image>:<tag>" = ["cmd1", "cmd2", ...]`
 
 Each command becomes available as a wrapper script in `/usr/local/bin/` inside the VM.
+One command may be declared only once across the entire table; duplicate declarations are rejected instead of choosing an image based on map iteration order.
+The command `nerdctl` and Watermelon's internal `watermelon-npm`, `watermelon-pip`, `watermelon-cargo`, `watermelon-go`, and `watermelon-gem` Docker Hub image names are reserved because generated wrappers and provisioned images depend on them.
 
 Configured base images are pulled during Watermelon's trusted bootstrap, before workload network policy is activated. Do not add container-registry domains to `[network].allow` solely for these image pulls; add them only if the workload itself must contact a registry.
 
@@ -279,7 +286,7 @@ Additional host paths to mount into the VM (beyond the project directory).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `target` | string | required | `/mnt/watermelon` or a descendant path inside the VM |
+| `target` | string | required | A descendant of `/mnt/watermelon` inside the VM |
 | `mode` | string | `"ro"` | Mount mode: `"ro"` (read-only) or `"rw"` (read-write) |
 
 ```toml
@@ -297,7 +304,7 @@ Additional host paths to mount into the VM (beyond the project directory).
 "~/.cache/huggingface" = { target = "/mnt/watermelon/cache/huggingface", mode = "rw" }
 ```
 
-Targets are normalized and must remain at or below `/mnt/watermelon`; `..` traversal is rejected. This dedicated namespace prevents additional mounts from shadowing guest system, home, policy, or project paths. Applications do not automatically treat these paths as home-directory configuration: point the relevant tool at the mounted file or directory explicitly.
+Targets are normalized, must be descendants of `/mnt/watermelon`, and must be unique after normalization; `..` traversal is rejected. The root itself and Watermelon's managed `/mnt/watermelon/bootstrap` and `/mnt/watermelon/state` subtrees are reserved. This dedicated namespace prevents additional mounts from shadowing guest system, home, policy, or project paths. Applications do not automatically treat these paths as home-directory configuration: point the relevant tool at the mounted file or directory explicitly.
 
 **Note:** With the default `mount_project = true`, the project directory is separately mounted at `/project` with read-write access. It is absent when `mount_project = false`.
 
@@ -313,6 +320,7 @@ Ports to forward from the VM to the host machine.
 
 **Port requirements:**
 - Must be in range 1-65535
+- Must not be listed more than once
 - Ports are forwarded bidirectionally (guest port = host port)
 
 ```toml
@@ -348,7 +356,7 @@ VM resource allocation.
 | `cpus` | int | `1` | Number of CPU cores (minimum: 1) |
 | `disk` | string | `"10GB"` | Disk size |
 
-**Size format:** Number followed by unit (`MB`, `GB`, `TB`)
+**Size format:** Positive integer without a leading zero, followed by an uppercase unit (`MB`, `GB`, `TB`)
 
 ```toml
 [resources]
@@ -399,7 +407,9 @@ enforcement = "fail"
 
 `ask` requires a foreground Watermelon process to host its verdict server. `watermelon run --no-shell` is therefore rejected: use interactive `watermelon run` and keep its shell open. `watermelon exec` keeps prompts available until the guest command exits. `watermelon code` passes the configured IDE command `--wait` and remains in the foreground, keeping prompts available until the remote IDE window exits.
 
-The observed process in a prompt is informational. **Always Allow and Save** immediately permits the displayed TCP host and port for every process in the current VM runtime, but persists a broader rule: the bare host is added to the global `[network].allow` list with no process, protocol, or port scope. Managed DNS redirection still applies. Applying that saved rule to future VM sessions requires destroying and recreating the VM after the current Watermelon session. Watermelon prints an exact command pinned to the selected VM name, so a later configuration edit cannot retarget the destructive operation; recreation removes VM-local state. Until then, the applied-policy snapshot is stale. The next `run`, `exec`, or `code` refuses the stale configuration and stops a securely bound running VM before returning the recreation instruction.
+The observed process and displayed hostname in a prompt are informational. **Always Allow and Save** immediately permits the underlying literal IPv4 address and TCP port for every process in the current VM runtime, but persists a broader rule: the displayed bare hostname—or the IP when no hostname was attributed—is added to the global `[network].allow` list with no process, protocol, or port scope. Managed DNS redirection still applies. Applying that saved rule to future VM sessions requires destroying and recreating the VM after the current Watermelon session. Watermelon prints an exact command pinned to the selected VM name, so a later configuration edit cannot retarget the destructive operation; recreation removes VM-local state. Until then, the applied-policy snapshot is stale. The next `run`, `exec`, or `code` refuses the stale configuration and stops a securely bound running VM before returning the recreation instruction.
+
+The displayed DNS label is untrusted metadata learned from a recent, structurally valid IPv4 DNS A/IN response and is always shown alongside the literal destination IP. The current interceptor does not correlate responses with an outstanding query, so the label is not proof that the workload requested that hostname. Attribution follows a CNAME chain and expires at its shortest bounded TTL; absent or shared-IP attribution is displayed as only the literal IP. A TCP SYN carries only its destination IP and port, so runtime block and always-allow verdicts are cached by that literal endpoint, not by the informational label. A direct-IP connection or another hostname reaching the same IP and port therefore reuses the endpoint's existing verdict; the same hostname moving to another IP prompts separately. Hostname attribution does not provide hostname-scoped isolation.
 
 On Linux, terminal verdicts use the foreground controlling terminal independently of guest stdin. Interactive guest input forwarding pauses for the duration of a prompt. Redirected `watermelon exec` stdin remains dedicated to the guest, while verdicts continue to use the controlling terminal; without one, non-allowlisted requests block by default. macOS uses a native dialog and does not depend on terminal stdin.
 
@@ -554,7 +564,7 @@ A present configuration is parsed strictly and validated before Watermelon uses 
 
 2. **Resources:**
    - `cpus` must be ≥ 1
-   - `memory` and `disk` must be non-empty
+   - `memory` and `disk` must be positive integers followed by `MB`, `GB`, or `TB`
 
 3. **Security:**
    - `enforcement` must be one of: `log`, `fail`, `silent`, `ask`
@@ -562,12 +572,15 @@ A present configuration is parsed strictly and validated before Watermelon uses 
 4. **Network:**
    - Domains are parsed as plain hosts, wildcard subdomains, IPv4 addresses, or host/IP plus TCP port
    - Wildcard domains cannot include ports
+   - At most 255 per-process rules may be configured
 
 5. **Ports:**
    - Each port must be in range 1-65535
+   - Duplicate port entries are rejected
 
 6. **Provisioning:**
-   - Package names and script paths reject unsafe shell syntax
+   - Package specifications are passed as individual arguments and reject leading options, whitespace, control characters, and unsafe shell syntax
+   - Provisioning requires the exact package-manager command to be declared exactly once in `[tools]`
    - Script paths must be project-relative, contain no `..` component, and contain no symlink component
    - Scripts must pass the ownership, regular-file, UTF-8, and size checks described above
 

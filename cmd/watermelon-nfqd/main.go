@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,7 +19,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -48,9 +46,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("load verdict authentication key: %v", err)
 	}
+	if err := runNFQDaemon(*serverAddr, authKey); err != nil {
+		log.Fatalf("watermelon-nfqd: %v", err)
+	}
+}
 
-	var cache sync.Map
-	var dnsCache sync.Map // IP string → domain string
+func runNFQDaemon(serverAddr string, authKey ask.AuthKey) error {
+	dnsCache := newDNSAttributionCache(defaultDNSCacheEntries, defaultDNSCacheMaxTTL)
 
 	config := nfqueue.Config{
 		NfQueue:      0,
@@ -61,119 +63,52 @@ func main() {
 
 	nf, err := nfqueue.Open(&config)
 	if err != nil {
-		log.Fatalf("open nfqueue: %v", err)
+		return fmt.Errorf("open TCP nfqueue: %w", err)
 	}
-	defer nf.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() {
+		cancel()
+		_ = nf.Close()
+	}()
 
-	hookFunc := func(a nfqueue.Attribute) int {
-		if a.Payload == nil || len(*a.Payload) < 20 {
-			if a.PacketID != nil {
-				nf.SetVerdict(*a.PacketID, nfqueue.NfDrop)
-			}
-			return 0
-		}
+	tcpHandler := newTCPPacketHandler(
+		nf,
+		dnsCache,
+		func(req ask.VerdictRequest) (string, bool) { return askServer(serverAddr, authKey, req) },
+		resolveProcess,
+	)
 
-		payload := *a.Payload
-		dstIP := net.IPv4(payload[16], payload[17], payload[18], payload[19])
-
-		dstPort := 0
-		ihl := int(payload[0]&0x0f) * 4
-		if len(payload) >= ihl+4 {
-			dstPort = int(binary.BigEndian.Uint16(payload[ihl+2 : ihl+4]))
-		}
-
-		srcPort := 0
-		if len(payload) >= ihl+2 {
-			srcPort = int(binary.BigEndian.Uint16(payload[ihl : ihl+2]))
-		}
-
-		ipStr := dstIP.String()
-
-		// DNS snooping supplies the original hostname when the workload resolved
-		// one. For a direct-IP connection, prompt with the IP immediately. A
-		// synchronous reverse lookup here would hold the NFQUEUE packet (and the
-		// workload's connect call) before a verdict request can reach the host.
-		domain := verdictDestination(ipStr, &dnsCache)
-
-		// Cache by domain (not IP) so shared-IP domains get independent verdicts
-		cacheKey := fmt.Sprintf("%s:%d", domain, dstPort)
-		if v, ok := cache.Load(cacheKey); ok {
-			verdict := v.(string)
-			if verdict == ask.VerdictBlock {
-				nf.SetVerdict(*a.PacketID, nfqueue.NfDrop)
-			} else {
-				nf.SetVerdict(*a.PacketID, nfqueue.NfAccept)
-			}
-			return 0
-		}
-
-		process := resolveProcess(srcPort)
-
-		verdict := askServer(*serverAddr, authKey, ask.VerdictRequest{
-			Domain:  domain,
-			Port:    dstPort,
-			Process: process,
-			IP:      ipStr,
-		})
-
-		// Only cache block and always-allow; allow-once should re-prompt
-		if verdict != ask.VerdictAllowOnce {
-			cache.Store(cacheKey, verdict)
-		}
-
-		if verdict == ask.VerdictBlock {
-			nf.SetVerdict(*a.PacketID, nfqueue.NfDrop)
-		} else {
-			nf.SetVerdict(*a.PacketID, nfqueue.NfAccept)
-		}
-		return 0
+	fatalQueueErrors := make(chan error, 2)
+	tcpErrFunc := func(err error) int {
+		return handleNFQueueReceiveError("TCP", fatalQueueErrors, err)
 	}
 
-	errFunc := func(e error) int {
-		log.Printf("nfqueue error: %v", e)
-		return 0
-	}
-
-	err = nf.RegisterWithErrorFunc(ctx, hookFunc, errFunc)
+	err = nf.RegisterWithErrorFunc(ctx, tcpHandler.Handle, tcpErrFunc)
 	if err != nil {
-		log.Fatalf("register handler: %v", err)
+		return fmt.Errorf("register TCP nfqueue handler: %w", err)
 	}
 
 	// DNS snooping queue (queue 1) — intercept DNS responses to build IP→domain map
 	dnsConfig := nfqueue.Config{
 		NfQueue:      1,
-		MaxPacketLen: 512,
+		MaxPacketLen: dnsQueueMaxPacketLen,
 		MaxQueueLen:  256,
 		Copymode:     nfqueue.NfQnlCopyPacket,
 	}
 	dnsNf, err := nfqueue.Open(&dnsConfig)
 	if err != nil {
-		log.Fatalf("open dns nfqueue: %v", err)
+		return fmt.Errorf("open DNS nfqueue: %w", err)
 	}
-	defer dnsNf.Close()
+	defer func() { _ = dnsNf.Close() }()
 
-	dnsHook := func(a nfqueue.Attribute) int {
-		if a.Payload == nil || len(*a.Payload) < 28 {
-			if a.PacketID != nil {
-				dnsNf.SetVerdict(*a.PacketID, nfqueue.NfAccept)
-			}
-			return 0
-		}
-		mappings := parseDNSResponse(*a.Payload)
-		for ip, domain := range mappings {
-			dnsCache.Store(ip, domain)
-		}
-		if a.PacketID != nil {
-			dnsNf.SetVerdict(*a.PacketID, nfqueue.NfAccept)
-		}
-		return 0
+	dnsHook := func(a nfqueue.Attribute) int { return handleDNSPacket(dnsNf, dnsCache, a) }
+	dnsErrFunc := func(err error) int {
+		return handleNFQueueReceiveError("DNS", fatalQueueErrors, err)
 	}
-	err = dnsNf.RegisterWithErrorFunc(ctx, dnsHook, errFunc)
+	err = dnsNf.RegisterWithErrorFunc(ctx, dnsHook, dnsErrFunc)
 	if err != nil {
-		log.Fatalf("register dns handler: %v", err)
+		return fmt.Errorf("register DNS nfqueue handler: %w", err)
 	}
 
 	log.Println("watermelon-nfqd running, intercepting TCP SYN packets...")
@@ -181,18 +116,34 @@ func main() {
 	// Block until SIGINT or SIGTERM
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	log.Println("shutting down...")
-	cancel()
+	defer signal.Stop(sigCh)
+	select {
+	case <-sigCh:
+		log.Println("shutting down...")
+		cancel()
+		return nil
+	case err := <-fatalQueueErrors:
+		cancel()
+		return err
+	}
 }
 
-func verdictDestination(ip string, dnsCache *sync.Map) string {
-	if domain, ok := dnsCache.Load(ip); ok {
-		if rendered, ok := domain.(string); ok && rendered != "" {
-			return rendered
-		}
+// handleNFQueueReceiveError tells go-nfqueue to continue only when the error is
+// explicitly retryable. Permanent receive failures stop that queue and are
+// propagated to main so systemd observes a non-zero daemon exit and restarts it.
+func handleNFQueueReceiveError(queueName string, fatalErrors chan<- error, err error) int {
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		log.Printf("temporary %s nfqueue receive error: %v", queueName, err)
+		return 0
 	}
-	return ip
+
+	fatalErr := fmt.Errorf("%s nfqueue receive failed: %w", queueName, err)
+	select {
+	case fatalErrors <- fatalErr:
+	default:
+	}
+	return 1
 }
 
 // resolveProcess attempts to find the process name that owns the TCP connection
@@ -260,43 +211,46 @@ func resolveProcess(srcPort int) string {
 	return ""
 }
 
-func askServer(addr string, authKey ask.AuthKey, req ask.VerdictRequest) string {
+// askServer returns the verdict and whether it came from an authenticated host
+// response. Callers fail closed on false but must not cache that transient
+// transport/authentication failure as though it were an explicit user block.
+func askServer(addr string, authKey ask.AuthKey, req ask.VerdictRequest) (string, bool) {
 	if err := ask.AuthenticateRequest(authKey, &req); err != nil {
 		log.Printf("failed to authenticate verdict request: %v (blocking)", err)
-		return ask.VerdictBlock
+		return ask.VerdictBlock, false
 	}
 
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		log.Printf("verdict server unreachable: %v (blocking)", err)
-		return ask.VerdictBlock
+		return ask.VerdictBlock, false
 	}
 	defer conn.Close()
 
 	if err := conn.SetWriteDeadline(time.Now().Add(verdictWriteTimeout)); err != nil {
 		log.Printf("failed to set verdict request deadline: %v (blocking)", err)
-		return ask.VerdictBlock
+		return ask.VerdictBlock, false
 	}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		log.Printf("failed to send request: %v (blocking)", err)
-		return ask.VerdictBlock
+		return ask.VerdictBlock, false
 	}
 
 	if err := conn.SetReadDeadline(time.Now().Add(verdictResponseTimeout)); err != nil {
 		log.Printf("failed to set verdict response deadline: %v (blocking)", err)
-		return ask.VerdictBlock
+		return ask.VerdictBlock, false
 	}
 	resp, err := decodeVerdictResponse(conn)
 	if err != nil {
 		log.Printf("failed to read response: %v (blocking)", err)
-		return ask.VerdictBlock
+		return ask.VerdictBlock, false
 	}
 	if !ask.VerifyResponse(authKey, req, resp) {
 		log.Printf("verdict server returned an unauthenticated or invalid response (blocking)")
-		return ask.VerdictBlock
+		return ask.VerdictBlock, false
 	}
 
-	return resp.Verdict
+	return resp.Verdict, true
 }
 
 func decodeVerdictResponse(conn net.Conn) (ask.VerdictResponse, error) {

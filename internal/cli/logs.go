@@ -27,7 +27,6 @@ func NewLogsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dir = target.ProjectRoot
 			lifecycleLock, err := acquireVMLifecycleLock(target.VMName)
 			if err != nil {
 				return fmt.Errorf("locking VM %q lifecycle: %w", target.VMName, err)

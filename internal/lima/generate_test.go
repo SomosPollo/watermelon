@@ -131,6 +131,18 @@ func TestGenerateConfigValidation(t *testing.T) {
 			t.Errorf("expected 'invalid port forward' in error, got: %v", err)
 		}
 	})
+
+	t.Run("rejects managed mount root before generation", func(t *testing.T) {
+		cfg := config.NewConfig()
+		cfg.Mounts = map[string]config.Mount{
+			"/host/shared": {Target: "/mnt/watermelon"},
+		}
+
+		_, err := GenerateConfig(cfg, "/test")
+		if err == nil || !strings.Contains(err.Error(), "managed mount root") {
+			t.Fatalf("GenerateConfig() error = %v, want managed mount root rejection", err)
+		}
+	})
 }
 
 func TestGenerateConfigRejectsUnsafeProjectPaths(t *testing.T) {
@@ -608,6 +620,41 @@ func TestGenerateConfigEnforcementModes(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigLogWriterUsesVerifiedNoFollowDescriptor(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Security.Enforcement = config.EnforcementFail
+	yaml, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		`os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK`,
+		`os.open(component, directory_flags, dir_fd=current)`,
+		`stat.S_ISREG(info.st_mode)`,
+		`info.st_nlink != 1`,
+		`max_log_bytes = 16 * 1024 * 1024`,
+		`os.ftruncate(log_fd, 0)`,
+		`os.write(log_fd, view)`,
+	} {
+		if !strings.Contains(yaml, required) {
+			t.Errorf("secure log writer is missing %q", required)
+		}
+	}
+	if strings.Contains(yaml, `>> /project/.watermelon/logs.log`) {
+		t.Fatal("log writer still uses a path-following shell append")
+	}
+	for _, forbidden := range []string{
+		`/bin/mkdir -p -- '/project/.watermelon'`,
+		`/bin/chown "$WM_USER:$WM_USER" -- '/project/.watermelon'`,
+		`/bin/chown "$_WM_USER:$_WM_USER" -- '/project/.watermelon'`,
+		`/bin/chmod 0700 -- '/project/.watermelon'`,
+	} {
+		if strings.Contains(yaml, forbidden) {
+			t.Fatalf("root provisioning must not follow or mutate the guest-controlled project log directory: found %q", forbidden)
+		}
+	}
+}
+
 func TestGenerateConfigDomainWithPort(t *testing.T) {
 	cfg := config.NewConfig()
 	cfg.Network.Allow = []string{"example.com:443"}
@@ -671,7 +718,7 @@ func TestGenerateConfigWithProvision(t *testing.T) {
 	if !strings.Contains(yaml, `nerdctl run --name watermelon-npm-build --network=host "node:20-slim"`) {
 		t.Error("expected yaml to build custom npm image from base image")
 	}
-	if !strings.Contains(yaml, "npm install -g @anthropic-ai/claude-code typescript") {
+	if !strings.Contains(yaml, "'npm' 'install' '-g' '@anthropic-ai/claude-code' 'typescript'") {
 		t.Error("expected yaml to install npm packages in custom image")
 	}
 	if !strings.Contains(yaml, "nerdctl commit watermelon-npm-build watermelon-npm") {
@@ -682,7 +729,7 @@ func TestGenerateConfigWithProvision(t *testing.T) {
 	if !strings.Contains(yaml, `nerdctl run --name watermelon-pip-build --network=host "python:3.12-slim"`) {
 		t.Error("expected yaml to build custom pip image from base image")
 	}
-	if !strings.Contains(yaml, "pip install aider-chat") {
+	if !strings.Contains(yaml, "'pip' 'install' 'aider-chat'") {
 		t.Error("expected yaml to install pip packages in custom image")
 	}
 
@@ -705,6 +752,48 @@ func TestGenerateConfigWithProvision(t *testing.T) {
 	// Ensure wrappers exist for provisioned package commands even if base image already has them
 	if !strings.Contains(yaml, "for _bin in claude-code typescript; do") {
 		t.Error("expected yaml to ensure wrappers for npm provisioned package commands")
+	}
+}
+
+func TestGenerateConfigProvisionUsesQuotedArgumentsWithoutContainerShell(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Tools = map[string][]string{
+		"acme.example/python-tools:1": {"pip"},
+	}
+	cfg.Provision.Pip = []string{
+		"requests[socks]>=2,<3",
+		"package==2.*",
+		"https://example.com/archive.whl?download=1#sha256=abc",
+		">/etc/passwd",
+		"*",
+	}
+
+	generated, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("GenerateConfig() error = %v", err)
+	}
+	want := `--network=host "acme.example/python-tools:1" 'pip' 'install' 'requests[socks]>=2,<3' 'package==2.*' 'https://example.com/archive.whl?download=1#sha256=abc' '>/etc/passwd' '*'`
+	if !strings.Contains(generated, want) {
+		t.Fatalf("generated provision command does not preserve quoted package arguments; want %q", want)
+	}
+	if strings.Contains(generated, `--network=host "acme.example/python-tools:1" sh -c`) {
+		t.Fatal("generated provision command still executes package input through a container shell")
+	}
+}
+
+func TestGenerateConfigConvertsAllDocumentedResourceUnits(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Resources.Memory = "512MB"
+	cfg.Resources.Disk = "1TB"
+
+	generated, err := GenerateConfig(cfg, "/test/project")
+	if err != nil {
+		t.Fatalf("GenerateConfig() error = %v", err)
+	}
+	for _, want := range []string{`memory: "512MiB"`, `disk: "1TiB"`} {
+		if !strings.Contains(generated, want) {
+			t.Errorf("generated config missing %q", want)
+		}
 	}
 }
 
@@ -791,7 +880,7 @@ func TestGenerateConfigWithCargoProvision(t *testing.T) {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	if !strings.Contains(yaml, "cargo install ripgrep fd-find") {
+	if !strings.Contains(yaml, "'cargo' 'install' 'ripgrep' 'fd-find'") {
 		t.Error("expected yaml to install cargo packages in custom image")
 	}
 	if !strings.Contains(yaml, "nerdctl commit watermelon-cargo-build watermelon-cargo") {
@@ -815,7 +904,7 @@ func TestGenerateConfigWithGoProvision(t *testing.T) {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	if !strings.Contains(yaml, "go install github.com/junegunn/fzf@latest") {
+	if !strings.Contains(yaml, "'go' 'install' 'github.com/junegunn/fzf@latest'") {
 		t.Error("expected yaml to install go packages in custom image")
 	}
 	if !strings.Contains(yaml, "nerdctl commit watermelon-go-build watermelon-go") {
@@ -835,7 +924,7 @@ func TestGenerateConfigWithGemProvision(t *testing.T) {
 		t.Fatalf("failed to generate: %v", err)
 	}
 
-	if !strings.Contains(yaml, "gem install rails bundler") {
+	if !strings.Contains(yaml, "'gem' 'install' 'rails' 'bundler'") {
 		t.Error("expected yaml to install gem packages in custom image")
 	}
 	if !strings.Contains(yaml, "nerdctl commit watermelon-gem-build watermelon-gem") {
@@ -1141,7 +1230,7 @@ func TestGenerateConfigPrivilegedScriptsIgnoreToolNameCollisions(t *testing.T) {
 	cfg.Security.Enforcement = "fail"
 	cfg.Tools = map[string][]string{
 		"alpine:3.20": {
-			"awk", "cat", "iptables", "nerdctl", "sudo", "systemctl",
+			"awk", "cat", "iptables", "sudo", "systemctl",
 			"watermelon-log-writer", "watermelon-nfqd",
 		},
 	}
@@ -1161,7 +1250,19 @@ func TestGenerateConfigPrivilegedScriptsIgnoreToolNameCollisions(t *testing.T) {
 	earlyScript := extractHeredocBody(t, generated, "<< 'EARLYFIREWALL'", "EARLYFIREWALL")
 	assertRenderedBefore(t, earlyScript, "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "iptables -w -P OUTPUT DROP")
 	logWriter := extractHeredocBody(t, generated, "<< 'LOGWRITER'", "LOGWRITER")
-	assertRenderedBefore(t, logWriter, trustedPath, "mkdir -p /project/.watermelon")
+	if !strings.HasPrefix(logWriter, "#!/usr/bin/python3\n") {
+		t.Fatalf("privileged log writer does not use the absolute trusted interpreter path:\n%s", logWriter[:min(len(logWriter), 240)])
+	}
+	if strings.Contains(logWriter, "/usr/local/bin") {
+		t.Fatal("privileged log writer refers to the user-wrapper directory")
+	}
+	if python, err := exec.LookPath("python3"); err == nil {
+		cmd := exec.Command(python, "-c", `import sys; compile(sys.stdin.read(), "<watermelon-log-writer>", "exec")`)
+		cmd.Stdin = strings.NewReader(logWriter)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("generated Python log writer has invalid syntax: %v\n%s", err, output)
+		}
+	}
 
 	for _, want := range []string{
 		`_WM_NERDCTL=/usr/local/libexec/watermelon/nerdctl`,
@@ -1427,6 +1528,17 @@ func TestGenerateConfigAskMode(t *testing.T) {
 	serviceLine := strings.SplitN(yaml[serviceStart:], "\n", 2)[0]
 	if strings.Contains(serviceLine, testVerdictAuthKey) {
 		t.Fatal("nfqd service command exposed the authentication key in argv")
+	}
+}
+
+func TestGenerateConfigAskModeRejectsVerdictPortForwardCollision(t *testing.T) {
+	cfg := config.NewConfig()
+	cfg.Security.Enforcement = "ask"
+	cfg.Ports.Forward = []int{40123}
+
+	_, err := generateConfigForTest(cfg, "/test/project", 40123)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with configured host port forward") {
+		t.Fatalf("GenerateConfig() error = %v, want verdict/forward port collision", err)
 	}
 }
 

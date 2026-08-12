@@ -23,18 +23,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// findImageForCommand returns the container image that provides a given command
-func findImageForCommand(tools map[string][]string, cmd string) string {
-	for image, cmds := range tools {
-		for _, c := range cmds {
-			if c == cmd {
-				return image
-			}
-		}
-	}
-	return ""
-}
-
 // validatePort checks that a port is within the valid range 1-65535
 func validatePort(port int) error {
 	if port < 1 || port > 65535 {
@@ -461,31 +449,90 @@ provision:
 {{- end }}
 {{- if .LogUnknown }}
       if [ "$_WM_FIRST_BOOT" = true ]; then
-      # Forward kernel firewall logs into the instance's durable log path.
-{{- if eq .LogDir "/project/.watermelon" }}
-      /usr/sbin/runuser -u "$_WM_USER" -- /bin/mkdir -p /project/.watermelon
-      /usr/sbin/runuser -u "$_WM_USER" -- /usr/bin/touch /project/.watermelon/logs.log
-{{- else }}
+      # Forward kernel firewall logs through a root-owned helper. It walks the
+      # destination without following symlinks and holds the verified append
+      # descriptor open, so a guest path swap cannot redirect journal output
+      # into another mounted project file.
 {{- if .LogInGuest }}
       /bin/mkdir -p -- {{ shellQuote .LogDir }}
       /bin/chown "$_WM_USER:$_WM_USER" -- {{ shellQuote .LogDir }}
+      /bin/chmod 0700 -- {{ shellQuote .LogDir }}
 {{- end }}
-      /usr/sbin/runuser -u "$_WM_USER" -- /bin/mkdir -p -- {{ shellQuote .LogDir }}
-      /usr/sbin/runuser -u "$_WM_USER" -- /usr/bin/touch -- {{ shellQuote .LogPath }}
-{{- end }}
+      if [ ! -x /usr/bin/python3 ]; then
+        echo "supported Ubuntu image is missing /usr/bin/python3 for the secure log writer" >&2
+        exit 1
+      fi
       _WM_LOG_WRITER_TMP=$(/usr/bin/mktemp /usr/local/libexec/watermelon/.log-writer.XXXXXX)
       /bin/cat > "$_WM_LOG_WRITER_TMP" << 'LOGWRITER'
-      #!/bin/bash
-      export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-{{- if eq .LogDir "/project/.watermelon" }}
-      mkdir -p /project/.watermelon
-      touch /project/.watermelon/logs.log
-      exec journalctl -kf -o short-iso | awk '/watermelon-net / { print; fflush(); }' >> /project/.watermelon/logs.log
-{{- else }}
-      mkdir -p -- {{ shellQuote .LogDir }}
-      touch -- {{ shellQuote .LogPath }}
-      exec journalctl -kf -o short-iso | awk '/watermelon-net / { print; fflush(); }' >> {{ shellQuote .LogPath }}
-{{- end }}
+      #!/usr/bin/python3
+      import os
+      import stat
+      import subprocess
+      import sys
+
+      log_path = {{ yamlQuote .LogPath }}
+      max_log_bytes = 16 * 1024 * 1024
+      directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+
+      def open_log_parent(target):
+          components = [part for part in os.path.dirname(target).split("/") if part]
+          current = os.open("/", directory_flags)
+          try:
+              for index, component in enumerate(components):
+                  try:
+                      next_fd = os.open(component, directory_flags, dir_fd=current)
+                  except FileNotFoundError:
+                      if index != len(components) - 1:
+                          raise
+                      os.mkdir(component, mode=0o700, dir_fd=current)
+                      next_fd = os.open(component, directory_flags, dir_fd=current)
+                  os.close(current)
+                  current = next_fd
+              info = os.fstat(current)
+              if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                  raise RuntimeError("log directory must be a real directory owned by the VM user")
+              os.fchmod(current, 0o700)
+              return current, os.path.basename(target)
+          except BaseException:
+              os.close(current)
+              raise
+
+      parent_fd, filename = open_log_parent(log_path)
+      try:
+          log_fd = os.open(
+              filename,
+              os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+              0o600,
+              dir_fd=parent_fd,
+          )
+      finally:
+          os.close(parent_fd)
+
+      info = os.fstat(log_fd)
+      if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+          os.close(log_fd)
+          raise RuntimeError("log path must be a singly-linked regular file owned by the VM user")
+      os.fchmod(log_fd, 0o600)
+
+      journal = subprocess.Popen(
+          ["/usr/bin/journalctl", "-kf", "-o", "short-iso"],
+          stdout=subprocess.PIPE,
+          bufsize=0,
+      )
+      assert journal.stdout is not None
+      for line in journal.stdout:
+          if b"watermelon-net " not in line:
+              continue
+          if os.fstat(log_fd).st_size + len(line) > max_log_bytes:
+              # Rotate in place so host-side clear/read operations and this
+              # long-lived verified descriptor continue to share one inode.
+              os.ftruncate(log_fd, 0)
+          view = memoryview(line)
+          while view:
+              written = os.write(log_fd, view)
+              view = view[written:]
+      os.close(log_fd)
+      sys.exit(journal.wait())
       LOGWRITER
       /bin/chown root:root "$_WM_LOG_WRITER_TMP"
       /bin/chmod 0755 "$_WM_LOG_WRITER_TMP"
@@ -709,7 +756,7 @@ provision:
       # traffic traverse that policy instead of a separate container egress path.
 {{- range .ProvisionBuilds }}
       wm_nerdctl rm -f {{ .CustomTag }}-build 2>/dev/null || true
-      wm_nerdctl run --name {{ .CustomTag }}-build --network=host "{{ .BaseImage }}" sh -c '{{ .InstallCmd }} {{ join .Packages " " }}'
+      wm_nerdctl run --name {{ .CustomTag }}-build --network=host "{{ .BaseImage }}"{{ range .InstallArgs }} {{ shellQuote . }}{{ end }}
       wm_nerdctl commit {{ .CustomTag }}-build {{ .CustomTag }}
       wm_nerdctl rm {{ .CustomTag }}-build
 {{- end }}
@@ -1143,12 +1190,11 @@ portForwards:
 `
 
 type provisionBuild struct {
-	BaseImage  string
-	CustomTag  string
-	InstallCmd string
-	Packages   []string
-	BinDirs    string
-	ExposeBins []string
+	BaseImage   string
+	CustomTag   string
+	InstallArgs []string
+	BinDirs     string
+	ExposeBins  []string
 }
 
 type smartWrapper struct {
@@ -1410,6 +1456,10 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 	if err := config.Validate(cfg); err != nil {
 		return "", err
 	}
+	toolProviders, err := config.BuildToolCommandProviders(cfg.Tools)
+	if err != nil {
+		return "", err
+	}
 	if err := validateProjectDir(projectDir); err != nil {
 		return "", err
 	}
@@ -1480,18 +1530,18 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 
 	// Build provision data: custom images and tool image overrides
 	type provSpec struct {
-		pkgs       []string
-		cmd        string
-		installCmd string
-		tag        string
-		binDirs    string
+		pkgs        []string
+		cmd         string
+		installArgs []string
+		tag         string
+		binDirs     string
 	}
 	specs := []provSpec{
-		{cfg.Provision.Npm, "npm", "npm install -g", "watermelon-npm", "/usr/local/bin"},
-		{cfg.Provision.Pip, "pip", "pip install", "watermelon-pip", "/usr/local/bin"},
-		{cfg.Provision.Cargo, "cargo", "cargo install", "watermelon-cargo", "/usr/local/cargo/bin /usr/local/bin"},
-		{cfg.Provision.Go, "go", "go install", "watermelon-go", "/go/bin /usr/local/bin"},
-		{cfg.Provision.Gem, "gem", "gem install", "watermelon-gem", "/usr/local/bin"},
+		{cfg.Provision.Npm, "npm", []string{"npm", "install", "-g"}, "watermelon-npm", "/usr/local/bin"},
+		{cfg.Provision.Pip, "pip", []string{"pip", "install"}, "watermelon-pip", "/usr/local/bin"},
+		{cfg.Provision.Cargo, "cargo", []string{"cargo", "install"}, "watermelon-cargo", "/usr/local/cargo/bin /usr/local/bin"},
+		{cfg.Provision.Go, "go", []string{"go", "install"}, "watermelon-go", "/go/bin /usr/local/bin"},
+		{cfg.Provision.Gem, "gem", []string{"gem", "install"}, "watermelon-gem", "/usr/local/bin"},
 	}
 
 	var provisionBuilds []provisionBuild
@@ -1506,7 +1556,7 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 				return "", fmt.Errorf("invalid %s package: %w", spec.cmd, err)
 			}
 		}
-		img := findImageForCommand(cfg.Tools, spec.cmd)
+		img := toolProviders[spec.cmd]
 		if img == "" {
 			return "", fmt.Errorf("provision.%s requires %s in [tools]; add a container image that provides %s", spec.cmd, spec.cmd, spec.cmd)
 		}
@@ -1515,13 +1565,14 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 			return "", fmt.Errorf("invalid exposed %s command: %w", spec.cmd, err)
 		}
 		imageOverrides[img] = spec.tag
+		installArgs := append([]string(nil), spec.installArgs...)
+		installArgs = append(installArgs, spec.pkgs...)
 		provisionBuilds = append(provisionBuilds, provisionBuild{
-			BaseImage:  img,
-			CustomTag:  spec.tag,
-			InstallCmd: spec.installCmd,
-			Packages:   spec.pkgs,
-			BinDirs:    spec.binDirs,
-			ExposeBins: exposeBins,
+			BaseImage:   img,
+			CustomTag:   spec.tag,
+			InstallArgs: installArgs,
+			BinDirs:     spec.binDirs,
+			ExposeBins:  exposeBins,
 		})
 	}
 
@@ -1572,7 +1623,7 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 
 	var smartWrappers []smartWrapper
 	for _, ws := range wrapperSpecs {
-		if img := findImageForCommand(cfg.Tools, ws.cmd); img != "" {
+		if img := toolProviders[ws.cmd]; img != "" {
 			smartWrappers = append(smartWrappers, smartWrapper{
 				Cmd:         ws.cmd,
 				BaseImage:   img,
@@ -1583,7 +1634,15 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 		}
 	}
 
-	networkProcessImages := buildNetworkProcessImages(tools, cfg.Network.Process)
+	effectiveToolProviders := make(map[string]string, len(toolProviders))
+	for command, image := range toolProviders {
+		if override, ok := imageOverrides[image]; ok {
+			effectiveToolProviders[command] = override
+		} else {
+			effectiveToolProviders[command] = image
+		}
+	}
+	networkProcessImages := buildNetworkProcessImages(effectiveToolProviders, cfg.Network.Process)
 
 	// Collect container images that need to be copied to rootful store
 	// when network process namespaces are in use.
@@ -1669,6 +1728,11 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 		}
 		if verdictPort == 0 {
 			verdictPort = 39285 // fallback
+		}
+		for _, forwardedPort := range cfg.Ports.Forward {
+			if verdictPort == forwardedPort {
+				return "", fmt.Errorf("verdict server port %d conflicts with configured host port forward", verdictPort)
+			}
 		}
 		if !validLowerSHA256(opts.NfqdSHA256) {
 			return "", fmt.Errorf("ask enforcement requires a lowercase SHA-256 digest for watermelon-nfqd")
@@ -2068,20 +2132,31 @@ func npmPackageToCommand(pkg string) string {
 	return name
 }
 
-// convertMemory converts "4GB" to "4GiB" for Lima
+// convertMemory converts Watermelon's decimal-looking resource syntax to the
+// binary unit spelling Lima expects.
 func convertMemory(mem string) string {
-	return strings.Replace(mem, "GB", "GiB", 1)
+	return convertResourceSize(mem)
 }
 
-// convertDisk converts "20GB" to "20GiB" for Lima
+// convertDisk converts Watermelon's decimal-looking resource syntax to the
+// binary unit spelling Lima expects.
 func convertDisk(disk string) string {
-	return strings.Replace(disk, "GB", "GiB", 1)
+	return convertResourceSize(disk)
 }
 
-func buildNetworkProcessImages(tools map[string][]string, processes map[string][]string) map[string]string {
+func convertResourceSize(size string) string {
+	for _, unit := range []string{"MB", "GB", "TB"} {
+		if strings.HasSuffix(size, unit) {
+			return strings.TrimSuffix(size, unit) + string(unit[0]) + "iB"
+		}
+	}
+	return size
+}
+
+func buildNetworkProcessImages(providers map[string]string, processes map[string][]string) map[string]string {
 	images := make(map[string]string)
 	for proc := range processes {
-		if img := findImageForCommand(tools, proc); img != "" {
+		if img := providers[proc]; img != "" {
 			images[proc] = img
 		}
 	}

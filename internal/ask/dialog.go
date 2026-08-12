@@ -12,8 +12,10 @@ import (
 	"golang.org/x/term"
 )
 
-// DialogFunc is the function signature for showing a verdict dialog.
-type DialogFunc func(process, domain string, port int, project string) string
+// DialogFunc is the function signature for showing a verdict dialog. The
+// destination argument is already formatted as either an IP address or an
+// untrusted DNS label accompanied by its literal IP.
+type DialogFunc func(process, destination string, port int, project string) string
 
 // ShowDialog displays the best available host prompt and returns the verdict.
 func ShowDialog(process, domain string, port int, project string) string {
@@ -94,11 +96,11 @@ func writeTerminalPromptContext(out io.Writer, process, domain string, port int,
 
 	fmt.Fprintf(out, "\nWatermelon network prompt\n")
 	fmt.Fprintf(out, "Observed process (informational): %q\n", process)
-	fmt.Fprintf(out, "Requested TCP destination: %s:%d\n", domain, port)
+	fmt.Fprintf(out, "Requested TCP destination (DNS label is untrusted metadata): %s:%d\n", domain, port)
 	if project != "" {
 		fmt.Fprintf(out, "Project: %s\n", project)
 	}
-	fmt.Fprintf(out, "Always allow and save: add %q as a global host-only rule with no process, protocol, or port scope.\n", domain)
+	fmt.Fprintln(out, "Always allow and save: add the observed DNS label, or the literal IP when no label was observed, as a global host-only rule with no process, protocol, or port scope.")
 	fmt.Fprintln(out, "Managed DNS remains enforced. VM recreation is required to apply the saved rule to future sessions.")
 }
 
@@ -138,12 +140,12 @@ func buildAppleScript(process, domain string, port int, project string) string {
 	project = escapeAppleScript(project)
 
 	return fmt.Sprintf(
-		`display dialog ("Observed process (informational): " & quote & "%s" & quote & "\nRequested TCP destination: %s:%d\n\nProject: %s\n\nBlock is remembered for this session.\nAlways Allow saves " & quote & "%s" & quote & " as a global host-only rule with no process, protocol, or port scope.\nManaged DNS remains enforced. VM recreation is required to apply the saved rule to future sessions.") `+
+		`display dialog ("Observed process (informational): " & quote & "%s" & quote & "\nRequested TCP destination (DNS label is untrusted metadata): %s:%d\n\nProject: %s\n\nBlock is remembered for this session.\nAlways Allow saves the observed DNS label, or the literal IP when no label was observed, as a global host-only rule with no process, protocol, or port scope.\nManaged DNS remains enforced. VM recreation is required to apply the saved rule to future sessions.") `+
 			`with title "Watermelon" `+
 			`buttons {"Block for Session", "Allow Once", "Always Allow and Save"} `+
 			`default button "Block for Session" `+
 			`with icon caution`,
-		process, domain, port, project, domain,
+		process, domain, port, project,
 	)
 }
 

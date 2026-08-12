@@ -23,14 +23,24 @@ const askVerdictListenAddress = "127.0.0.1"
 // until a non-reserved port is bound. That prevents the kernel from returning
 // the same rejected port again and leaves the selected listener reserved while
 // the caller durably saves it and creates the VM.
-func listenForAskVerdictsWith(vmName string, port int, listen askTCPListenFunc) (net.Listener, error) {
+func listenForAskVerdictsWith(vmName string, port int, listen askTCPListenFunc, forwardedPorts ...int) (net.Listener, error) {
+	forwarded := make(map[int]struct{}, len(forwardedPorts))
+	for _, forwardedPort := range forwardedPorts {
+		forwarded[forwardedPort] = struct{}{}
+	}
 	if port != 0 {
+		if _, collision := forwarded[port]; collision {
+			return nil, fmt.Errorf("saved ask port %d for VM %q conflicts with a configured host port forward", port, vmName)
+		}
 		return listenForAskVerdictsAtPort(vmName, port, listen)
 	}
 
 	reserved, err := reservedAskVerdictPorts(vmName)
 	if err != nil {
 		return nil, fmt.Errorf("checking reserved ask ports for VM %q: %w", vmName, err)
+	}
+	for forwardedPort := range forwarded {
+		reserved[forwardedPort] = "configured host port forward"
 	}
 
 	rejected := make([]net.Listener, 0)

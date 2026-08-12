@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,36 @@ var testServerAuthKey = func() AuthKey {
 	}
 	return key
 }()
+
+type temporaryAcceptError struct{}
+
+func (temporaryAcceptError) Error() string   { return "temporary accept failure" }
+func (temporaryAcceptError) Timeout() bool   { return false }
+func (temporaryAcceptError) Temporary() bool { return true }
+
+type scriptedAcceptResult struct {
+	conn net.Conn
+	err  error
+}
+
+type scriptedListener struct {
+	mu      sync.Mutex
+	results []scriptedAcceptResult
+}
+
+func (l *scriptedListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.results) == 0 {
+		return nil, net.ErrClosed
+	}
+	result := l.results[0]
+	l.results = l.results[1:]
+	return result.conn, result.err
+}
+
+func (l *scriptedListener) Close() error   { return nil }
+func (l *scriptedListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
 
 func sendTestVerdictRequest(t *testing.T, conn net.Conn, req VerdictRequest) VerdictRequest {
 	t.Helper()
@@ -67,6 +98,36 @@ func TestServerHandlesVerdictRequest(t *testing.T) {
 	}
 	if !VerifyResponse(testServerAuthKey, authenticatedReq, resp) {
 		t.Fatal("server response was not authenticated to the request")
+	}
+}
+
+func TestServerRetriesTemporaryAcceptFailure(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	listener := &scriptedListener{results: []scriptedAcceptResult{
+		{err: temporaryAcceptError{}},
+		{conn: serverConn},
+		{err: net.ErrClosed},
+	}}
+	var dialogCalls atomic.Int32
+	srv := NewServer("test-project", "", testServerAuthKey, func(_, _ string, _ int, _ string) string {
+		dialogCalls.Add(1)
+		return VerdictAllowOnce
+	})
+	go srv.Serve(listener)
+
+	if err := clientConn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	req := sendTestVerdictRequest(t, clientConn, VerdictRequest{
+		Domain: "example.com", Port: 443, Process: "npm", IP: "93.184.216.34",
+	})
+	var resp VerdictResponse
+	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
+		t.Fatalf("reading verdict after temporary accept failure: %v", err)
+	}
+	if dialogCalls.Load() != 1 || resp.Verdict != VerdictAllowOnce || !VerifyResponse(testServerAuthKey, req, resp) {
+		t.Fatalf("dialog calls/response = %d/%+v, want one authenticated allow-once", dialogCalls.Load(), resp)
 	}
 }
 
@@ -485,6 +546,34 @@ func TestServerFallsBackToIPWhenNoDomain(t *testing.T) {
 	}
 }
 
+func TestServerCachesVerdictsByLiteralEndpoint(t *testing.T) {
+	var prompted []string
+	srv := NewServer("test-project", "", testServerAuthKey, func(_, domain string, _ int, _ string) string {
+		prompted = append(prompted, domain)
+		return VerdictBlock
+	})
+
+	first := VerdictRequest{Domain: "example.com", Port: 443, Process: "npm", IP: "192.0.2.10"}
+	if got := srv.getVerdict(first); got != VerdictBlock {
+		t.Fatalf("first verdict = %q, want block", got)
+	}
+	// A different name at the same kernel endpoint reuses the endpoint verdict.
+	alias := VerdictRequest{Domain: "alias.example", Port: 443, Process: "curl", IP: "192.0.2.10"}
+	if got := srv.getVerdict(alias); got != VerdictBlock {
+		t.Fatalf("alias verdict = %q, want cached block", got)
+	}
+	// The same informational hostname at a new IP is a distinct endpoint.
+	moved := VerdictRequest{Domain: "example.com", Port: 443, Process: "npm", IP: "192.0.2.11"}
+	if got := srv.getVerdict(moved); got != VerdictBlock {
+		t.Fatalf("moved-host verdict = %q, want block", got)
+	}
+
+	want := []string{"example.com [192.0.2.10]", "example.com [192.0.2.11]"}
+	if !reflect.DeepEqual(prompted, want) {
+		t.Fatalf("prompted domains = %#v, want %#v", prompted, want)
+	}
+}
+
 func TestServerAlwaysAllowNoticeDistinguishesRuntimeAndSavedScopes(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), ".watermelon.toml")
 	initial := "[network]\nallow = []\n\n[network.process]\nnpm = [\"registry.npmjs.org\"]\n"
@@ -510,7 +599,7 @@ func TestServerAlwaysAllowNoticeDistinguishesRuntimeAndSavedScopes(t *testing.T)
 
 	got := notices.String()
 	for _, want := range []string{
-		"Allowed TCP destination example.com:443 for all processes in the current VM runtime.",
+		"Allowed TCP destination example.com [93.184.216.34]:443 for all processes in the current VM runtime.",
 		`Saved global host-only rule "example.com" with no process, protocol, or port scope`,
 		"managed DNS remains enforced",
 		"After this Watermelon session finishes",
@@ -567,7 +656,7 @@ func TestServerAlwaysAllowSaveFailureReportsRuntimeOnly(t *testing.T) {
 
 	got := notices.String()
 	for _, want := range []string{
-		"Allowed TCP destination example.com:8443 for all processes in the current VM runtime",
+		"Allowed TCP destination example.com [93.184.216.34]:8443 for all processes in the current VM runtime",
 		"global host-only rule was not saved",
 	} {
 		if !strings.Contains(got, want) {

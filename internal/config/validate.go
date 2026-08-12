@@ -2,22 +2,38 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net/netip"
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
-const maxVMNameLength = 76
+const (
+	maxVMNameLength     = 76
+	maxNetworkProcesses = 255
+)
 
 // Restrict public names to lowercase even though Lima accepts uppercase. Lima
 // stores instances by name under LIMA_HOME; on the case-insensitive filesystems
 // common on macOS, case variants alias the same directory and cannot be locked
 // or owned independently.
 var vmNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+
+var resourceSizePattern = regexp.MustCompile(`^([1-9][0-9]*)(MB|GB|TB)$`)
+
+var reservedProvisionImageNames = map[string]struct{}{
+	"watermelon-npm":   {},
+	"watermelon-pip":   {},
+	"watermelon-cargo": {},
+	"watermelon-go":    {},
+	"watermelon-gem":   {},
+}
 
 // NetworkRule is a validated network allow-list entry.
 type NetworkRule struct {
@@ -57,11 +73,11 @@ func Validate(cfg *Config) error {
 	if cfg.Resources.CPUs < 1 {
 		return fmt.Errorf("cpus must be at least 1")
 	}
-	if cfg.Resources.Memory == "" {
-		return fmt.Errorf("memory is required")
+	if err := ValidateResourceSize(cfg.Resources.Memory); err != nil {
+		return fmt.Errorf("invalid memory: %w", err)
 	}
-	if cfg.Resources.Disk == "" {
-		return fmt.Errorf("disk is required")
+	if err := ValidateResourceSize(cfg.Resources.Disk); err != nil {
+		return fmt.Errorf("invalid disk: %w", err)
 	}
 
 	// Validate IDE command
@@ -77,24 +93,30 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	for image, commands := range cfg.Tools {
-		if err := ValidateToolImage(image); err != nil {
-			return fmt.Errorf("invalid tool image: %w", err)
-		}
-		for _, command := range commands {
-			if err := ValidateCommandName(command); err != nil {
-				return fmt.Errorf("invalid tool command for image %q: %w", image, err)
-			}
-		}
+	toolProviders, err := BuildToolCommandProviders(cfg.Tools)
+	if err != nil {
+		return err
 	}
 
-	for source, mount := range cfg.Mounts {
+	mountSources := make([]string, 0, len(cfg.Mounts))
+	for source := range cfg.Mounts {
+		mountSources = append(mountSources, source)
+	}
+	sort.Strings(mountSources)
+	mountTargets := make(map[string]string, len(cfg.Mounts))
+	for _, source := range mountSources {
+		mount := cfg.Mounts[source]
 		if err := ValidateMountSource(source); err != nil {
 			return fmt.Errorf("invalid mount source: %w", err)
 		}
 		if err := ValidateMountTarget(mount.Target); err != nil {
 			return fmt.Errorf("invalid mount target for %q: %w", source, err)
 		}
+		normalizedTarget := filepath.Clean(mount.Target)
+		if owner, exists := mountTargets[normalizedTarget]; exists {
+			return fmt.Errorf("mount sources %q and %q use the same normalized target %q", owner, source, normalizedTarget)
+		}
+		mountTargets[normalizedTarget] = source
 		switch mount.Mode {
 		case "", "ro", "rw":
 			// valid; empty defaults to read-only
@@ -110,7 +132,21 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	seenPorts := make(map[int]struct{}, len(cfg.Ports.Forward))
+	for _, port := range cfg.Ports.Forward {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("invalid port forward: port %d is out of valid range (1-65535)", port)
+		}
+		if _, exists := seenPorts[port]; exists {
+			return fmt.Errorf("invalid port forward: port %d is listed more than once", port)
+		}
+		seenPorts[port] = struct{}{}
+	}
+
 	// Validate network process names and domains
+	if len(cfg.Network.Process) > maxNetworkProcesses {
+		return fmt.Errorf("network.process has %d entries; maximum is %d", len(cfg.Network.Process), maxNetworkProcesses)
+	}
 	for processName, domains := range cfg.Network.Process {
 		if err := ValidateProcessName(processName); err != nil {
 			return fmt.Errorf("invalid network process: %w", err)
@@ -162,21 +198,34 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	// Validate provision tool dependencies
-	if len(cfg.Provision.Npm) > 0 && !hasToolImage(cfg.Tools, "node") {
-		return fmt.Errorf("provision.npm requires a node image in [tools]")
+	// Each active provisioner needs its exact package-manager command. The
+	// current image builder commits one independent derived image per manager,
+	// so sharing a base image between active provisioners would silently make
+	// all wrappers use only the last derived image.
+	provisioners := []struct {
+		name     string
+		command  string
+		packages []string
+	}{
+		{name: "provision.npm", command: "npm", packages: cfg.Provision.Npm},
+		{name: "provision.pip", command: "pip", packages: cfg.Provision.Pip},
+		{name: "provision.cargo", command: "cargo", packages: cfg.Provision.Cargo},
+		{name: "provision.go", command: "go", packages: cfg.Provision.Go},
+		{name: "provision.gem", command: "gem", packages: cfg.Provision.Gem},
 	}
-	if len(cfg.Provision.Pip) > 0 && !hasToolImage(cfg.Tools, "python") {
-		return fmt.Errorf("provision.pip requires a python image in [tools]")
-	}
-	if len(cfg.Provision.Cargo) > 0 && !hasToolImage(cfg.Tools, "rust") {
-		return fmt.Errorf("provision.cargo requires a rust image in [tools]")
-	}
-	if len(cfg.Provision.Go) > 0 && !hasToolImage(cfg.Tools, "go") {
-		return fmt.Errorf("provision.go requires a go image in [tools] (golang or go)")
-	}
-	if len(cfg.Provision.Gem) > 0 && !hasToolImage(cfg.Tools, "ruby") {
-		return fmt.Errorf("provision.gem requires a ruby image in [tools]")
+	activeImageProvisioner := make(map[string]string)
+	for _, provisioner := range provisioners {
+		if len(provisioner.packages) == 0 {
+			continue
+		}
+		image := toolProviders[provisioner.command]
+		if image == "" {
+			return fmt.Errorf("%s requires command %q in [tools]", provisioner.name, provisioner.command)
+		}
+		if previous, exists := activeImageProvisioner[image]; exists {
+			return fmt.Errorf("%s and %s cannot provision the same tool image %q", previous, provisioner.name, image)
+		}
+		activeImageProvisioner[image] = provisioner.name
 	}
 
 	return nil
@@ -281,7 +330,7 @@ const ShellMetacharacters = ";|&$`\\"
 const safePathDisallowed = ShellMetacharacters + "\"'\n\r\t"
 
 // PackageNameDangerous contains characters that are invalid in package names
-const PackageNameDangerous = ";|&$`\\(){}!~'\" \t\n"
+const PackageNameDangerous = ";|&$`\\(){}!'\" \t\n"
 
 // ValidateDomain checks that a network rule is syntactically valid and safe for rendering.
 func ValidateDomain(domain string) error {
@@ -294,20 +343,78 @@ func ValidatePackageName(pkg string) error {
 	if pkg == "" {
 		return fmt.Errorf("package name cannot be empty")
 	}
+	if !utf8.ValidString(pkg) {
+		return fmt.Errorf("package name %q must be valid UTF-8", pkg)
+	}
+	if strings.IndexByte(pkg, 0) >= 0 {
+		return fmt.Errorf("package name cannot contain a NUL byte")
+	}
+	if strings.HasPrefix(pkg, "-") {
+		return fmt.Errorf("package name %q cannot start with '-'", pkg)
+	}
+	for _, r := range pkg {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("package name %q contains whitespace or control characters", pkg)
+		}
+	}
 	if strings.ContainsAny(pkg, PackageNameDangerous) {
 		return fmt.Errorf("package name %q contains invalid characters", pkg)
 	}
 	return nil
 }
 
-// hasToolImage checks if any tool image key contains the given substring
-func hasToolImage(tools map[string][]string, substr string) bool {
+// BuildToolCommandProviders validates tool declarations and returns the one
+// container image that owns each command. Sorting image names makes duplicate
+// diagnostics stable even though TOML tables are represented by a Go map.
+func BuildToolCommandProviders(tools map[string][]string) (map[string]string, error) {
+	images := make([]string, 0, len(tools))
 	for image := range tools {
-		if strings.Contains(image, substr) {
-			return true
+		images = append(images, image)
+	}
+	sort.Strings(images)
+
+	providers := make(map[string]string)
+	for _, image := range images {
+		if err := ValidateToolImage(image); err != nil {
+			return nil, fmt.Errorf("invalid tool image: %w", err)
+		}
+		seenInImage := make(map[string]struct{}, len(tools[image]))
+		for _, command := range tools[image] {
+			if err := ValidateCommandName(command); err != nil {
+				return nil, fmt.Errorf("invalid tool command for image %q: %w", image, err)
+			}
+			if command == "nerdctl" {
+				return nil, fmt.Errorf("tool command %q is reserved by Watermelon", command)
+			}
+			if _, exists := seenInImage[command]; exists {
+				return nil, fmt.Errorf("tool command %q is declared more than once for image %q", command, image)
+			}
+			seenInImage[command] = struct{}{}
+			if owner, exists := providers[command]; exists {
+				return nil, fmt.Errorf("tool command %q is declared by multiple images %q and %q", command, owner, image)
+			}
+			providers[command] = image
 		}
 	}
-	return false
+	return providers, nil
+}
+
+// ValidateResourceSize validates Watermelon's documented resource syntax and
+// rejects zero and byte totals that Lima cannot represent as a signed byte count.
+func ValidateResourceSize(size string) error {
+	matches := resourceSizePattern.FindStringSubmatch(size)
+	if matches == nil {
+		return fmt.Errorf("size %q must be a positive integer followed by MB, GB, or TB", size)
+	}
+	amount, err := strconv.ParseUint(matches[1], 10, 64)
+	if err != nil {
+		return fmt.Errorf("size %q is too large", size)
+	}
+	multipliers := map[string]uint64{"MB": 1 << 20, "GB": 1 << 30, "TB": 1 << 40}
+	if amount > uint64(math.MaxInt64)/multipliers[matches[2]] {
+		return fmt.Errorf("size %q is too large", size)
+	}
+	return nil
 }
 
 // ParseNetworkRule validates and normalizes a network allow-list entry.
@@ -423,7 +530,36 @@ func ValidateToolImage(image string) error {
 			return fmt.Errorf("image %q contains invalid character %q", image, r)
 		}
 	}
+	if isReservedProvisionImage(image) {
+		return fmt.Errorf("image %q conflicts with a Watermelon-managed provisioning image", image)
+	}
 	return nil
+}
+
+func isReservedProvisionImage(image string) bool {
+	repository := image
+	if digest := strings.IndexByte(repository, '@'); digest >= 0 {
+		repository = repository[:digest]
+	}
+	if slash, colon := strings.LastIndexByte(repository, '/'), strings.LastIndexByte(repository, ':'); colon > slash {
+		repository = repository[:colon]
+	}
+	parts := strings.Split(repository, "/")
+	switch {
+	case len(parts) == 1:
+		// An unqualified image is Docker Hub's implicit library repository.
+	case len(parts) == 2 && parts[0] == "library":
+		// Docker also accepts the explicit short form library/<name>.
+		parts = parts[1:]
+	case len(parts) == 2 && (parts[0] == "docker.io" || parts[0] == "index.docker.io"):
+		parts = parts[1:]
+	case len(parts) == 3 && (parts[0] == "docker.io" || parts[0] == "index.docker.io") && parts[1] == "library":
+		parts = parts[2:]
+	default:
+		return false
+	}
+	_, reserved := reservedProvisionImageNames[parts[0]]
+	return reserved
 }
 
 // ValidateCommandName checks that a tool command can safely become /usr/local/bin/<command>.
@@ -487,8 +623,19 @@ func ValidateMountTarget(target string) error {
 	}
 	cleaned := filepath.Clean(target)
 	const mountRoot = "/mnt/watermelon"
-	if cleaned != mountRoot && !strings.HasPrefix(cleaned, mountRoot+string(filepath.Separator)) {
-		return fmt.Errorf("target %q must be %s or a descendant", target, mountRoot)
+	if cleaned == mountRoot {
+		return fmt.Errorf("target %q cannot replace Watermelon's managed mount root %s", target, mountRoot)
+	}
+	if !strings.HasPrefix(cleaned, mountRoot+string(filepath.Separator)) {
+		return fmt.Errorf("target %q must be a descendant of %s", target, mountRoot)
+	}
+	for _, managed := range []string{
+		mountRoot + "/bootstrap",
+		mountRoot + "/state",
+	} {
+		if cleaned == managed || strings.HasPrefix(cleaned, managed+string(filepath.Separator)) {
+			return fmt.Errorf("target %q overlaps Watermelon's managed guest path %s", target, managed)
+		}
 	}
 	return nil
 }

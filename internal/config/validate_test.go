@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -59,6 +61,51 @@ func TestValidateResources(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "disk") {
 		t.Errorf("error should mention disk: %v", err)
+	}
+}
+
+func TestValidateResourceSizeFormat(t *testing.T) {
+	for _, tt := range []struct {
+		size    string
+		wantErr bool
+	}{
+		{size: "1MB"},
+		{size: "4GB"},
+		{size: "2TB"},
+		{size: "", wantErr: true},
+		{size: "0GB", wantErr: true},
+		{size: "01GB", wantErr: true},
+		{size: "1.5GB", wantErr: true},
+		{size: "1GiB", wantErr: true},
+		{size: "1gb", wantErr: true},
+		{size: " 1GB", wantErr: true},
+		{size: "-1GB", wantErr: true},
+		{size: "8388607TB"},
+		{size: "8388608TB", wantErr: true},
+		{size: "16777216TB", wantErr: true},
+		{size: "18446744073709551616MB", wantErr: true},
+	} {
+		t.Run(tt.size, func(t *testing.T) {
+			err := ValidateResourceSize(tt.size)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateResourceSize(%q) error = %v, wantErr %v", tt.size, err, tt.wantErr)
+			}
+		})
+	}
+
+	for _, field := range []string{"memory", "disk"} {
+		t.Run("config "+field, func(t *testing.T) {
+			cfg := NewConfig()
+			if field == "memory" {
+				cfg.Resources.Memory = "4GiB"
+			} else {
+				cfg.Resources.Disk = "10GiB"
+			}
+			err := Validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), field) {
+				t.Fatalf("Validate() error = %v, want %s size error", err, field)
+			}
+		})
 	}
 }
 
@@ -322,6 +369,26 @@ func TestValidateTools(t *testing.T) {
 			tools:   map[string][]string{"node:20-slim": {""}},
 			wantErr: true,
 		},
+		{
+			name:    "reserved nerdctl command",
+			tools:   map[string][]string{"acme.example/tools:1": {"nerdctl"}},
+			wantErr: true,
+		},
+		{
+			name:    "reserved provision image",
+			tools:   map[string][]string{"docker.io/library/watermelon-npm:latest": {"node"}},
+			wantErr: true,
+		},
+		{
+			name:    "reserved provision image with explicit short library alias",
+			tools:   map[string][]string{"library/watermelon-npm:latest": {"node"}},
+			wantErr: true,
+		},
+		{
+			name:    "similarly named image in another repository",
+			tools:   map[string][]string{"ghcr.io/acme/watermelon-npm:1": {"node"}},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -331,6 +398,57 @@ func TestValidateTools(t *testing.T) {
 			err := Validate(cfg)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildToolCommandProviders(t *testing.T) {
+	tools := map[string][]string{
+		"acme.example/python-tools:1": {"python", "pip"},
+		"acme.example/node-tools:1":   {"node", "npm"},
+	}
+	providers, err := BuildToolCommandProviders(tools)
+	if err != nil {
+		t.Fatalf("BuildToolCommandProviders() error = %v", err)
+	}
+	if got := providers["npm"]; got != "acme.example/node-tools:1" {
+		t.Errorf("npm provider = %q", got)
+	}
+	if got := providers["pip"]; got != "acme.example/python-tools:1" {
+		t.Errorf("pip provider = %q", got)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		tools map[string][]string
+		want  string
+	}{
+		{
+			name:  "duplicate within image",
+			tools: map[string][]string{"node:20": {"npm", "npm"}},
+			want:  `command "npm" is declared more than once`,
+		},
+		{
+			name: "duplicate across images",
+			tools: map[string][]string{
+				"z.example/tools:1": {"npm"},
+				"a.example/tools:1": {"npm"},
+			},
+			want: `command "npm" is declared by multiple images "a.example/tools:1" and "z.example/tools:1"`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for range 10 {
+				_, err := BuildToolCommandProviders(tt.tools)
+				if err == nil || !strings.Contains(err.Error(), tt.want) {
+					t.Fatalf("BuildToolCommandProviders() error = %v, want %q", err, tt.want)
+				}
+			}
+			cfg := NewConfig()
+			cfg.Tools = tt.tools
+			if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
 			}
 		})
 	}
@@ -353,9 +471,19 @@ func TestValidateMounts(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "valid exact mount root",
+			name:    "reject exact managed mount root",
 			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon"}},
-			wantErr: false,
+			wantErr: true,
+		},
+		{
+			name:    "reject managed bootstrap subtree",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon/bootstrap/tools"}},
+			wantErr: true,
+		},
+		{
+			name:    "reject managed state subtree",
+			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon/state/cache"}},
+			wantErr: true,
 		},
 		{
 			name:    "valid normalized descendant",
@@ -410,6 +538,14 @@ func TestValidateMounts(t *testing.T) {
 		{
 			name:    "reject traversal that normalizes inside root",
 			mounts:  map[string]Mount{"/Users/test/shared": {Target: "/mnt/watermelon/cache/../shared"}},
+			wantErr: true,
+		},
+		{
+			name: "reject duplicate normalized targets",
+			mounts: map[string]Mount{
+				"/Users/test/cache-a": {Target: "/mnt/watermelon/cache"},
+				"/Users/test/cache-b": {Target: "/mnt/watermelon/./cache"},
+			},
 			wantErr: true,
 		},
 	}
@@ -522,6 +658,57 @@ func TestValidateNetworkProcessDomains(t *testing.T) {
 	}
 }
 
+func TestValidatePortForwards(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		ports   []int
+		wantErr bool
+	}{
+		{name: "empty"},
+		{name: "boundaries", ports: []int{1, 65535}},
+		{name: "zero", ports: []int{0}, wantErr: true},
+		{name: "negative", ports: []int{-1}, wantErr: true},
+		{name: "too large", ports: []int{65536}, wantErr: true},
+		{name: "duplicate", ports: []int{3000, 8080, 3000}, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewConfig()
+			cfg.Ports.Forward = tt.ports
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "port forward") {
+				t.Fatalf("Validate() error = %v, want port forward error", err)
+			}
+		})
+	}
+}
+
+func TestValidateNetworkProcessLimit(t *testing.T) {
+	for _, tt := range []struct {
+		count   int
+		wantErr bool
+	}{
+		{count: 255},
+		{count: 256, wantErr: true},
+	} {
+		t.Run(strconv.Itoa(tt.count), func(t *testing.T) {
+			cfg := NewConfig()
+			for i := range tt.count {
+				cfg.Network.Process[fmt.Sprintf("process-%03d", i)] = nil
+			}
+			err := Validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "maximum is 255") {
+				t.Fatalf("Validate() error = %v, want process limit", err)
+			}
+		})
+	}
+}
+
 func TestValidateProvisionPackageNames(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -531,8 +718,14 @@ func TestValidateProvisionPackageNames(t *testing.T) {
 		{"valid simple package", []string{"typescript"}, false},
 		{"valid scoped package", []string{"@anthropic-ai/claude-code"}, false},
 		{"valid with version", []string{"typescript@5.0.0"}, false},
+		{"valid npm tilde range", []string{"typescript@~5.0.0"}, false},
+		{"valid compatible release", []string{"package~=1.4"}, false},
+		{"valid comparison range", []string{"package>=2,<3"}, false},
+		{"valid extras and wildcard", []string{"package[extra]==2.*"}, false},
+		{"valid URL fragment", []string{"https://example.com/package.tgz#sha256=abc"}, false},
 		{"empty list", []string{}, false},
 		{"empty package name", []string{""}, true},
+		{"leading option", []string{"--registry=evil.example"}, true},
 		{"semicolon injection", []string{"pkg; rm -rf /"}, true},
 		{"pipe injection", []string{"pkg | cat"}, true},
 		{"ampersand injection", []string{"pkg && evil"}, true},
@@ -544,6 +737,9 @@ func TestValidateProvisionPackageNames(t *testing.T) {
 		{"single quote injection", []string{"pkg'evil"}, true},
 		{"space in name", []string{"pkg name"}, true},
 		{"tab in name", []string{"pkg\tname"}, true},
+		{"carriage return in name", []string{"pkg\rname"}, true},
+		{"nul in name", []string{"pkg\x00name"}, true},
+		{"invalid utf8", []string{"pkg\xffname"}, true},
 	}
 
 	for _, tt := range tests {
@@ -575,69 +771,84 @@ func TestValidateProvisionRequiresTool(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name:    "npm without node tool",
+			name:    "npm without npm command",
 			npm:     []string{"typescript"},
 			tools:   map[string][]string{},
 			wantErr: true,
-			errMsg:  "node",
+			errMsg:  "npm",
 		},
 		{
-			name:    "npm with node tool",
+			name:    "npm with exact command",
 			npm:     []string{"typescript"},
-			tools:   map[string][]string{"node:20-slim": {"node", "npm"}},
+			tools:   map[string][]string{"acme.example/toolchain:1": {"npm"}},
 			wantErr: false,
 		},
 		{
-			name:    "pip without python tool",
+			name:    "npm image name is not a capability",
+			npm:     []string{"typescript"},
+			tools:   map[string][]string{"node:20-slim": {"node"}},
+			wantErr: true,
+			errMsg:  "npm",
+		},
+		{
+			name:    "pip without pip command",
 			pip:     []string{"requests"},
 			tools:   map[string][]string{},
 			wantErr: true,
-			errMsg:  "python",
+			errMsg:  "pip",
 		},
 		{
-			name:    "pip with python tool",
+			name:    "pip with exact command",
 			pip:     []string{"requests"},
 			tools:   map[string][]string{"python:3.12-slim": {"python", "pip"}},
 			wantErr: false,
 		},
 		{
-			name:    "cargo without rust tool",
+			name:    "cargo without cargo command",
 			cargo:   []string{"ripgrep"},
 			tools:   map[string][]string{},
 			wantErr: true,
-			errMsg:  "rust",
+			errMsg:  "cargo",
 		},
 		{
-			name:    "cargo with rust tool",
+			name:    "cargo with exact command",
 			cargo:   []string{"ripgrep"},
 			tools:   map[string][]string{"rust:latest": {"cargo", "rustc"}},
 			wantErr: false,
 		},
 		{
-			name:    "go without golang tool",
+			name:    "go without go command",
 			goPkgs:  []string{"github.com/junegunn/fzf@latest"},
 			tools:   map[string][]string{},
 			wantErr: true,
 			errMsg:  "go",
 		},
 		{
-			name:    "go with golang tool",
+			name:    "go with exact command",
 			goPkgs:  []string{"github.com/junegunn/fzf@latest"},
 			tools:   map[string][]string{"golang:1.22": {"go"}},
 			wantErr: false,
 		},
 		{
-			name:    "gem without ruby tool",
+			name:    "gem without gem command",
 			gem:     []string{"rails"},
 			tools:   map[string][]string{},
 			wantErr: true,
-			errMsg:  "ruby",
+			errMsg:  "gem",
 		},
 		{
-			name:    "gem with ruby tool",
+			name:    "gem with exact command",
 			gem:     []string{"rails"},
 			tools:   map[string][]string{"ruby:3.2": {"ruby", "gem"}},
 			wantErr: false,
+		},
+		{
+			name:    "active provisioners cannot share one image",
+			npm:     []string{"typescript"},
+			pip:     []string{"requests"},
+			tools:   map[string][]string{"acme.example/unified:1": {"npm", "pip"}},
+			wantErr: true,
+			errMsg:  "cannot provision the same tool image",
 		},
 		{
 			name:    "empty provision is valid",
