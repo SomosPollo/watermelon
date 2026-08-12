@@ -116,4 +116,10 @@ watermelon run
 
 There is no `/project` reference in the generated mount or wrappers. Because `vm.workdir` is configured, Node and Python tool containers bind `/home/watermelon/work` at that same path. If `vm.workdir` were omitted, wrappers would instead use the guest directory from which they are invoked.
 
-Run normal lifecycle commands from this configured project directory. `--name monorepo-build` is optional because `[vm].name` already selects it; `run`, `exec`, `code`, `status`, and `logs` still require the valid local configuration for explicit-name use. If the config becomes invalid, the ownership-verified `stop` and `destroy --name monorepo-build` recovery paths remain available.
+Run normal lifecycle commands from this configured project directory or any
+descendant within its Git, filesystem, and trusted-directory discovery
+boundaries. Because `[vm].name` already selects the fixed name, the
+`--name monorepo-build` flag is optional. `run`, `exec`, `code`, `status`, and
+`logs` still require the valid discovered configuration for explicit-name use.
+If the config becomes invalid, the ownership-verified recovery paths remain
+available through `stop` and `destroy --name monorepo-build`.

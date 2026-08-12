@@ -107,7 +107,7 @@ func NewExecCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides the path-derived name)")
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
 	// Once the guest command starts, every remaining argument belongs to that
 	// command. In particular, flags such as `docker run --name web` must not be
 	// consumed as Watermelon flags. Watermelon flags therefore have to precede

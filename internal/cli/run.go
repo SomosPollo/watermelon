@@ -31,14 +31,14 @@ func NewRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Enter the project sandbox VM",
-		Long:  "Start the project VM (creating it if needed) and open an interactive shell.",
+		Long:  "Discover the nearest project config, start its VM (creating it if needed), and open an interactive shell.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRunWithOptions(runOptions{OpenShell: !noShell, Name: name, Workdir: workdir})
 		},
 	}
 	cmd.Flags().BoolVar(&noShell, "no-shell", false, "Start or create the VM without opening an interactive shell")
-	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the path-derived name)")
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
 	cmd.Flags().StringVar(&workdir, "workdir", "", "Working directory inside the VM")
 	return cmd
 }
@@ -471,14 +471,57 @@ func runRunWithOptions(opts runOptions) error {
 }
 
 func loadProjectConfig(dir string) (*config.Config, error) {
-	configPath := filepath.Join(dir, ".watermelon.toml")
-	if _, err := os.Stat(configPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no .watermelon.toml found (run 'watermelon init' first): %w", os.ErrNotExist)
+	configPath := filepath.Join(dir, projectConfigName)
+	fd, err := unix.Open(configPath, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOCTTY, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("no %s found at %q (run 'watermelon init' first): %w", projectConfigName, configPath, os.ErrNotExist)
 		}
-		return nil, fmt.Errorf("checking config: %w", err)
+		return nil, fmt.Errorf("opening project config %q: %w", configPath, err)
 	}
-	return config.ParseFile(configPath)
+	file := os.NewFile(uintptr(fd), configPath)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("opening project config %q: invalid file descriptor", configPath)
+	}
+	info, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("inspecting project config %q: %w", configPath, statErr)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("project config %q must be a regular file, got %s", configPath, info.Mode().Type())
+	}
+	trusted, trustErr := trustedProjectConfigFile(info)
+	if trustErr != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("checking project config %q ownership: %w", configPath, trustErr)
+	}
+	if !trusted {
+		_ = file.Close()
+		return nil, fmt.Errorf("project config %q has untrusted ownership or permissions; require a current-user-owned file that is not world-writable, or a root-owned file that is not group/world-writable", configPath)
+	}
+	if info.Size() > maxProjectConfigSize {
+		_ = file.Close()
+		return nil, fmt.Errorf("project config %q exceeds the %d-byte limit", configPath, maxProjectConfigSize)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxProjectConfigSize+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("reading project config %q: %w", configPath, readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("closing project config %q: %w", configPath, closeErr)
+	}
+	if len(data) > maxProjectConfigSize {
+		return nil, fmt.Errorf("project config %q exceeds the %d-byte limit", configPath, maxProjectConfigSize)
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("loading project config %q: %w", configPath, err)
+	}
+	return cfg, nil
 }
 
 func loadValidatedProjectConfigFailClosed(dir string) (*config.Config, error) {
@@ -1618,7 +1661,7 @@ func requireLegacyProjectMountBinding(dir, vmName string) error {
 		return err
 	}
 	if canonicalSource != canonicalDir {
-		return fmt.Errorf("refusing to use VM %q: its /project mount is %q, not the current project %q", vmName, canonicalSource, canonicalDir)
+		return fmt.Errorf("refusing to use VM %q: its /project mount is %q, not the resolved project %q", vmName, canonicalSource, canonicalDir)
 	}
 	return nil
 }

@@ -356,7 +356,11 @@ func TestDestroyExplicitNameRecoversOwnedVMAfterMalformedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(project); err != nil {
+	nested := filepath.Join(project, "src", "package")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(nested); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
@@ -455,7 +459,7 @@ func TestDestroyRemovesStaleOwnedIdentityWhenLimaVMIsMissing(t *testing.T) {
 	}
 }
 
-func TestStopCommandStopsOwnedVMAfterMalformedConfig(t *testing.T) {
+func TestStopCommandStopsOwnedVMFromDescendantAfterInvalidConfig(t *testing.T) {
 	project, _, _ := setupNamedVMIdentityTest(t)
 	cfg := config.NewConfig()
 	cfg.VM.Name = "stop-on-config-error"
@@ -464,14 +468,18 @@ func TestStopCommandStopsOwnedVMAfterMalformedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, ".watermelon.toml"), []byte("[vm\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(project, projectConfigName), []byte("[security]\nenforcement = \"invalid\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	originalDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(project); err != nil {
+	nested := filepath.Join(project, "src", "package")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(nested); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
@@ -499,8 +507,8 @@ func TestStopCommandStopsOwnedVMAfterMalformedConfig(t *testing.T) {
 
 	cmd := NewStopCmd()
 	err = cmd.RunE(cmd, nil)
-	if err == nil || !strings.Contains(err.Error(), "parsing config") || !strings.Contains(err.Error(), "was stopped") {
-		t.Fatalf("stop error = %v, want config error plus fail-closed stop notice", err)
+	if err == nil || !strings.Contains(err.Error(), "invalid config") || !strings.Contains(err.Error(), filepath.Join(project, projectConfigName)) || !strings.Contains(err.Error(), "was stopped") {
+		t.Fatalf("stop error = %v, want ancestor config path, validation error, and fail-closed stop notice", err)
 	}
 	if len(stopped) != 1 || stopped[0] != cfg.VM.Name {
 		t.Fatalf("stopped VMs = %v, want %q", stopped, cfg.VM.Name)

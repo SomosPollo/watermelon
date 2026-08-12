@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/saeta-eth/watermelon/internal/config"
 	"github.com/saeta-eth/watermelon/internal/lima"
@@ -27,28 +28,29 @@ type targetContext struct {
 // always an error, and an explicit name never turns a missing config into a
 // default configuration.
 func resolveManagementTarget(dir, flagName string) (targetContext, error) {
-	canonicalDir, err := canonicalProjectRoot(dir)
+	projectRoot, configFound, err := discoverProjectRoot(dir)
 	if err != nil {
 		return targetContext{}, err
 	}
+	partial := targetContext{ProjectRoot: projectRoot}
 	if flagName != "" {
 		if err := config.ValidateVMName(flagName); err != nil {
-			return targetContext{}, NewUsageError(fmt.Errorf("invalid --name %q: %w", flagName, err))
+			return partial, NewUsageError(fmt.Errorf("invalid --name %q: %w", flagName, err))
 		}
 	}
 
-	cfg, err := loadProjectConfig(canonicalDir)
+	cfg, err := loadProjectConfig(projectRoot)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && flagName == "" {
+		if errors.Is(err, os.ErrNotExist) && flagName == "" && !configFound {
 			return targetContext{
-				ProjectRoot: canonicalDir,
-				VMName:      lima.VMNameFromPath(canonicalDir),
+				ProjectRoot: projectRoot,
+				VMName:      lima.VMNameFromPath(projectRoot),
 			}, nil
 		}
-		return targetContext{}, err
+		return partial, err
 	}
 	if err := config.Validate(cfg); err != nil {
-		return targetContext{}, fmt.Errorf("invalid config: %w", err)
+		return partial, fmt.Errorf("invalid config %q: %w", filepath.Join(projectRoot, projectConfigName), err)
 	}
 
 	vmName := flagName
@@ -56,10 +58,10 @@ func resolveManagementTarget(dir, flagName string) (targetContext, error) {
 		vmName = cfg.VM.Name
 	}
 	if vmName == "" {
-		vmName = lima.VMNameFromPath(canonicalDir)
+		vmName = lima.VMNameFromPath(projectRoot)
 	}
 	if err := config.ValidateVMName(vmName); err != nil {
-		return targetContext{}, fmt.Errorf("invalid VM name %q: %w", vmName, err)
+		return partial, fmt.Errorf("invalid VM name %q: %w", vmName, err)
 	}
 	effective := *cfg
 	effective.VM = cfg.VM
@@ -68,7 +70,7 @@ func resolveManagementTarget(dir, flagName string) (targetContext, error) {
 	}
 
 	return targetContext{
-		ProjectRoot:  canonicalDir,
+		ProjectRoot:  projectRoot,
 		VMName:       vmName,
 		NameExplicit: flagName != "",
 		Config:       &effective,
@@ -80,7 +82,7 @@ func resolveManagementTarget(dir, flagName string) (targetContext, error) {
 // project. A --name value overrides vm.name, but it never makes a missing or
 // invalid project configuration acceptable.
 func resolveConfiguredTarget(dir, flagName string) (targetContext, error) {
-	canonicalDir, err := canonicalProjectRoot(dir)
+	projectRoot, _, err := discoverProjectRoot(dir)
 	if err != nil {
 		return targetContext{}, err
 	}
@@ -90,7 +92,7 @@ func resolveConfiguredTarget(dir, flagName string) (targetContext, error) {
 		}
 	}
 
-	cfg, err := loadValidatedProjectConfigForTarget(canonicalDir, flagName)
+	cfg, err := loadValidatedProjectConfigForTarget(projectRoot, flagName)
 	if err != nil {
 		return targetContext{}, err
 	}
@@ -100,7 +102,7 @@ func resolveConfiguredTarget(dir, flagName string) (targetContext, error) {
 		vmName = cfg.VM.Name
 	}
 	if vmName == "" {
-		vmName = lima.VMNameFromPath(canonicalDir)
+		vmName = lima.VMNameFromPath(projectRoot)
 	}
 	if err := config.ValidateVMName(vmName); err != nil {
 		return targetContext{}, fmt.Errorf("invalid VM name %q: %w", vmName, err)
@@ -122,7 +124,7 @@ func resolveConfiguredTarget(dir, flagName string) (targetContext, error) {
 	}
 
 	target := targetContext{
-		ProjectRoot:  canonicalDir,
+		ProjectRoot:  projectRoot,
 		VMName:       vmName,
 		NameExplicit: flagName != "",
 		Config:       &effective,
@@ -131,7 +133,7 @@ func resolveConfiguredTarget(dir, flagName string) (targetContext, error) {
 	}
 	target, err = prepareTargetProvisionScripts(target)
 	if err != nil {
-		return targetContext{}, stopBoundVMForConfigErrorForTarget(canonicalDir, vmName, fmt.Errorf("preparing provision scripts: %w", err))
+		return targetContext{}, stopBoundVMForConfigErrorForTarget(projectRoot, vmName, fmt.Errorf("preparing provision scripts: %w", err))
 	}
 	return target, nil
 }
@@ -161,7 +163,7 @@ func loadValidatedProjectConfigForTarget(dir, vmNameHint string) (*config.Config
 		return nil, stopBoundVMForConfigErrorForTarget(dir, vmNameHint, err)
 	}
 	if err := config.Validate(cfg); err != nil {
-		return nil, stopBoundVMForConfigErrorForTarget(dir, vmNameHint, fmt.Errorf("invalid config: %w", err))
+		return nil, stopBoundVMForConfigErrorForTarget(dir, vmNameHint, fmt.Errorf("invalid config %q: %w", filepath.Join(dir, projectConfigName), err))
 	}
 	return cfg, nil
 }

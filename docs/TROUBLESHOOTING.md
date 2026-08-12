@@ -348,8 +348,9 @@ memory = "8GB"  # Increase if needed
 
 1. Run the host preflight: `watermelon doctor`
 2. Check logs: `watermelon logs`
-3. Check VM status: `watermelon status`
-4. Review config: `cat .watermelon.toml`
+3. Run `watermelon status` and note its `Project:` path, or the selected config
+   path in an error
+4. Review that project's `.watermelon.toml`
 
 If issues persist, [open an issue](https://github.com/SomosPollo/watermelon/issues) with:
 - Your `.watermelon.toml`

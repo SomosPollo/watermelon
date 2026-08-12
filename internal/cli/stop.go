@@ -31,6 +31,9 @@ func NewStopCmd() *cobra.Command {
 			}
 			target, err := resolveManagementTarget(dir, name)
 			if err != nil {
+				if target.ProjectRoot != "" {
+					dir = target.ProjectRoot
+				}
 				// Stopping is the fail-closed recovery path. A malformed or
 				// unreadable config must not leave a verified project-owned VM
 				// running merely because its normal target cannot be parsed.
@@ -68,6 +71,6 @@ func NewStopCmd() *cobra.Command {
 			return cliStopVM(vmName)
 		},
 	}
-	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the path-derived name)")
+	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
 	return cmd
 }
