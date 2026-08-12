@@ -65,12 +65,12 @@ func TestBuildAppleScript(t *testing.T) {
 
 	checks := []string{
 		`Observed process (informational): " & quote & "npm"`,
-		"Requested TCP destination: evil.com:443",
+		"Requested TCP destination (DNS label is untrusted metadata): evil.com:443",
 		"my-app",
 		"Block for Session",
 		"Allow Once",
 		"Always Allow and Save",
-		`Always Allow saves " & quote & "evil.com" & quote & " as a global host-only rule with no process, protocol, or port scope`,
+		"Always Allow saves the observed DNS label, or the literal IP when no label was observed, as a global host-only rule with no process, protocol, or port scope",
 		"Managed DNS remains enforced",
 		"VM recreation is required",
 		"default button",
@@ -175,9 +175,9 @@ func TestReadTerminalPrompt(t *testing.T) {
 			for _, want := range []string{
 				"Watermelon network prompt",
 				`Observed process (informational): "npm"`,
-				"Requested TCP destination: example.com:443",
+				"Requested TCP destination (DNS label is untrusted metadata): example.com:443",
 				"Project: app",
-				`add "example.com" as a global host-only rule with no process, protocol, or port scope`,
+				"add the observed DNS label, or the literal IP when no label was observed, as a global host-only rule with no process, protocol, or port scope",
 				"Managed DNS remains enforced",
 				"VM recreation is required",
 				"block for session",
@@ -191,5 +191,20 @@ func TestReadTerminalPrompt(t *testing.T) {
 				t.Errorf("terminal prompt incorrectly implies that the saved rule retains the requested port:\n%s", rendered)
 			}
 		})
+	}
+}
+
+func TestAttributedDestinationPromptDoesNotPromiseCombinedSavedRule(t *testing.T) {
+	var out bytes.Buffer
+	writeTerminalPromptContext(&out, "npm", "example.com [93.184.216.34]", 443, "app")
+	rendered := out.String()
+	if !strings.Contains(rendered, "example.com [93.184.216.34]:443") {
+		t.Fatalf("prompt omitted attributed label and literal endpoint:\n%s", rendered)
+	}
+	if strings.Contains(rendered, `add "example.com [93.184.216.34]"`) {
+		t.Fatalf("prompt falsely promises to persist the combined display value:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "add the observed DNS label, or the literal IP when no label was observed") {
+		t.Fatalf("prompt does not describe the actual persistence choice:\n%s", rendered)
 	}
 }

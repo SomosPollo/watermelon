@@ -157,8 +157,8 @@ func runRun() error {
 	return runRunWithOptions(runOptions{OpenShell: true})
 }
 
-func listenForAskVerdicts(vmName string, port int) (net.Listener, error) {
-	return listenForAskVerdictsWith(vmName, port, net.Listen)
+func listenForAskVerdicts(vmName string, port int, forwardedPorts ...int) (net.Listener, error) {
+	return listenForAskVerdictsWith(vmName, port, net.Listen, forwardedPorts...)
 }
 
 func startAskVerdictServerForExistingVM(dir, vmName string) (net.Listener, error) {
@@ -335,7 +335,7 @@ func runRunWithOptions(opts runOptions) error {
 		}
 
 		var listenErr error
-		verdictListener, listenErr = listenForAskVerdicts(vmName, verdictPort)
+		verdictListener, listenErr = listenForAskVerdicts(vmName, verdictPort, cfg.Ports.Forward...)
 		if listenErr != nil {
 			return listenErr
 		}

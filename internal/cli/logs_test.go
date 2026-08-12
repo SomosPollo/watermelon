@@ -65,8 +65,12 @@ func TestLogsNameClearsRegisteredVMLogNotProjectFallback(t *testing.T) {
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(instance.Paths.GuestNetworkLogPath); !os.IsNotExist(err) {
-		t.Fatalf("registered VM log was not cleared: %v", err)
+	cleared, err := os.ReadFile(instance.Paths.GuestNetworkLogPath)
+	if err != nil {
+		t.Fatalf("reading cleared registered VM log: %v", err)
+	}
+	if len(cleared) != 0 {
+		t.Fatalf("registered VM log was not cleared: %q", cleared)
 	}
 	if _, err := os.Stat(projectLog); err != nil {
 		t.Fatalf("project fallback log was incorrectly cleared: %v", err)
@@ -113,7 +117,11 @@ func TestLogsCommandClear(t *testing.T) {
 	if err != nil {
 		t.Errorf("logs --clear error = %v", err)
 	}
-	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
-		t.Error("logs --clear did not remove log file")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("reading cleared log: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("logs --clear left data behind: %q", data)
 	}
 }

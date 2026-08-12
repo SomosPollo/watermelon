@@ -4,25 +4,33 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/saeta-eth/watermelon/internal/ask"
 )
 
+type temporaryNFQueueError struct{}
+
+func (temporaryNFQueueError) Error() string   { return "temporary nfqueue failure" }
+func (temporaryNFQueueError) Timeout() bool   { return false }
+func (temporaryNFQueueError) Temporary() bool { return true }
+
 func TestVerdictDestinationDoesNotReverseLookupDirectIP(t *testing.T) {
-	var cache sync.Map
-	if got := verdictDestination("203.0.113.7", &cache); got != "203.0.113.7" {
+	cache := newDNSAttributionCache(10, time.Hour)
+	if got := cache.Destination("203.0.113.7"); got != "203.0.113.7" {
 		t.Fatalf("direct-IP destination = %q, want IP without a blocking reverse lookup", got)
 	}
 
-	cache.Store("203.0.113.7", "packages.example.test")
-	if got := verdictDestination("203.0.113.7", &cache); got != "packages.example.test" {
+	cache.Observe([]dnsMapping{{
+		IP: "203.0.113.7", Domain: "packages.example.test", TTL: time.Minute,
+	}})
+	if got := cache.Destination("203.0.113.7"); got != "packages.example.test" {
 		t.Fatalf("DNS-cached destination = %q, want original hostname", got)
 	}
 }
@@ -48,11 +56,36 @@ func TestAskServerAcceptsOnlyAuthenticatedHostResponse(t *testing.T) {
 	})
 	go srv.Serve(listener)
 
-	got := askServer(listener.Addr().String(), key, ask.VerdictRequest{
+	got, authenticated := askServer(listener.Addr().String(), key, ask.VerdictRequest{
 		Domain: "example.com", Port: 443, Process: "npm", IP: "93.184.216.34",
 	})
-	if got != ask.VerdictAllowOnce {
-		t.Fatalf("askServer() = %q, want authenticated allow-once", got)
+	if got != ask.VerdictAllowOnce || !authenticated {
+		t.Fatalf("askServer() = (%q, %v), want authenticated allow-once", got, authenticated)
+	}
+}
+
+func TestNFQueueReceiveErrorsContinueOnlyWhenTemporary(t *testing.T) {
+	fatalErrors := make(chan error, 1)
+	if got := handleNFQueueReceiveError("TCP", fatalErrors, temporaryNFQueueError{}); got != 0 {
+		t.Fatalf("temporary error callback result = %d, want continue", got)
+	}
+	select {
+	case err := <-fatalErrors:
+		t.Fatalf("temporary error was propagated as fatal: %v", err)
+	default:
+	}
+
+	permanent := errors.New("socket closed unexpectedly")
+	if got := handleNFQueueReceiveError("DNS", fatalErrors, permanent); got == 0 {
+		t.Fatal("permanent error callback requested another receive")
+	}
+	select {
+	case err := <-fatalErrors:
+		if !errors.Is(err, permanent) || !strings.Contains(err.Error(), "DNS nfqueue receive failed") {
+			t.Fatalf("propagated error = %v, want wrapped DNS failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("permanent nfqueue failure was not propagated to the daemon")
 	}
 }
 
@@ -82,11 +115,11 @@ func TestAskServerBlocksForgedAllowFromPortImpostor(t *testing.T) {
 		})
 	}()
 
-	got := askServer(listener.Addr().String(), key, ask.VerdictRequest{
+	got, authenticated := askServer(listener.Addr().String(), key, ask.VerdictRequest{
 		Domain: "example.com", Port: 443, Process: "npm", IP: "93.184.216.34",
 	})
-	if got != ask.VerdictBlock {
-		t.Fatalf("forged host response produced %q, want block", got)
+	if got != ask.VerdictBlock || authenticated {
+		t.Fatalf("forged host response produced (%q, %v), want unauthenticated block", got, authenticated)
 	}
 	select {
 	case <-done:

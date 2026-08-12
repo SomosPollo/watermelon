@@ -221,13 +221,16 @@ See [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) for common issues.
 
 ## Development
 
+Development requires Go 1.25.12 or newer.
+
 ```bash
 go build -o watermelon ./cmd/watermelon
 go test ./...
-go test -tags=e2e ./test/...  # CLI e2e; Linux full VM lifecycle requires usable /dev/kvm
+go test -tags=e2e ./test/...  # CLI and full VM e2e; Linux normally requires usable /dev/kvm
 ```
 
 Set `WATERMELON_E2E_ALLOW_TCG=1` to try the full Linux VM lifecycle under slow QEMU TCG when KVM is unavailable.
+CI sets `WATERMELON_E2E_REQUIRE_REAL_VM=1` so missing prerequisites fail instead of silently skipping the security scenarios.
 
 ## License
 

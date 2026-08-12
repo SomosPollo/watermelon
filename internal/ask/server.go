@@ -28,6 +28,8 @@ const (
 	verdictReplayWindow    = 4096
 	verdictReadTimeout     = 5 * time.Second
 	verdictWriteTimeout    = 5 * time.Second
+	acceptRetryMinDelay    = 5 * time.Millisecond
+	acceptRetryMaxDelay    = time.Second
 )
 
 // Server handles verdict requests from the VM-side nfqd daemon.
@@ -112,11 +114,26 @@ func NewServer(project, configPath string, authKey AuthKey, dialog DialogFunc, o
 
 // Serve accepts connections on the listener and handles verdict requests.
 func (s *Server) Serve(listener net.Listener) {
+	var retryDelay time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			return // listener closed
+			if conn != nil {
+				_ = conn.Close()
+			}
+			var netErr net.Error
+			if !errors.As(err, &netErr) || (!netErr.Timeout() && !netErr.Temporary()) {
+				return // listener closed or failed permanently
+			}
+			if retryDelay == 0 {
+				retryDelay = acceptRetryMinDelay
+			} else {
+				retryDelay = min(retryDelay*2, acceptRetryMaxDelay)
+			}
+			time.Sleep(retryDelay)
+			continue
 		}
+		retryDelay = 0
 		if s.acquireConnection(conn) {
 			go func() {
 				defer s.releaseConnection(conn)
@@ -288,15 +305,31 @@ func (s *Server) getVerdict(req VerdictRequest) string {
 	} else {
 		domain = req.IP
 	}
+	displayDestination := domain
+	if req.IP != "" && domain != req.IP {
+		// DNS attribution is deliberately prompt metadata only. nfqd does not
+		// authenticate the DNS response against an outstanding query, so always
+		// show the kernel-enforced literal endpoint beside the observed label.
+		displayDestination = fmt.Sprintf("%s [%s]", domain, req.IP)
+	}
 
-	cacheKey := fmt.Sprintf("%s:%d", domain, req.Port)
+	// The signed request carries the literal kernel destination. DNS names and
+	// process names are prompt metadata only: a TCP SYN cannot prove which name
+	// the workload intended, so session decisions must be scoped to the IPv4
+	// endpoint the firewall can actually enforce. Older/internal callers that
+	// omit IP retain the domain fallback.
+	cacheDestination := req.IP
+	if cacheDestination == "" {
+		cacheDestination = domain
+	}
+	cacheKey := fmt.Sprintf("%s:%d", cacheDestination, req.Port)
 
 	// Check cache first
 	if v, ok := s.cache.Get(cacheKey); ok {
 		return v
 	}
 
-	// Check if another goroutine is already showing a dialog for this domain:port
+	// Check if another goroutine is already showing a dialog for this endpoint.
 	if ch := s.cache.MarkPending(cacheKey); ch != nil {
 		<-ch // wait for the other dialog to complete
 		if v, ok := s.cache.Get(cacheKey); ok {
@@ -311,7 +344,7 @@ func (s *Server) getVerdict(req VerdictRequest) string {
 	// overwritten by the first decision's delayed output.
 	s.dialogMu.Lock()
 	defer s.dialogMu.Unlock()
-	verdict := s.dialog(req.Process, domain, req.Port, s.project)
+	verdict := s.dialog(req.Process, displayDestination, req.Port, s.project)
 	if !ValidVerdict(verdict) {
 		verdict = VerdictBlock
 	}
@@ -331,13 +364,13 @@ func (s *Server) getVerdict(req VerdictRequest) string {
 		added, err := AddDomainToConfig(s.configPath, domain)
 		var notice strings.Builder
 		if err != nil {
-			fmt.Fprintf(&notice, "Allowed TCP destination %s:%d for all processes in the current VM runtime, but the global host-only rule was not saved: %v\n", domain, req.Port, err)
+			fmt.Fprintf(&notice, "Allowed TCP destination %s:%d for all processes in the current VM runtime, but the global host-only rule was not saved: %v\n", displayDestination, req.Port, err)
 		} else {
 			action := "Saved"
 			if !added {
 				action = "Found existing"
 			}
-			fmt.Fprintf(&notice, "Allowed TCP destination %s:%d for all processes in the current VM runtime.\n", domain, req.Port)
+			fmt.Fprintf(&notice, "Allowed TCP destination %s:%d for all processes in the current VM runtime.\n", displayDestination, req.Port)
 			fmt.Fprintf(&notice, "%s global host-only rule %q with no process, protocol, or port scope in %s; managed DNS remains enforced.\n", action, domain, s.configPath)
 			if s.recreateCmd != "" {
 				fmt.Fprintln(&notice, "After this Watermelon session finishes, run the following command from the project root to apply the saved rule to future VM sessions (recreation removes VM-local state):")

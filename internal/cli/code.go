@@ -3,12 +3,37 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 
 	"github.com/saeta-eth/watermelon/internal/config"
 	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/spf13/cobra"
+)
+
+type codeSessionLease interface {
+	Release() error
+}
+
+var (
+	cliCodeEnsureSSHConfig = lima.EnsureSSHConfig
+	cliCodeLookPath        = exec.LookPath
+	cliCodeRunIDE          = func(name string, args []string) error {
+		cmd := exec.Command(name, args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	cliCodeAcquireLifecycleLock = func(vmName string) (codeSessionLease, error) {
+		return acquireVMLifecycleLock(vmName)
+	}
+	cliCodeAcquireUsageLease = func(vmName string) (codeSessionLease, error) {
+		return acquireSharedVMUsageLease(vmName)
+	}
+	cliCodeStartAskServer = func(dir, vmName string) (io.Closer, error) {
+		return startAskVerdictServerForExistingVM(dir, vmName)
+	}
 )
 
 func NewCodeCmd() *cobra.Command {
@@ -45,7 +70,7 @@ func runCodeWithName(name string) error {
 	if err := requireCompatibleLima(); err != nil {
 		return err
 	}
-	lifecycleLock, err := acquireVMLifecycleLock(vmName)
+	lifecycleLock, err := cliCodeAcquireLifecycleLock(vmName)
 	if err != nil {
 		return fmt.Errorf("locking VM %q lifecycle: %w", vmName, err)
 	}
@@ -67,7 +92,7 @@ func runCodeWithName(name string) error {
 		return fmt.Errorf("cannot safely use VM %q because its Lima state is unknown", vmName)
 	}
 	if cfg.Security.Enforcement == config.EnforcementAsk {
-		verdictListener, err := startAskVerdictServerForExistingVM(dir, vmName)
+		verdictListener, err := cliCodeStartAskServer(dir, vmName)
 		if err != nil {
 			return err
 		}
@@ -93,7 +118,7 @@ func runCodeWithName(name string) error {
 	}
 
 	// Ensure SSH config is set up
-	if err := lima.EnsureSSHConfig(); err != nil {
+	if err := cliCodeEnsureSSHConfig(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not configure SSH: %v\n", err)
 	}
 
@@ -109,27 +134,24 @@ func runCodeWithName(name string) error {
 	fmt.Printf("Opening %s...\n", ideCmd)
 
 	// Check if IDE command exists
-	if _, err := exec.LookPath(cmd); err != nil {
+	if _, err := cliCodeLookPath(cmd); err != nil {
 		return fmt.Errorf("%s not found. Install it or set ide.command in .watermelon.toml", cmd)
 	}
 
 	// Keep the launcher in the foreground. VS Code-family CLIs honor --wait,
 	// which lets Watermelon retain the instance lease (and ask-mode verdict
 	// server) until the remote window closes.
-	execCmd := exec.Command(cmd, args...)
-	execCmd.Stdout = os.Stdout
-	execCmd.Stderr = os.Stderr
 	if err := requireVMProjectBinding(dir, vmName); err != nil {
 		return err
 	}
-	usageLease, err := acquireSharedVMUsageLease(vmName)
+	usageLease, err := cliCodeAcquireUsageLease(vmName)
 	if err != nil {
 		return fmt.Errorf("leasing VM %q for the IDE session: %w", vmName, err)
 	}
 	if err := lifecycleLock.Release(); err != nil {
 		return errors.Join(err, usageLease.Release())
 	}
-	runErr := execCmd.Run()
+	runErr := cliCodeRunIDE(cmd, args)
 	leaseErr := usageLease.Release()
 	if runErr != nil {
 		return errors.Join(fmt.Errorf("launching %s: %w", cmd, runErr), leaseErr)

@@ -73,6 +73,59 @@ func TestNewAskListenerSkipsInactiveIdentityReservedPort(t *testing.T) {
 	_ = probe.Close()
 }
 
+func TestNewAskListenerSkipsConfiguredForwardedPort(t *testing.T) {
+	project, _, _ := setupNamedVMIdentityTest(t)
+	cfg := config.NewConfig()
+	cfg.Security.Enforcement = config.EnforcementAsk
+	current, err := reserveNamedVMIdentity(project, "ask-forward", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	forwardedListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwardedPort := forwardedListener.Addr().(*net.TCPAddr).Port
+	_ = forwardedListener.Close()
+
+	listenCalls := 0
+	listener, err := listenForAskVerdictsWith(current.Identity.VMName, 0, func(network, address string) (net.Listener, error) {
+		listenCalls++
+		if listenCalls == 1 {
+			return net.Listen(network, fmt.Sprintf("127.0.0.1:%d", forwardedPort))
+		}
+		return net.Listen(network, address)
+	}, forwardedPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if got := listener.Addr().(*net.TCPAddr).Port; got == forwardedPort {
+		t.Fatalf("ask listener reused configured forwarded port %d", forwardedPort)
+	}
+	if listenCalls != 2 {
+		t.Fatalf("listen calls = %d, want forwarded-port collision plus retry", listenCalls)
+	}
+}
+
+func TestSavedAskListenerRejectsConfiguredForwardedPort(t *testing.T) {
+	listenCalled := false
+	listener, err := listenForAskVerdictsWith("ask-existing", 39285, func(string, string) (net.Listener, error) {
+		listenCalled = true
+		return nil, nil
+	}, 39285)
+	if listener != nil {
+		_ = listener.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "conflicts with a configured host port forward") {
+		t.Fatalf("collision error = %v, want configured-forward rejection", err)
+	}
+	if listenCalled {
+		t.Fatal("allocator bound a known-colliding saved ask port")
+	}
+}
+
 func TestConcurrentNewAskListenersAllocateAndSaveDistinctPorts(t *testing.T) {
 	project, _, _ := setupNamedVMIdentityTest(t)
 	cfg := config.NewConfig()

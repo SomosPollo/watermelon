@@ -41,6 +41,17 @@ type e2eTimings struct {
 	httpWait time.Duration
 }
 
+type missingRealVMPrerequisiteAction uint8
+
+const (
+	skipMissingRealVMPrerequisite missingRealVMPrerequisiteAction = iota
+	failMissingRealVMPrerequisite
+
+	networkPolicyBlockExitCode = 73
+)
+
+const blockedNetworkProbe = `timeout 5 bash -lc 'echo > /dev/tcp/93.184.216.34/80'; rc=$?; case "$rc" in 0) exit 90 ;; 1) exit 73 ;; 124) exit 124 ;; *) exit 91 ;; esac`
+
 var e2eSharedCache string
 
 func TestMain(m *testing.M) {
@@ -143,7 +154,29 @@ func newHarness(t *testing.T) *e2eHarness {
 func requireLimactl(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("limactl"); err != nil {
-		t.Skip("limactl is not installed")
+		skipOrFailMissingRealVMPrerequisite(t, fmt.Sprintf("limactl is not installed: %v", err))
+	}
+}
+
+func realVMMissingPrerequisiteAction() missingRealVMPrerequisiteAction {
+	if os.Getenv("WATERMELON_E2E_REQUIRE_REAL_VM") == "1" {
+		return failMissingRealVMPrerequisite
+	}
+	return skipMissingRealVMPrerequisite
+}
+
+func skipOrFailMissingRealVMPrerequisite(t *testing.T, reason string) {
+	t.Helper()
+	if realVMMissingPrerequisiteAction() == failMissingRealVMPrerequisite {
+		t.Fatalf("%s (WATERMELON_E2E_REQUIRE_REAL_VM=1 forbids skipping real-VM coverage)", reason)
+	}
+	t.Skip(reason)
+}
+
+func requireNonShortRealVM(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		skipOrFailMissingRealVMPrerequisite(t, "real VM e2e cannot run in short mode")
 	}
 }
 
@@ -168,8 +201,33 @@ func (h *e2eHarness) runInput(timeout time.Duration, input string, args ...strin
 func (h *e2eHarness) runErr(timeout time.Duration, args ...string) string {
 	h.t.Helper()
 	out, err := h.command(timeout, args...)
+	if errors.Is(err, context.DeadlineExceeded) {
+		h.t.Fatalf("watermelon %s timed out after %s instead of returning the expected error:\n%s", strings.Join(args, " "), timeout, out)
+	}
 	if err == nil {
 		h.t.Fatalf("watermelon %s unexpectedly succeeded:\n%s", strings.Join(args, " "), out)
+	}
+	return out
+}
+
+func (h *e2eHarness) runBlockedNetwork(timeout time.Duration, args ...string) string {
+	h.t.Helper()
+	out, err := h.command(timeout, args...)
+	if errors.Is(err, context.DeadlineExceeded) {
+		h.t.Fatalf("watermelon %s timed out after %s instead of rejecting the network attempt:\n%s", strings.Join(args, " "), timeout, out)
+	}
+	if err == nil {
+		h.t.Fatalf("watermelon %s unexpectedly allowed the network attempt:\n%s", strings.Join(args, " "), out)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		h.t.Fatalf("watermelon %s failed before it could verify the network block: %T %v\n%s", strings.Join(args, " "), err, err, out)
+	}
+	if exitErr.ExitCode() == 124 {
+		h.t.Fatalf("watermelon %s hit the guest timeout instead of rejecting the network attempt:\n%s", strings.Join(args, " "), out)
+	}
+	if exitErr.ExitCode() != networkPolicyBlockExitCode {
+		h.t.Fatalf("watermelon %s returned exit code %d, want the probe's policy-block code %d:\n%s", strings.Join(args, " "), exitErr.ExitCode(), networkPolicyBlockExitCode, out)
 	}
 	return out
 }
@@ -193,12 +251,19 @@ func (h *e2eHarness) runErrWithoutControllingTerminal(timeout time.Duration, arg
 	if err == nil {
 		h.t.Fatalf("watermelon %s unexpectedly succeeded without a controlling terminal:\n%s", strings.Join(args, " "), combined.String())
 	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 124 {
+		h.t.Fatalf("watermelon %s hit the guest timeout instead of completing the expected non-interactive block:\n%s", strings.Join(args, " "), combined.String())
+	}
 	return combined.String()
 }
 
 func (h *e2eHarness) runExitCode(timeout time.Duration, want int, args ...string) string {
 	h.t.Helper()
 	out, err := h.command(timeout, args...)
+	if errors.Is(err, context.DeadlineExceeded) {
+		h.t.Fatalf("watermelon %s timed out after %s instead of returning exit code %d:\n%s", strings.Join(args, " "), timeout, want, out)
+	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		h.t.Fatalf("watermelon %s error = %T %v, want exit code %d\n%s", strings.Join(args, " "), err, err, want, out)
@@ -234,7 +299,7 @@ func (h *e2eHarness) commandInDirWithInput(dir string, timeout time.Duration, in
 	cmd.Stderr = &combined
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return combined.String(), fmt.Errorf("timed out after %s", timeout)
+		return combined.String(), fmt.Errorf("timed out after %s: %w", timeout, context.DeadlineExceeded)
 	}
 	return combined.String(), err
 }
@@ -312,7 +377,7 @@ func realVMTimings(t *testing.T) e2eTimings {
 		if err := requireUsableKVM(); err == nil {
 			return timings
 		} else if os.Getenv("WATERMELON_E2E_ALLOW_TCG") != "1" {
-			t.Skipf("real Linux VM e2e requires usable /dev/kvm for reliable runtime (%v); set WATERMELON_E2E_ALLOW_TCG=1 to try slow QEMU TCG", err)
+			skipOrFailMissingRealVMPrerequisite(t, fmt.Sprintf("real Linux VM e2e requires usable /dev/kvm for reliable runtime (%v); set WATERMELON_E2E_ALLOW_TCG=1 to try slow QEMU TCG", err))
 		} else {
 			t.Logf("running real Linux VM e2e without KVM (%v); using slow QEMU TCG timeouts", err)
 		}
@@ -326,7 +391,7 @@ func realVMTimings(t *testing.T) e2eTimings {
 		timings.httpWait = 3 * time.Minute
 		return timings
 	default:
-		t.Skip("real Watermelon VM e2e requires a macOS or Linux host")
+		skipOrFailMissingRealVMPrerequisite(t, "real Watermelon VM e2e requires a macOS or Linux host")
 		return timings
 	}
 }
@@ -336,10 +401,11 @@ func requireQEMU(t *testing.T) {
 
 	binary, ok := qemuSystemBinary()
 	if !ok {
-		t.Skipf("real Linux VM e2e does not know which QEMU binary to use for %s", runtime.GOARCH)
+		skipOrFailMissingRealVMPrerequisite(t, fmt.Sprintf("real Linux VM e2e does not know which QEMU binary to use for %s", runtime.GOARCH))
+		return
 	}
 	if _, err := exec.LookPath(binary); err != nil {
-		t.Skipf("real Linux VM e2e requires %s: %v", binary, err)
+		skipOrFailMissingRealVMPrerequisite(t, fmt.Sprintf("real Linux VM e2e requires %s: %v", binary, err))
 	}
 }
 
@@ -360,6 +426,51 @@ func requireUsableKVM() error {
 		return err
 	}
 	return f.Close()
+}
+
+func TestE2ERealVMRequirementDecision(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  missingRealVMPrerequisiteAction
+	}{
+		{name: "unset", want: skipMissingRealVMPrerequisite},
+		{name: "zero", value: "0", want: skipMissingRealVMPrerequisite},
+		{name: "required", value: "1", want: failMissingRealVMPrerequisite},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WATERMELON_E2E_REQUIRE_REAL_VM", tt.value)
+			if got := realVMMissingPrerequisiteAction(); got != tt.want {
+				t.Fatalf("realVMMissingPrerequisiteAction() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestE2ECommandTimeoutIsDistinguishable(t *testing.T) {
+	h := &e2eHarness{
+		t:       t,
+		project: t.TempDir(),
+		wm:      os.Args[0],
+		env: append(os.Environ(),
+			"WATERMELON_E2E_TIMEOUT_HELPER=1",
+			"WATERMELON_E2E_CACHE_HOME="+e2eSharedCache,
+		),
+	}
+
+	out, err := h.command(250*time.Millisecond, "-test.run=^TestE2ETimeoutHelperProcess$")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("command timeout error = %T %v, want context deadline exceeded\n%s", err, err, out)
+	}
+}
+
+func TestE2ETimeoutHelperProcess(t *testing.T) {
+	if os.Getenv("WATERMELON_E2E_TIMEOUT_HELPER") != "1" {
+		return
+	}
+	time.Sleep(30 * time.Second)
 }
 
 func TestE2ECLIProjectWorkflow(t *testing.T) {
@@ -442,9 +553,7 @@ image = "ubuntu-26.04"
 }
 
 func TestE2ENamedNoMountAskToolWorkflow(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real VM e2e is skipped in short mode")
-	}
+	requireNonShortRealVM(t)
 	timings := realVMTimings(t)
 	h := newHarness(t)
 
@@ -584,9 +693,7 @@ disk = "10GB"
 }
 
 func TestE2ERealVMLifecycle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("real VM e2e is skipped in short mode")
-	}
+	requireNonShortRealVM(t)
 	timings := realVMTimings(t)
 
 	h := newHarness(t)
@@ -609,7 +716,13 @@ func TestE2ERealVMLifecycle(t *testing.T) {
 image = "ubuntu-22.04"
 
 [network]
-allow = []
+allow = ["registry.npmjs.org"]
+
+[tools]
+"node:20-slim" = ["node", "npm"]
+
+[provision]
+npm = ["is-number@7.0.0"]
 
 [mounts]
 %q = { target = "/mnt/watermelon/wm-extra" }
@@ -631,6 +744,10 @@ disk = "10GB"
 
 	out := h.run(timings.status, "status")
 	requireVMStatus(t, out, "Running")
+
+	// Exercise the real direct-argv provision build, committed image, and the
+	// wrapper's switch from the base image to the provisioned image.
+	h.run(timings.command, "exec", "node", "-e", `if (!require("/usr/local/lib/node_modules/is-number")("42")) process.exit(1)`)
 
 	out = h.run(timings.command, "exec", "pwd")
 	if strings.TrimSpace(out) != "/project" {
@@ -669,11 +786,24 @@ disk = "10GB"
 		t.Fatalf("argv exec wrote %q", string(data))
 	}
 
-	blockedOut := h.runErr(timings.command, "exec", "timeout 5 bash -lc 'echo > /dev/tcp/93.184.216.34/80'")
+	h.run(timings.status, "logs", "--clear")
+	if cleared := h.run(timings.status, "logs"); outputHasLineContainingAll(cleared, "watermelon-net", "DST=93.184.216.34", "DPT=80") {
+		t.Fatalf("freshly cleared network log retained the target probe entry:\n%s", cleared)
+	}
+	blockedOut := h.runBlockedNetwork(timings.command, "exec", blockedNetworkProbe)
 	if blockedOut == "" {
 		t.Log("blocked network command failed with no output, as expected")
 	}
-	waitForLogLine(t, h, "watermelon-net", timings.logWait, timings.status)
+	waitForLogLine(t, h, timings.logWait, timings.status, "watermelon-net", "DST=93.184.216.34", "DPT=80")
+
+	// Clear while the systemd log writer still has the file open, then prove a
+	// fresh policy event remains visible through the same path and inode.
+	h.run(timings.status, "logs", "--clear")
+	if cleared := h.run(timings.status, "logs"); outputHasLineContainingAll(cleared, "watermelon-net", "DST=93.184.216.34", "DPT=80") {
+		t.Fatalf("network log retained the target probe entry after live clear:\n%s", cleared)
+	}
+	h.runBlockedNetwork(timings.command, "exec", blockedNetworkProbe)
+	waitForLogLine(t, h, timings.logWait, timings.status, "watermelon-net", "DST=93.184.216.34", "DPT=80")
 
 	// The omitted [security] section must default to strict enforcement. Normal
 	// resolution and attempts to select an external resolver must both receive
@@ -697,10 +827,15 @@ disk = "10GB"
 	out = h.run(timings.status, "status")
 	requireVMStatus(t, out, "Running")
 
-	restartedBlockedOut := h.runErr(timings.command, "exec", "timeout 5 bash -lc 'echo > /dev/tcp/93.184.216.34/80'")
+	h.run(timings.status, "logs", "--clear")
+	if cleared := h.run(timings.status, "logs"); outputHasLineContainingAll(cleared, "watermelon-net", "DST=93.184.216.34", "DPT=80") {
+		t.Fatalf("network log retained the pre-restart target probe entry after clear:\n%s", cleared)
+	}
+	restartedBlockedOut := h.runBlockedNetwork(timings.command, "exec", blockedNetworkProbe)
 	if restartedBlockedOut == "" {
 		t.Log("blocked network command failed after restart with no output, as expected")
 	}
+	waitForLogLine(t, h, timings.logWait, timings.status, "watermelon-net", "DST=93.184.216.34", "DPT=80")
 }
 
 const directDNSMediationProbe = `
@@ -756,17 +891,33 @@ func hasOutputLine(output, want string) bool {
 	return false
 }
 
-func waitForLogLine(t *testing.T, h *e2eHarness, needle string, timeout, commandTimeout time.Duration) {
+func waitForLogLine(t *testing.T, h *e2eHarness, timeout, commandTimeout time.Duration, needles ...string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		out := h.run(commandTimeout, "logs")
-		if strings.Contains(out, needle) {
+		if outputHasLineContainingAll(out, needles...) {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for log line containing %q", needle)
+	t.Fatalf("timed out waiting for one log line containing %q", needles)
+}
+
+func outputHasLineContainingAll(output string, needles ...string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		matched := true
+		for _, needle := range needles {
+			if !strings.Contains(line, needle) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func waitForHTTP(t *testing.T, url, want string, timeout time.Duration) {
