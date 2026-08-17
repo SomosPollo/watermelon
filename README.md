@@ -219,6 +219,11 @@ See [docs/SECURITY.md](./docs/SECURITY.md) for details.
 
 See [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) for common issues.
 
+## Release History
+
+See [CHANGELOG.md](./CHANGELOG.md) for every Watermelon release and its upgrade
+notes.
+
 ## Development
 
 Development requires Go 1.25.12 or newer.

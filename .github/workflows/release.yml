@@ -148,11 +148,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Validate release notes
-        run: test -s "docs/releases/${GITHUB_REF_NAME}.md"
-
       - name: Prepare release directory
         run: mkdir dist
+
+      - name: Prepare release notes
+        run: sh ./test/release_notes.sh "${GITHUB_REF_NAME}" CHANGELOG.md > dist/release-notes.md
 
       - name: Build darwin/arm64
         env:
@@ -257,7 +257,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
-          body_path: docs/releases/${{ github.ref_name }}.md
+          body_path: dist/release-notes.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
