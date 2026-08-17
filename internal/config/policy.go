@@ -17,7 +17,7 @@ const (
 	EnforcementSilent = "silent"
 	EnforcementAsk    = "ask"
 
-	AppliedPolicySnapshotVersion = 3
+	AppliedPolicySnapshotVersion = 4
 )
 
 // ErrLegacyAppliedPolicySnapshot identifies the old raw SHA-256 snapshot

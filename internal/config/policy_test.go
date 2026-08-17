@@ -284,19 +284,19 @@ func TestParseAppliedPolicySnapshotRejectsLegacyDigest(t *testing.T) {
 	}
 }
 
-func TestParseAppliedPolicySnapshotRejectsVersionTwo(t *testing.T) {
+func TestParseAppliedPolicySnapshotRejectsVersionThree(t *testing.T) {
 	cfg := NewConfig()
 	snapshot, err := NewAppliedPolicySnapshot(cfg, testAppliedHostContext(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot.Version = 2
+	snapshot.Version = 3
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ParseAppliedPolicySnapshot(data); err == nil || !strings.Contains(err.Error(), "unsupported applied-policy snapshot version 2") {
-		t.Fatalf("version 2 snapshot error = %v", err)
+	if _, err := ParseAppliedPolicySnapshot(data); err == nil || !strings.Contains(err.Error(), "unsupported applied-policy snapshot version 3") {
+		t.Fatalf("version 3 snapshot error = %v", err)
 	}
 }
 

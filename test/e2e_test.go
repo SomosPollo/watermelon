@@ -232,7 +232,7 @@ func (h *e2eHarness) runBlockedNetwork(timeout time.Duration, args ...string) st
 	return out
 }
 
-func (h *e2eHarness) runErrWithoutControllingTerminal(timeout time.Duration, args ...string) string {
+func (h *e2eHarness) runExitCodeWithoutControllingTerminal(timeout time.Duration, want int, args ...string) string {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -248,12 +248,12 @@ func (h *e2eHarness) runErrWithoutControllingTerminal(timeout time.Duration, arg
 	if ctx.Err() == context.DeadlineExceeded {
 		h.t.Fatalf("watermelon %s timed out after %s:\n%s", strings.Join(args, " "), timeout, combined.String())
 	}
-	if err == nil {
-		h.t.Fatalf("watermelon %s unexpectedly succeeded without a controlling terminal:\n%s", strings.Join(args, " "), combined.String())
-	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 124 {
-		h.t.Fatalf("watermelon %s hit the guest timeout instead of completing the expected non-interactive block:\n%s", strings.Join(args, " "), combined.String())
+	if !errors.As(err, &exitErr) {
+		h.t.Fatalf("watermelon %s error = %T %v, want exit code %d without a controlling terminal\n%s", strings.Join(args, " "), err, err, want, combined.String())
+	}
+	if got := exitErr.ExitCode(); got != want {
+		h.t.Fatalf("watermelon %s exit code = %d, want %d without a controlling terminal\n%s", strings.Join(args, " "), got, want, combined.String())
 	}
 	return combined.String()
 }
@@ -630,9 +630,10 @@ disk = "10GB"
 	// macOS intentionally uses a native dialog even when stdin is not a TTY;
 	// avoid opening GUI prompts during an unattended E2E run. Linux uses the
 	// terminal fallback, whose message proves the authenticated verdict request
-	// reached the host and was answered with the fail-closed default.
+	// reached the host and was answered with the fail-closed default. NF_DROP
+	// intentionally discards the SYN, so the bounded guest probe must time out.
 	if runtime.GOOS != "darwin" {
-		blockedOut := h.runErrWithoutControllingTerminal(timings.command, "exec", "--name", vmName, "timeout 30 bash -lc 'echo > /dev/tcp/93.184.216.34/80'")
+		blockedOut := h.runExitCodeWithoutControllingTerminal(timings.command, 124, "exec", "--name", vmName, "timeout 5 bash -lc 'echo > /dev/tcp/93.184.216.34/80'")
 		if !strings.Contains(blockedOut, "Watermelon network prompt requires a foreground controlling terminal; blocking by default") {
 			t.Fatalf("ask-mode TCP attempt did not complete the authenticated non-interactive block flow:\n%s", blockedOut)
 		}
