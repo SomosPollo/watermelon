@@ -134,71 +134,46 @@ jobs:
           WATERMELON_EXPECT_LIMA_VERSION: ${{ matrix.version }}
         run: go test -count=1 ./internal/lima
 
-  build:
+  draft-release:
     needs:
       - test
       - real-vm-security
       - lima-compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
-      - name: Prepare release directory
-        run: mkdir dist
-
       - name: Prepare release notes
-        run: sh ./test/release_notes.sh "${GITHUB_REF_NAME}" CHANGELOG.md > dist/release-notes.md
+        run: sh ./test/release_notes.sh "${GITHUB_REF_NAME}" CHANGELOG.md > "${RUNNER_TEMP}/release-notes.md"
 
-      - name: Build darwin/arm64
+      - name: Build and create draft release
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
         env:
-          GOOS: darwin
-          GOARCH: arm64
-        run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o dist/watermelon-darwin-arm64 ./cmd/watermelon
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build darwin/amd64
-        env:
-          GOOS: darwin
-          GOARCH: amd64
-        run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o dist/watermelon-darwin-amd64 ./cmd/watermelon
-
-      - name: Build linux/arm64
-        env:
-          GOOS: linux
-          GOARCH: arm64
-          CGO_ENABLED: 0
-        run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o dist/watermelon-linux-arm64 ./cmd/watermelon
-
-      - name: Build linux/amd64
-        env:
-          GOOS: linux
-          GOARCH: amd64
-          CGO_ENABLED: 0
-        run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o dist/watermelon-linux-amd64 ./cmd/watermelon
-
-      - name: Build nfqd linux/arm64
-        env:
-          GOOS: linux
-          GOARCH: arm64
-          CGO_ENABLED: 0
-        run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o dist/watermelon-nfqd-linux-arm64 ./cmd/watermelon-nfqd
-
-      - name: Build nfqd linux/amd64
-        env:
-          GOOS: linux
-          GOARCH: amd64
-          CGO_ENABLED: 0
-        run: go build -ldflags "-X main.Version=${GITHUB_REF_NAME}" -o dist/watermelon-nfqd-linux-amd64 ./cmd/watermelon-nfqd
+      - name: Stage and verify release assets
+        run: |
+          ./test/stage_release_assets.sh dist release-dist
+          (cd release-dist && sha256sum --check checksums.txt)
 
       - name: Validate release build metadata
-        run: sh ./test/release_buildinfo.sh dist "${GITHUB_REF_NAME}"
+        run: sh ./test/release_buildinfo.sh release-dist "${GITHUB_REF_NAME}"
 
       - name: Pack release artifacts
-        run: tar -czf release-assets.tar.gz -C dist .
+        run: tar -czf release-assets.tar.gz -C release-dist .
 
       - name: Stage release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -210,7 +185,7 @@ jobs:
           retention-days: 7
 
   installer-smoke:
-    needs: build
+    needs: draft-release
     strategy:
       fail-fast: false
       matrix:
@@ -242,28 +217,42 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-assets
-
-      - name: Unpack release artifacts
+      - name: Validate and publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir dist
-          tar -xzf release-assets.tar.gz -C dist
+          expected_assets=$(printf '%s\n' \
+            checksums.txt \
+            watermelon-darwin-amd64 \
+            watermelon-darwin-arm64 \
+            watermelon-linux-amd64 \
+            watermelon-linux-arm64 \
+            watermelon-nfqd-linux-amd64 \
+            watermelon-nfqd-linux-arm64 | sort)
+          actual_assets=$(gh release view "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets \
+            --jq '.assets[].name' | sort)
+          if [ "$actual_assets" != "$expected_assets" ]; then
+            echo "draft release assets do not match the expected set" >&2
+            printf 'expected:\n%s\nactual:\n%s\n' "$expected_assets" "$actual_assets" >&2
+            exit 1
+          fi
 
-      - name: Create Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          body_path: dist/release-notes.md
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/watermelon-darwin-arm64
-            dist/watermelon-darwin-amd64
-            dist/watermelon-linux-arm64
-            dist/watermelon-linux-amd64
-            dist/watermelon-nfqd-linux-arm64
-            dist/watermelon-nfqd-linux-amd64
+          is_draft=$(gh release view "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json isDraft \
+            --jq '.isDraft')
+          if [ "$is_draft" = "false" ]; then
+            echo "release ${GITHUB_REF_NAME} is already published"
+            exit 0
+          fi
+          if [ "$is_draft" != "true" ]; then
+            echo "release ${GITHUB_REF_NAME} has an unexpected draft state: $is_draft" >&2
+            exit 1
+          fi
+
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false \
+            --latest

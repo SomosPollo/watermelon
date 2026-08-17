@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.17.1/www/docs/static/schema.json
+version: 2
+
+project_name: watermelon
+
+builds:
+  - id: watermelon
+    main: ./cmd/watermelon
+    binary: watermelon
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -X main.Version={{ if .IsSnapshot }}v0.0.0-snapshot{{ else }}{{ .Tag }}{{ end }}
+
+  - id: watermelon-nfqd
+    main: ./cmd/watermelon-nfqd
+    binary: watermelon-nfqd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -X main.Version={{ if .IsSnapshot }}v0.0.0-snapshot{{ else }}{{ .Tag }}{{ end }}
+
+archives:
+  - id: watermelon
+    ids:
+      - watermelon
+    formats:
+      - binary
+    name_template: "watermelon-{{ .Os }}-{{ .Arch }}"
+
+  - id: watermelon-nfqd
+    ids:
+      - watermelon-nfqd
+    formats:
+      - binary
+    name_template: "watermelon-nfqd-linux-{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: 0.0.0-snapshot
+
+release:
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
+  make_latest: true
+  mode: replace
+  name_template: "{{ .Tag }}"

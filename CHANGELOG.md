@@ -7,6 +7,12 @@ and Watermelon follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+
+- Migrated tagged builds and GitHub release creation to GoReleaser, including
+  checksums and draft publication only after the cross-platform installer gates
+  pass.
+
 ## [0.4.1] - 2026-08-17
 
 Watermelon v0.4.1 is the first published v0.4 release. It contains the product
