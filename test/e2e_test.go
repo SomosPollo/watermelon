@@ -566,7 +566,7 @@ func TestE2ENamedNoMountAskToolWorkflow(t *testing.T) {
 	nfqd := filepath.Join(h.root, "watermelon-nfqd")
 	buildNFQD := exec.Command("go", "build", "-o", nfqd, "./cmd/watermelon-nfqd")
 	buildNFQD.Dir = ".."
-	buildNFQD.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH)
+	buildNFQD.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0")
 	if out, err := buildNFQD.CombinedOutput(); err != nil {
 		t.Fatalf("building Linux nfqd sidecar: %v\n%s", err, out)
 	}
