@@ -98,7 +98,7 @@ jobs:
 
   real-vm-lifecycle:
     runs-on: ubuntu-24.04
-    timeout-minutes: 170
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -113,6 +113,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86
+          test -e /dev/kvm
+          printf '%s\n' 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-watermelon-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
           archive="lima-${LIMA_VERSION}-Linux-x86_64.tar.gz"
           archive_path="${RUNNER_TEMP}/${archive}"
           curl -fsSL -o "${archive_path}" "https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/${archive}"
@@ -123,14 +130,13 @@ jobs:
 
       - name: Test live VM security boundary
         env:
-          WATERMELON_E2E_ALLOW_TCG: "1"
           WATERMELON_E2E_REQUIRE_REAL_VM: "1"
-        run: go test -tags=e2e -run '^TestE2ERealVMLifecycle$' -timeout=150m -count=1 -v ./test/...
+        run: go test -tags=e2e -run '^TestE2ERealVMLifecycle$' -timeout=50m -count=1 -v ./test/...
 
   real-vm-ask:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -145,6 +151,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86
+          test -e /dev/kvm
+          printf '%s\n' 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-watermelon-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
           archive="lima-${LIMA_VERSION}-Linux-x86_64.tar.gz"
           archive_path="${RUNNER_TEMP}/${archive}"
           curl -fsSL -o "${archive_path}" "https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/${archive}"
@@ -155,9 +168,8 @@ jobs:
 
       - name: Test live ask-mode security boundary
         env:
-          WATERMELON_E2E_ALLOW_TCG: "1"
           WATERMELON_E2E_REQUIRE_REAL_VM: "1"
-        run: go test -tags=e2e -run '^TestE2ENamedNoMountAskToolWorkflow$' -timeout=100m -count=1 -v ./test/...
+        run: go test -tags=e2e -run '^TestE2ENamedNoMountAskToolWorkflow$' -timeout=35m -count=1 -v ./test/...
 
   lima-compatibility:
     strategy:

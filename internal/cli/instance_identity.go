@@ -470,7 +470,7 @@ func removeNamedVMIdentity(expected namedVMIdentity) error {
 }
 
 func resolveNamedVMIdentityNamespace() (string, string, error) {
-	userConfigLexical, err := os.UserConfigDir()
+	userConfigLexical, err := effectiveUserConfigDir()
 	if err != nil {
 		return "", "", fmt.Errorf("locating user config directory: %w", err)
 	}

@@ -57,7 +57,7 @@ func TestStatusPrintsDiscoveredAncestorProjectRoot(t *testing.T) {
 	if !strings.Contains(out.String(), "Project:  "+project+"\n") {
 		t.Fatalf("status did not expose discovered root %q:\n%s", project, out.String())
 	}
-	if !strings.Contains(out.String(), "VM Name:  "+lima.VMNameFromPath(project)+"\n") {
+	if !strings.Contains(out.String(), "VM Name:  "+derivedVMName(project)+"\n") {
 		t.Fatalf("status did not use root-derived VM name:\n%s", out.String())
 	}
 }
@@ -100,7 +100,7 @@ func TestStatusUsesDiscoveredRootForExistingVMPolicyBindingAndLogs(t *testing.T)
 
 	oldStatus, oldProjectSource := cliGetVMStatusWithError, cliProjectMountSource
 	cliGetVMStatusWithError = func(name string) (lima.VMStatus, error) {
-		if name != lima.VMNameFromPath(project) {
+		if name != derivedVMName(project) {
 			t.Fatalf("status queried VM %q, want root-derived VM", name)
 		}
 		return lima.StatusStopped, nil
@@ -108,7 +108,7 @@ func TestStatusUsesDiscoveredRootForExistingVMPolicyBindingAndLogs(t *testing.T)
 	bindingCalls := 0
 	cliProjectMountSource = func(name string) (string, error) {
 		bindingCalls++
-		if name != lima.VMNameFromPath(project) {
+		if name != derivedVMName(project) {
 			t.Fatalf("binding queried VM %q, want root-derived VM", name)
 		}
 		return project, nil
@@ -252,7 +252,7 @@ func TestStatusRecoveryKeepsExplicitPathDerivedSelection(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".watermelon.toml"), []byte("[vm]\nname = \"configured-other\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	derived := lima.VMNameFromPath(dir)
+	derived := derivedVMName(dir)
 
 	oldStatus, oldStatusWithError, oldProjectSource := cliGetVMStatus, cliGetVMStatusWithError, cliProjectMountSource
 	cliGetVMStatus = func(name string) lima.VMStatus {

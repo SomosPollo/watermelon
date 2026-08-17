@@ -511,7 +511,7 @@ func TestRemoveNamedVMIdentityHandlesUntrustedGuestStateAndRefusesUnexpectedHost
 
 func setupNamedVMIdentityTest(t *testing.T) (project, limaHome, userConfig string) {
 	t.Helper()
-	root := t.TempDir()
+	root := privateTempDir(t)
 	project = filepath.Join(root, "project")
 	limaHome = filepath.Join(root, "lima")
 	userConfig = filepath.Join(root, "config")

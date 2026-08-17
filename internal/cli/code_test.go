@@ -56,7 +56,7 @@ func setupCodeRunHarness(t *testing.T, enforcement string) *codeRunHarness {
 	t.Helper()
 	configureLifecycleLockTest(t)
 
-	project := t.TempDir()
+	project := privateTempDir(t)
 	contents := fmt.Sprintf(`[security]
 enforcement = %q
 
@@ -85,7 +85,7 @@ workdir = "/workspace/app"
 
 	harness := &codeRunHarness{
 		project: project,
-		vmName:  lima.VMNameFromPath(project),
+		vmName:  derivedVMName(project),
 	}
 	harness.lifecycle = &recordingCodeLease{name: "lifecycle", events: &harness.events}
 	harness.usage = &recordingCodeLease{name: "usage", events: &harness.events}

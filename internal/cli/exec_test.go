@@ -195,7 +195,7 @@ func TestExecWatermelonFlagsMustPrecedeGuestCommand(t *testing.T) {
 
 func TestAskExecSharesCoordinatorBetweenServerAndAttachedCommand(t *testing.T) {
 	configureLifecycleLockTest(t)
-	project := t.TempDir()
+	project := privateTempDir(t)
 	if err := os.WriteFile(filepath.Join(project, ".watermelon.toml"), []byte("[security]\nenforcement = \"ask\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestAskExecSharesCoordinatorBetweenServerAndAttachedCommand(t *testing.T) {
 	cliNewAskCoordinator = func() askTerminalCoordinator { return fakeCoordinator }
 	var serverDialog ask.DialogFunc
 	cliStartAskServer = func(dir, vmName string, dialog ask.DialogFunc) (net.Listener, error) {
-		if dir != project || vmName != lima.VMNameFromPath(project) {
+		if dir != project || vmName != derivedVMName(project) {
 			t.Fatalf("ask server target = %q %q", dir, vmName)
 		}
 		serverDialog = dialog
@@ -277,7 +277,7 @@ func TestAskExecSharesCoordinatorBetweenServerAndAttachedCommand(t *testing.T) {
 
 func TestExecHandsOffLifecycleLockWhileHoldingUsageLease(t *testing.T) {
 	configureLifecycleLockTest(t)
-	project := t.TempDir()
+	project := privateTempDir(t)
 	if err := os.WriteFile(filepath.Join(project, ".watermelon.toml"), []byte("[security]\nenforcement = \"fail\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestExecHandsOffLifecycleLockWhileHoldingUsageLease(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
 
-	vmName := lima.VMNameFromPath(project)
+	vmName := derivedVMName(project)
 	oldStatus, oldProjectMount, oldVerify, oldExec := cliGetVMStatus, cliProjectMountSource, cliVerifyPolicy, cliExecVM
 	cliGetVMStatus = func(string) lima.VMStatus { return lima.StatusRunning }
 	cliProjectMountSource = func(string) (string, error) { return project, nil }

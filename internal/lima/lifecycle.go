@@ -482,6 +482,11 @@ func ExecWithRunner(vmName string, args []string, runner CommandRunner, workdir 
 	if len(args) == 1 && shouldRunViaShell(args[0]) {
 		args = []string{"sh", "-lc", args[0]}
 	}
+	// OpenSSH reports 255 when the remote command itself is terminated by a
+	// signal, losing the guest's conventional 128+signal status. Keep a small
+	// guest-side shell alive so it can turn its child's wait status into an
+	// ordinary numeric exit status while preserving the command's argv exactly.
+	args = append([]string{"sh", "-c", `"$@"; status=$?; exit "$status"`, "watermelon-exec"}, args...)
 	cmdArgs = append(cmdArgs, args...)
 	cmd := execCommand("limactl", cmdArgs...)
 	cmd.Stdin = os.Stdin

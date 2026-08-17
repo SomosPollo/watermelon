@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/saeta-eth/watermelon/internal/lima"
 	"github.com/saeta-eth/watermelon/internal/logs"
 	"github.com/spf13/cobra"
 )
@@ -72,7 +71,7 @@ func resolvedNetworkLogPath(target targetContext) (string, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("resolving logs for VM %q: %w", target.VMName, err)
 	}
-	if target.VMName != lima.VMNameFromPath(target.ProjectRoot) {
+	if target.VMName != derivedVMName(target.ProjectRoot) {
 		return "", fmt.Errorf("refusing to read logs for custom-named VM %q without a valid Watermelon identity record", target.VMName)
 	}
 	return logPath, nil
