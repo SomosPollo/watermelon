@@ -607,7 +607,7 @@ func TestExecPassesArgvCommandDirectly(t *testing.T) {
 		t.Fatalf("expected 1 command, got %d", len(captured))
 	}
 
-	want := "limactl shell --workdir /project watermelon-test-12345678 -- npm install"
+	want := `limactl shell --workdir /project watermelon-test-12345678 -- sh -c "$@"; status=$?; exit "$status" watermelon-exec npm install`
 	if captured[0] != want {
 		t.Errorf("Exec() command = %q, want %q", captured[0], want)
 	}
@@ -655,7 +655,7 @@ func TestExecRunsCompoundSingleStringThroughShell(t *testing.T) {
 		t.Fatalf("expected 1 command, got %d", len(captured))
 	}
 
-	want := "limactl shell --workdir /project watermelon-test-12345678 -- sh -lc npm install && npm test"
+	want := `limactl shell --workdir /project watermelon-test-12345678 -- sh -c "$@"; status=$?; exit "$status" watermelon-exec sh -lc npm install && npm test`
 	if captured[0] != want {
 		t.Errorf("Exec() command = %q, want %q", captured[0], want)
 	}
@@ -741,12 +741,12 @@ func TestShellAndExecHonorExplicitWorkdir(t *testing.T) {
 		{
 			name: "exec custom",
 			run:  func() error { return Exec("custom-dev", []string{"docker", "ps"}, "/workspace") },
-			want: "limactl shell --workdir /workspace custom-dev -- docker ps",
+			want: `limactl shell --workdir /workspace custom-dev -- sh -c "$@"; status=$?; exit "$status" watermelon-exec docker ps`,
 		},
 		{
 			name: "exec guest home",
 			run:  func() error { return Exec("custom-dev", []string{"pwd"}, "") },
-			want: "limactl shell custom-dev -- pwd",
+			want: `limactl shell custom-dev -- sh -c "$@"; status=$?; exit "$status" watermelon-exec pwd`,
 		},
 	}
 	for _, tt := range tests {

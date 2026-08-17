@@ -29,7 +29,7 @@ func TestDestroyCommandNoVM(t *testing.T) {
 	destroyGetStatus = func(string) lima.VMStatus { return lima.StatusNotFound }
 	t.Cleanup(func() { destroyGetStatus = oldStatus })
 
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	originalDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestDestroyCommandNoVM(t *testing.T) {
 
 func TestDestroyStopsActiveSessionBeforeWaitingToDelete(t *testing.T) {
 	dir := prepareDestroySnapshotTest(t)
-	vmName := lima.VMNameFromPath(dir)
+	vmName := derivedVMName(dir)
 	activeSession, err := acquireSharedVMUsageLease(vmName)
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestDestroyRefusesProjectRootChangeWhilePromptWaits(t *testing.T) {
 	if err := os.Chdir(nested); err != nil {
 		t.Fatal(err)
 	}
-	vmName := lima.VMNameFromPath(project)
+	vmName := derivedVMName(project)
 
 	oldStatus, oldProjectMount, oldStop, oldDelete := destroyGetStatus, cliProjectMountSource, destroyStop, destroyDelete
 	destroyGetStatus = func(name string) lima.VMStatus {
@@ -270,7 +270,7 @@ func TestDestroyRefusesProjectRootChangeWhilePromptWaits(t *testing.T) {
 
 func TestDestroyRefusesLegacyVMRecreatedWhilePromptWaits(t *testing.T) {
 	dir := prepareDestroySnapshotTest(t)
-	vmName := lima.VMNameFromPath(dir)
+	vmName := derivedVMName(dir)
 	instanceDir := filepath.Join(os.Getenv("LIMA_HOME"), vmName)
 	oldStatus, oldProjectMount, oldDelete := destroyGetStatus, cliProjectMountSource, destroyDelete
 	destroyGetStatus = func(string) lima.VMStatus { return lima.StatusRunning }
@@ -458,11 +458,11 @@ func prepareDestroySnapshotTest(t *testing.T) string {
 	oldStop := destroyStop
 	destroyStop = func(string) error { return nil }
 	t.Cleanup(func() { destroyStop = oldStop })
-	dir := t.TempDir()
+	dir := privateTempDir(t)
 	t.Setenv("XDG_CONFIG_HOME", privateTempDir(t))
 	limaHome := t.TempDir()
 	t.Setenv("LIMA_HOME", limaHome)
-	instanceDir := filepath.Join(limaHome, lima.VMNameFromPath(dir))
+	instanceDir := filepath.Join(limaHome, derivedVMName(dir))
 	if err := os.Mkdir(instanceDir, 0700); err != nil {
 		t.Fatal(err)
 	}

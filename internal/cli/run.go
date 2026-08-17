@@ -59,7 +59,7 @@ const recreatePolicyCommand = "watermelon destroy --force && watermelon run"
 var errNfqdBinaryNotFound = errors.New("packaged network interceptor not found")
 
 func policyCommandNeedsExplicitName(dir, vmName string, nameExplicit []bool) bool {
-	return (len(nameExplicit) > 0 && nameExplicit[0]) || vmName != lima.VMNameFromPath(dir)
+	return (len(nameExplicit) > 0 && nameExplicit[0]) || vmName != derivedVMName(dir)
 }
 
 func runPolicyCommandForVM(dir, vmName string, nameExplicit ...bool) string {
@@ -536,7 +536,7 @@ func stopBoundVMForConfigErrorForTarget(dir, vmName string, configErr error) err
 	candidates := []string{vmName}
 	var lookupErr error
 	if vmName == "" {
-		candidates[0] = lima.VMNameFromPath(dir)
+		candidates[0] = derivedVMName(dir)
 		identities, err := listNamedVMIdentitiesBestEffort()
 		if err != nil {
 			lookupErr = fmt.Errorf("owned named VMs could not be completely enumerated after the config failure: %w", err)
@@ -1187,6 +1187,30 @@ func canonicalProjectRoot(dir string) (string, error) {
 	return canonical, nil
 }
 
+// derivedVMName keeps path-derived instance selection stable across lexical
+// aliases such as macOS's /var -> /private/var symlink. Commands normally pass
+// an already-canonical project root, but recovery and testable helper paths can
+// reach instance selection before project discovery has normalized the path.
+func derivedVMName(dir string) string {
+	if canonical, err := canonicalProjectRoot(dir); err == nil {
+		dir = canonical
+	}
+	return lima.VMNameFromPath(dir)
+}
+
+// effectiveUserConfigDir honors an explicit XDG override on every host OS.
+// os.UserConfigDir ignores XDG_CONFIG_HOME on macOS, which makes it impossible
+// for callers to relocate Watermelon's host-only state in a portable way.
+func effectiveUserConfigDir() (string, error) {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		if !filepath.IsAbs(dir) {
+			return "", errors.New("path in $XDG_CONFIG_HOME is relative")
+		}
+		return dir, nil
+	}
+	return os.UserConfigDir()
+}
+
 func resolveAppliedPolicyHostContext(dir string, cfg *config.Config) (appliedPolicyHostContext, error) {
 	return resolveAppliedPolicyHostContextForVM(dir, cfg, "")
 }
@@ -1201,7 +1225,7 @@ func resolveAppliedPolicyHostContextForVM(dir string, cfg *config.Config, vmName
 		return appliedPolicyHostContext{}, err
 	}
 
-	userConfigLexical, err := os.UserConfigDir()
+	userConfigLexical, err := effectiveUserConfigDir()
 	if err != nil {
 		return appliedPolicyHostContext{}, fmt.Errorf("locating user config directory: %w", err)
 	}
@@ -1504,7 +1528,7 @@ func legacyConfigDigestPath(dir string) string {
 }
 
 func assessAppliedPolicy(dir string, status lima.VMStatus, cfg *config.Config) appliedPolicyAssessment {
-	return assessAppliedPolicyForVM(dir, lima.VMNameFromPath(dir), status, cfg)
+	return assessAppliedPolicyForVM(dir, derivedVMName(dir), status, cfg)
 }
 
 func assessAppliedPolicyForVM(dir, vmName string, status lima.VMStatus, cfg *config.Config) appliedPolicyAssessment {
@@ -1554,7 +1578,7 @@ func assessAppliedPolicyForVM(dir, vmName string, status lima.VMStatus, cfg *con
 }
 
 func requireCurrentAppliedPolicy(dir string, status lima.VMStatus, cfg *config.Config) error {
-	return requireCurrentAppliedPolicyForVM(dir, lima.VMNameFromPath(dir), status, cfg)
+	return requireCurrentAppliedPolicyForVM(dir, derivedVMName(dir), status, cfg)
 }
 
 func requireCurrentAppliedPolicyForVM(dir, vmName string, status lima.VMStatus, cfg *config.Config, nameExplicit ...bool) error {
@@ -1618,7 +1642,7 @@ func requireVMProjectBinding(dir, vmName string) error {
 	if !errors.Is(identityErr, os.ErrNotExist) {
 		return fmt.Errorf("cannot verify the registered identity for VM %q: %w", vmName, identityErr)
 	}
-	if vmName != lima.VMNameFromPath(dir) {
+	if vmName != derivedVMName(dir) {
 		return fmt.Errorf("refusing to use custom-named VM %q without a valid Watermelon identity record", vmName)
 	}
 	return requireLegacyProjectMountBinding(dir, vmName)
@@ -1703,7 +1727,7 @@ func warnIfNonStrictPolicy(out io.Writer, cfg *config.Config) {
 }
 
 func saveAppliedPolicySnapshot(dir string, cfg *config.Config) error {
-	return saveAppliedPolicySnapshotForVM(dir, lima.VMNameFromPath(dir), cfg)
+	return saveAppliedPolicySnapshotForVM(dir, derivedVMName(dir), cfg)
 }
 
 func saveAppliedPolicySnapshotForVM(dir, vmName string, cfg *config.Config) error {
@@ -1759,7 +1783,7 @@ func saveAppliedPolicySnapshotWithHost(host appliedPolicyHostContext, cfg *confi
 }
 
 func clearAppliedPolicySnapshot(dir string) error {
-	return clearAppliedPolicySnapshotForVM(dir, lima.VMNameFromPath(dir))
+	return clearAppliedPolicySnapshotForVM(dir, derivedVMName(dir))
 }
 
 func clearAppliedPolicySnapshotForVM(dir, vmName string) error {

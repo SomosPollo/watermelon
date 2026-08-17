@@ -39,7 +39,7 @@ scripts = ["./setup.sh"]
 	if configured.ProjectRoot != canonicalProject {
 		t.Fatalf("configured project root = %q, want %q", configured.ProjectRoot, canonicalProject)
 	}
-	if configured.VMName != lima.VMNameFromPath(canonicalProject) {
+	if configured.VMName != derivedVMName(canonicalProject) {
 		t.Fatalf("configured VM = %q, want root-derived name", configured.VMName)
 	}
 	if configured.Workdir != "/project" || configured.IDEWorkdir != "/project" {
@@ -358,7 +358,7 @@ func TestDiscoverProjectRootUsesPhysicalSymlinkAncestry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.ProjectRoot != project || target.VMName != lima.VMNameFromPath(project) {
+	if target.ProjectRoot != project || target.VMName != derivedVMName(project) {
 		t.Fatalf("symlinked target = %+v, want physical project %q", target, project)
 	}
 }
@@ -379,7 +379,7 @@ func TestResolveManagementTargetKeepsConfiglessInvocationFallback(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.ProjectRoot != nested || target.VMName != lima.VMNameFromPath(nested) || target.Config != nil {
+	if target.ProjectRoot != nested || target.VMName != derivedVMName(nested) || target.Config != nil {
 		t.Fatalf("configless management target = %+v, want invocation-directory fallback", target)
 	}
 	if _, err := resolveManagementTarget(nested, "explicit-vm"); err == nil || !errors.Is(err, os.ErrNotExist) {

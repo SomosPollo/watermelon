@@ -45,7 +45,7 @@ func TestStopDoesNotWaitForActiveUsageLease(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(originalDir) })
 
-	vmName := lima.VMNameFromPath(dir)
+	vmName := derivedVMName(dir)
 	activeSession, err := acquireSharedVMUsageLease(vmName)
 	if err != nil {
 		t.Fatal(err)

@@ -44,7 +44,7 @@ func resolveManagementTarget(dir, flagName string) (targetContext, error) {
 		if errors.Is(err, os.ErrNotExist) && flagName == "" && !configFound {
 			return targetContext{
 				ProjectRoot: projectRoot,
-				VMName:      lima.VMNameFromPath(projectRoot),
+				VMName:      derivedVMName(projectRoot),
 			}, nil
 		}
 		return partial, err
@@ -58,7 +58,7 @@ func resolveManagementTarget(dir, flagName string) (targetContext, error) {
 		vmName = cfg.VM.Name
 	}
 	if vmName == "" {
-		vmName = lima.VMNameFromPath(projectRoot)
+		vmName = derivedVMName(projectRoot)
 	}
 	if err := config.ValidateVMName(vmName); err != nil {
 		return partial, fmt.Errorf("invalid VM name %q: %w", vmName, err)
@@ -102,7 +102,7 @@ func resolveConfiguredTarget(dir, flagName string) (targetContext, error) {
 		vmName = cfg.VM.Name
 	}
 	if vmName == "" {
-		vmName = lima.VMNameFromPath(projectRoot)
+		vmName = derivedVMName(projectRoot)
 	}
 	if err := config.ValidateVMName(vmName); err != nil {
 		return targetContext{}, fmt.Errorf("invalid VM name %q: %w", vmName, err)

@@ -722,7 +722,7 @@ func TestPolicyRecoveryCommandsPreserveCustomVMName(t *testing.T) {
 		t.Fatalf("custom restart command = %q", restart)
 	}
 
-	derived := lima.VMNameFromPath(dir)
+	derived := derivedVMName(dir)
 	if got := recreatePolicyCommandForVM(dir, derived); got != recreatePolicyCommand {
 		t.Fatalf("derived recreate command = %q, want %q", got, recreatePolicyCommand)
 	}
@@ -742,7 +742,7 @@ func TestPolicyRecoveryCommandsPreserveExplicitDerivedSelection(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".watermelon.toml"), []byte("[vm]\nname = \"configured-other\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	derived := lima.VMNameFromPath(dir)
+	derived := derivedVMName(dir)
 	target, err := resolveConfiguredTarget(dir, derived)
 	if err != nil {
 		t.Fatal(err)
@@ -1277,10 +1277,48 @@ func assertOwnedMode(t *testing.T, path string, want os.FileMode) {
 func privateTempDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func TestEffectiveUserConfigDirHonorsExplicitXDG(t *testing.T) {
+	xdgConfig := privateTempDir(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+
+	got, err := effectiveUserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != xdgConfig {
+		t.Fatalf("effective user config directory = %q, want XDG override %q", got, xdgConfig)
+	}
+}
+
+func TestEffectiveUserConfigDirRejectsRelativeXDG(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "relative-config")
+
+	if _, err := effectiveUserConfigDir(); err == nil || !strings.Contains(err.Error(), "relative") {
+		t.Fatalf("effectiveUserConfigDir() error = %v, want relative-path rejection", err)
+	}
+}
+
+func TestDerivedVMNameCanonicalizesProjectAliases(t *testing.T) {
+	project := privateTempDir(t)
+	alias := filepath.Join(t.TempDir(), "project-alias")
+	if err := os.Symlink(project, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := derivedVMName(alias), derivedVMName(project); got != want {
+		t.Fatalf("VM name through project alias = %q, want canonical name %q", got, want)
+	}
 }
 
 func TestExplicitLogPolicyWarns(t *testing.T) {
@@ -1306,7 +1344,7 @@ func TestRequireVMProjectBindingRejectsCollidingProject(t *testing.T) {
 	cliProjectMountSource = func(string) (string, error) { return collidingProject, nil }
 	t.Cleanup(func() { cliProjectMountSource = oldProjectSource })
 
-	err := requireVMProjectBinding(project, lima.VMNameFromPath(project))
+	err := requireVMProjectBinding(project, derivedVMName(project))
 	if err == nil || !strings.Contains(err.Error(), "not the resolved project") {
 		t.Fatalf("binding error = %v, want colliding-project refusal", err)
 	}
@@ -1418,7 +1456,7 @@ func TestStalePolicyRechecksBindingBeforeAutomaticStop(t *testing.T) {
 		cliStopVM = oldStop
 	})
 
-	err := requireCurrentAppliedPolicyAndStopUnsafe(project, lima.VMNameFromPath(project), lima.StatusRunning, config.NewConfig())
+	err := requireCurrentAppliedPolicyAndStopUnsafe(project, derivedVMName(project), lima.StatusRunning, config.NewConfig())
 	if err == nil || !strings.Contains(err.Error(), "could not be re-verified") {
 		t.Fatalf("policy error = %v, want replacement refusal", err)
 	}
@@ -1472,7 +1510,7 @@ func TestStaleAndUnverifiedPoliciesStopBoundRunningVM(t *testing.T) {
 				cliStopVM = oldStop
 			})
 
-			err := requireCurrentAppliedPolicyAndStopUnsafe(project, lima.VMNameFromPath(project), lima.StatusRunning, cfg)
+			err := requireCurrentAppliedPolicyAndStopUnsafe(project, derivedVMName(project), lima.StatusRunning, cfg)
 			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "was stopped") {
 				t.Fatalf("policy error = %v, want policy reason plus stop notice", err)
 			}
@@ -1596,7 +1634,7 @@ func TestRuntimePolicyFailurePreservesStopFailure(t *testing.T) {
 		cliVerifyPolicy = oldVerify
 	})
 
-	err := requireRuntimePolicyAppliedAndStopUnsafe(project, lima.VMNameFromPath(project), false)
+	err := requireRuntimePolicyAppliedAndStopUnsafe(project, derivedVMName(project), false)
 	if !errors.Is(err, markerErr) || !errors.Is(err, stopErr) {
 		t.Fatalf("runtime policy error = %v, want marker and stop failures preserved", err)
 	}
@@ -1833,7 +1871,7 @@ func TestCreateStageFailureDoesNotStopConcurrentWinningInstance(t *testing.T) {
 		cliStopVM = oldStop
 	})
 
-	err := startVMFailClosed(project, lima.VMNameFromPath(project), "/tmp/watermelon.yaml")
+	err := startVMFailClosed(project, derivedVMName(project), "/tmp/watermelon.yaml")
 	if !errors.Is(err, createErr) {
 		t.Fatalf("start error = %v, want create failure preserved", err)
 	}

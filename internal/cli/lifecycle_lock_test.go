@@ -19,9 +19,9 @@ func configureLifecycleLockTest(t *testing.T) (string, string) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("LIMA_HOME", limaHome)
-	userConfig, err := os.UserConfigDir()
+	userConfig, err := effectiveUserConfigDir()
 	if err != nil {
-		t.Fatalf("UserConfigDir() error = %v", err)
+		t.Fatalf("effectiveUserConfigDir() error = %v", err)
 	}
 	if err := os.MkdirAll(userConfig, 0700); err != nil {
 		t.Fatalf("creating platform user config directory: %v", err)
