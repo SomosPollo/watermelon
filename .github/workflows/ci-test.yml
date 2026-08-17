@@ -80,21 +80,25 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
-      - name: Build every release target
-        env:
-          CGO_ENABLED: "0"
+      - name: Build a GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --snapshot --clean
+
+      - name: Validate snapshot artifacts and installer
         run: |
-          GOOS=darwin GOARCH=arm64 go build -o "${RUNNER_TEMP}/watermelon-darwin-arm64" ./cmd/watermelon
-          GOOS=darwin GOARCH=amd64 go build -o "${RUNNER_TEMP}/watermelon-darwin-amd64" ./cmd/watermelon
-          GOOS=linux GOARCH=arm64 go build -o "${RUNNER_TEMP}/watermelon-linux-arm64" ./cmd/watermelon
-          GOOS=linux GOARCH=amd64 go build -o "${RUNNER_TEMP}/watermelon-linux-amd64" ./cmd/watermelon
-          GOOS=linux GOARCH=arm64 go build -o "${RUNNER_TEMP}/watermelon-nfqd-linux-arm64" ./cmd/watermelon-nfqd
-          GOOS=linux GOARCH=amd64 go build -o "${RUNNER_TEMP}/watermelon-nfqd-linux-amd64" ./cmd/watermelon-nfqd
+          ./test/stage_release_assets.sh dist release-dist
+          (cd release-dist && sha256sum --check checksums.txt)
+          ./test/install_smoke.sh release-dist v0.0.0-snapshot
 
   real-vm-lifecycle:
     runs-on: ubuntu-24.04
