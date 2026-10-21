@@ -292,10 +292,6 @@ func formatPorts(ports []int) string {
 	return strings.Join(parts, ", ")
 }
 
-func logStatus(dir string) string {
-	return logStatusPath(logs.LogPath(dir))
-}
-
 func logStatusPath(path string) string {
 	lines, err := logs.ReadPath(path)
 	if err != nil {
