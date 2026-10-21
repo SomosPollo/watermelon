@@ -12,7 +12,7 @@ Watermelon is designed to reduce host exposure when malicious packages attempt t
 | **Arbitrary outbound connections** | Sending project data to an unlisted service | `fail` and `silent` block non-allowlisted traffic and resolve only policy names |
 | **Persistent access** | Cron jobs, launch agents, shell profiles | Unmounted host system directories are outside the VM |
 | **Lateral movement** | Accessing other projects, `.env` files | At most the resolved project root and explicit mounts are exposed; no-mount mode excludes the project too |
-| **Resource exhaustion** | Fork bombs, disk filling | VM resource limits enforced |
+| **Resource exhaustion** | Fork bombs, disk filling | VM resource limits apply; writable host mounts consume host storage |
 
 ## What Watermelon Does NOT Protect Against
 
@@ -27,6 +27,62 @@ Watermelon is designed to reduce host exposure when malicious packages attempt t
 **Watermelon is a developer safety sandbox, not a jail for untrusted multi-tenant workloads.**
 
 ## Configuration Trust Boundary
+
+Managed `clone` workspaces keep host policy in a host settings directory and
+source on a separate guest disk at `/workspace/project`. A repository's own
+`.watermelon.toml` stays guest content and cannot select host mounts,
+credentials, or privileged provision scripts. Acquisition uses a sanitized
+Git environment, disables inherited hooks/templates and automatic submodules,
+and accepts only credential-free public GitHub HTTPS URLs. Bounded manifest
+inspection uses an isolated Python interpreter in the guest, does not execute
+project code, rejects symlinks/special files as metadata, and skips directory
+symlinks. Discovery is bounded in depth, entries, directories and metadata size.
+
+Managed workspaces have no writable host mounts, including for internal logs.
+Network logs live on the persistent guest disk, within its storage limit.
+`watermelon logs` reads at most a 4 MiB tail over the authenticated VM connection
+with a short timeout; clearing retains the log inode. Both operations reject
+symlinks, hard links and special files. Read-only identity bootstrap is the only
+internal host mount. Earlier development builds with writable host log state
+require a rebuild; their recorded policy is deliberately treated as stale.
+Managed and automatic-profile VMs explicitly disable SSH-agent and X11
+forwarding and extra host SSH public keys, instead of inheriting Lima defaults.
+The applied-policy record binds both managed-workspace and setup provisioning
+generations so these changes require compute replacement for older development
+VMs while leaving unchanged legacy manual configurations compatible.
+
+Automatic language and package-manager dependency setup runs after approval and enforcement,
+using rootless containers under the ordinary VM user. Mixed projects share a
+runtime image assembled from official toolchains with fixed trusted commands
+before enforcement. Assembly containers have no project/host mounts and their
+copy steps run without networking. Each project installs dependencies in its
+own directory; Python projects have separate virtual environments. Its private host
+approval/readiness record is outside guest mounts. A VM rebuild retains the
+managed source disk and therefore retains any malicious files already on it;
+it is not a clean source reset. Permanent disk deletion requires explicit
+`destroy --delete-workspace`.
+
+Go profiles use the public module proxy and checksum database, with direct VCS
+fallback and automatic toolchain downloads disabled. Rust profiles use the
+bundled image toolchain and the sparse crates.io registry. Go module download
+and Cargo fetch prepare dependencies; compilation and Cargo build scripts run
+when the user invokes a build/test command inside the sandbox. Repository
+package-manager configuration cannot expand the host-approved network policy.
+
+JVM, .NET, Ruby, PHP and native build definitions are inspected as bounded data.
+Maven, Gradle, MSBuild, Gemfile, Composer and CMake execution occurs inside the
+approved runtime. Fixed bootstrap commands assemble official toolchains and
+common system libraries without mounting project files. Package-manager shims
+are immutable guest files mounted read-only into runtime containers; their
+caches and downloads stay in the persistent guest home. Corepack, uv and Poetry
+are installed only after workload enforcement, with pinned manager versions.
+Corepack integrity hashes remain part of approved pnpm/Yarn pins. Setup escapes
+repository-controlled command arguments in the approval display, and refuses
+provisioning if settings change after inspection or approval. Runtime replacement
+stays bound to the selected VM, including explicit `--name` overrides.
+uv cannot download an undeclared Python interpreter. Composer platform checks
+remain enabled; TLS verification is never disabled.
+
 
 Treat `.watermelon.toml` as trusted host policy, not as project code that Watermelon first confines inside the sandbox. Review it before the first run and after every change: it selects the VM name, project/workdir behavior, network enforcement and allow rules, host mounts, container images, provisioning packages and scripts, and forwarded ports. A configured provision script has root authority inside the guest. Watermelon refuses to use an existing VM when its recorded applied configuration has drifted, but drift detection does not make an attacker-authored configuration safe to run.
 
@@ -76,7 +132,7 @@ When traffic does not match an allow rule, behavior depends on `[security].enfor
 | `"silent"` | **Strict, quiet:** block without recording a policy event and resolve only policy names |
 | `"ask"` | **Interactive:** resolve arbitrary names, prompt for non-allowlisted TCP connections, and reject other non-allowlisted traffic |
 
-In `log` and `fail` modes, the VM-side firewall log writer records rate-limited IPv4 policy events and truncates the same verified log inode when it reaches 16 MiB. `watermelon logs` reads only the most recent bounded tail. Legacy path-derived mounted VMs use the project's `.watermelon/logs.log`; registered VMs, including fixed-name and no-mount instances, resolve per-VM host log state so events remain attributable without exposing the project. Use `watermelon logs` rather than assuming one host path. In `log`, events were observed and allowed; in `fail`, they were blocked. `ask` VMs also use registered per-VM state, but report policy decisions through the foreground prompt instead of writing these events.
+In `log` and `fail` modes, the VM-side firewall log writer records rate-limited IPv4 policy events and truncates the same verified log inode when it reaches 16 MiB. `watermelon logs` reads only the most recent bounded tail. Managed workspaces retain logs on their guest data disk and need a running VM to read or clear them. Legacy path-derived mounted VMs use the project's `.watermelon/logs.log`; other registered VMs use per-VM host log state. Use `watermelon logs` rather than assuming one host path. In `log`, events were observed and allowed; in `fail`, they were blocked. `ask` reports policy decisions through its foreground prompt.
 
 `ask` needs a foreground Watermelon verdict server. `run --no-shell` cannot provide one and is rejected. One saved verdict port permits only one foreground `run`, `exec`, or `code` prompt controller for a VM at a time. The controller listens only on host loopback. Verdict requests and responses are bound to that VM with a root-only per-instance key, fresh nonces, and HMAC authentication; unauthenticated or malformed traffic is dropped before it can prompt, update policy, or authorize a connection. On Linux, a single terminal-input coordinator routes foreground controlling-terminal input either to the prompt or to the guest, never both; redirected guest stdin is not a verdict channel. Without a foreground controlling terminal, the decision fails closed. A direct SSH connection neither hosts prompts nor acquires Watermelon's usage lease; keep a separate foreground Watermelon controller active if that workload needs prompted access, and expect Watermelon stop or destroy to terminate the connection without waiting for it.
 
@@ -107,7 +163,7 @@ A command listed in `[network.process]` needs elevated setup to enter its dedica
 | Path | Access |
 |------|--------|
 | Project directory | Mounted read-write at `/project` by default; absent when `vm.mount_project = false` |
-| Watermelon bootstrap/log state | Narrow internal mounts when required; not a project mount |
+| Watermelon bootstrap/log state | Managed workspaces expose only read-only bootstrap; other VM modes may use a narrow writable logging mount |
 | Configured mounts | As specified in `[mounts]` |
 | Host home directory | **Not accessible** |
 | Host system files | **Not accessible** |

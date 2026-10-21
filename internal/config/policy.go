@@ -82,6 +82,11 @@ type AppliedConfig struct {
 	Ports     PortsConfig         `json:"ports"`
 	Resources ResourcesConfig     `json:"resources"`
 	Security  SecurityConfig      `json:"security"`
+	Workspace *WorkspaceConfig    `json:"workspace,omitempty"`
+	// Version the generated managed boundary independently of legacy VM policy.
+	WorkspaceGeneration int          `json:"workspace_generation,omitempty"`
+	SetupGeneration     int          `json:"setup_generation,omitempty"`
+	Setup               *SetupConfig `json:"setup,omitempty"`
 }
 
 // AppliedHostContext records host values that affect which VM and host
@@ -125,7 +130,7 @@ func NormalizeAppliedConfig(cfg *Config) AppliedConfig {
 	ports := append([]int(nil), cfg.Ports.Forward...)
 	sort.Ints(ports)
 
-	return AppliedConfig{
+	applied := AppliedConfig{
 		VM: normalizeVMConfig(cfg),
 		Network: NetworkConfig{
 			Allow:   networkAllow,
@@ -148,6 +153,21 @@ func NormalizeAppliedConfig(cfg *Config) AppliedConfig {
 		Resources: cfg.Resources,
 		Security:  cfg.Security,
 	}
+	// Omit new optional sections for legacy projects so unchanged version-4
+	// snapshots keep their exact semantic digest.
+	if cfg.Workspace != (WorkspaceConfig{}) {
+		workspace := cfg.Workspace
+		applied.Workspace = &workspace
+		applied.WorkspaceGeneration = 1
+	}
+	if cfg.Setup.Manager != "" || cfg.Setup.Profile != "" || cfg.Setup.Runtime != "" || cfg.Setup.Only != "" || len(cfg.Setup.Runtimes) != 0 || len(cfg.Setup.Projects) != 0 {
+		setup := cfg.Setup
+		applied.Setup = &setup
+		// Bump when profile launchers or provisioning security changes require
+		// replacing compute even though the user's runtime choices are unchanged.
+		applied.SetupGeneration = 1
+	}
+	return applied
 }
 
 func normalizeVMConfig(cfg *Config) VMConfig {

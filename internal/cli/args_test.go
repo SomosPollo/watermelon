@@ -21,6 +21,8 @@ func TestNoArgumentCommandsHaveExplicitContracts(t *testing.T) {
 	}{
 		{name: "run", new: NewRunCmd},
 		{name: "init", new: NewInitCmd},
+		{name: "up", new: NewUpCmd},
+		{name: "rebuild", new: NewRebuildCmd},
 		{name: "doctor", new: func() *cobra.Command { return NewDoctorCmd("test-version") }},
 		{name: "stop", new: NewStopCmd},
 		{name: "destroy", new: NewDestroyCmd},

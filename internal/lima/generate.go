@@ -59,6 +59,28 @@ arch: default
 cpus: {{ .CPUs }}
 memory: {{ yamlQuote .Memory }}
 disk: {{ yamlQuote .Disk }}
+{{- if or .WorkspaceDisk .SetupImage }}
+propagateProxyEnv: false
+ssh:
+  forwardAgent: false
+  forwardX11: false
+  forwardX11Trusted: false
+  loadDotSSHPubKeys: false
+{{- end }}
+{{- if .WorkspaceDisk }}
+# Resolve public workspace dependencies through the same upstreams as managed
+# DNS. Lima's host DNS path can return a different, unreachable GitHub edge;
+# capturing that answer would pin it for the lifetime of this VM.
+hostResolver:
+  enabled: false
+dns:
+  - 8.8.8.8
+  - 8.8.4.4
+additionalDisks:
+  - name: {{ yamlQuote .WorkspaceDisk }}
+    format: {{ .FormatWorkspaceDisk }}
+    fsType: ext4
+{{- end }}
 
 user:
   name: {{ yamlQuote .VMUser }}
@@ -196,6 +218,29 @@ provision:
         /usr/sbin/visudo -cf /etc/sudoers
       }
       wm_install_sudoers
+
+{{- if .WorkspaceDisk }}
+      # Only the disk root is managed by privileged provisioning. Never follow
+      # a workspace-controlled symlink or recursively chown retained data.
+      _WM_VOLUME=/mnt/lima-{{ .WorkspaceDisk }}
+      /usr/bin/mountpoint -q "$_WM_VOLUME"
+      if [ -L /workspace ]; then
+        [ "$(/usr/bin/readlink /workspace)" = "$_WM_VOLUME" ]
+      elif [ -e /workspace ]; then
+        echo "refusing unexpected /workspace path" >&2; exit 1
+      else
+        /bin/ln -s "$_WM_VOLUME" /workspace
+      fi
+      for _wm_dir in project home logs; do
+        if [ -L "$_WM_VOLUME/$_wm_dir" ]; then
+          echo "refusing symlink workspace directory $_wm_dir" >&2; exit 1
+        elif [ ! -e "$_WM_VOLUME/$_wm_dir" ]; then
+          /usr/bin/install -d -o "$_WM_UID" -g "$_WM_GID" -m 0700 "$_WM_VOLUME/$_wm_dir"
+        else
+          [ -d "$_WM_VOLUME/$_wm_dir" ]
+        fi
+      done
+{{- end }}
 
       /bin/mkdir -p /usr/local/libexec/watermelon /var/empty
       /bin/chown root:root /usr/local/libexec /usr/local/libexec/watermelon /var/empty
@@ -365,7 +410,7 @@ provision:
 
         # Trusted bootstrap prerequisites. Configured package installation is
         # deliberately deferred until after policy becomes active.
-        apt-get update && apt-get install -y dnsmasq-base ipset
+        apt-get update && apt-get install -y dnsmasq-base ipset{{ if or .WorkspaceDisk .SetupImage }} git python3{{ end }}
         if ! id -u watermelon-dns >/dev/null 2>&1; then
           useradd --system --user-group --no-create-home --shell /usr/sbin/nologin watermelon-dns
         fi
@@ -373,9 +418,63 @@ provision:
         apt-get install -y libnetfilter-queue1
 {{- end }}
 {{- if .BootstrapImages }}
+{{- if .SetupImage }}
+        # A restart reuses the prepared SDKs. Rebuild creates a fresh VM and
+        # explicitly refreshes images; it does not reuse this compute cache.
+        _WM_SETUP_IMAGES_READY=true
+        wm_nerdctl image inspect {{ shellQuote .SetupImage }} >/dev/null 2>&1 || _WM_SETUP_IMAGES_READY=false
+{{- range .BootstrapImages }}
+        wm_nerdctl image inspect {{ shellQuote . }} >/dev/null 2>&1 || _WM_SETUP_IMAGES_READY=false
+{{- end }}
+        if [ "$_WM_SETUP_IMAGES_READY" != true ]; then
+{{- end }}
         # Pull configured base images while trusted bootstrap has network.
 {{- range .BootstrapImages }}
         wm_nerdctl pull "{{ . }}"
+{{- end }}
+{{- if .SetupRust }}
+        # Official Rust images contain the minimal toolchain. Add the fixed
+        # development components to the guest's image before enforcement.
+        # No project files, mounts or project-selected commands enter this step.
+        wm_nerdctl rm -f watermelon-rust-setup >/dev/null 2>&1 || true
+        wm_nerdctl run --name watermelon-rust-setup --network=host {{ shellQuote .SetupRustImage }} /bin/sh -c 'exec /usr/local/cargo/bin/rustup component add --toolchain "$RUST_VERSION" rustfmt clippy'
+        wm_nerdctl commit watermelon-rust-setup {{ shellQuote .SetupRustImage }}
+        wm_nerdctl rm watermelon-rust-setup
+{{- end }}
+{{- if .SetupExtendedAssembly }}
+{{- if .SetupPHP }}
+        wm_nerdctl rm -f watermelon-php-setup >/dev/null 2>&1 || true
+        wm_nerdctl run --user 0:0 --name watermelon-php-setup --network=host --entrypoint /bin/sh {{ shellQuote .SetupPHPImage }} -c 'set -eu; apt-get update; apt-get install -y --no-install-recommends libicu-dev libzip-dev libpq-dev; docker-php-ext-install -j2 intl zip bcmath pdo_mysql mysqli pdo_pgsql; rm -rf /var/lib/apt/lists/*'
+        wm_nerdctl commit watermelon-php-setup {{ shellQuote .SetupPHPImage }}
+        wm_nerdctl rm watermelon-php-setup
+{{- end }}
+        _WM_COMPOSE_STAGE=$(/usr/bin/mktemp -d /tmp/watermelon-tools.XXXXXXXX)
+        /bin/chown "$_WM_USER:$_WM_USER" "$_WM_COMPOSE_STAGE"
+{{- range .SetupAssemblyCopies }}
+        wm_nerdctl run --rm --user 0:0 --network=none -v "$_WM_COMPOSE_STAGE:/watermelon-toolchains" --entrypoint /bin/sh {{ shellQuote .Image }} -c {{ shellQuote .Script }}
+{{- end }}
+        wm_nerdctl rm -f watermelon-combined-setup >/dev/null 2>&1 || true
+        wm_nerdctl run --user 0:0 --name watermelon-combined-setup --network=host -v "$_WM_COMPOSE_STAGE:/watermelon-toolchains:ro" --entrypoint /bin/sh {{ shellQuote .SetupBaseImage }} -c 'set -eu; cp -a /watermelon-toolchains/usr/local/. /usr/local/; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build clang libicu72 libzip4 libpq5 libyaml-0-2 libgmp10 libreadline8 libgdbm6 libgdbm-compat4 libffi8 libdb5.3 libssl3 libncurses6 libedit2 libsodium23 libargon2-1 libonig5 libxml2 libsqlite3-0 libfontconfig1 libfreetype6 libasound2; printf "%s\n" /usr/local/lib64 > /etc/ld.so.conf.d/watermelon.conf; /sbin/ldconfig; rm -rf /var/lib/apt/lists/*'
+        wm_nerdctl commit watermelon-combined-setup {{ shellQuote .SetupImage }}
+        wm_nerdctl rm watermelon-combined-setup
+        /bin/rm -rf -- "$_WM_COMPOSE_STAGE"
+{{- end }}
+{{- if and .SetupComposeSources (not .SetupExtendedAssembly) }}
+        # Assemble only reviewed official toolchains. These fixed copy commands
+        # see a guest staging directory and never mount repository/host files.
+        _WM_COMPOSE_STAGE=$(/usr/bin/mktemp -d /tmp/watermelon-tools.XXXXXXXX)
+        /bin/chown "$_WM_USER:$_WM_USER" "$_WM_COMPOSE_STAGE"
+{{- range .SetupComposeSources }}
+        wm_nerdctl run --rm --network=none -v "$_WM_COMPOSE_STAGE:/watermelon-toolchains" {{ shellQuote . }} /bin/sh -c 'cp -a /usr/local/. /watermelon-toolchains/'
+{{- end }}
+        wm_nerdctl rm -f watermelon-combined-setup >/dev/null 2>&1 || true
+        wm_nerdctl run --name watermelon-combined-setup --network=none -v "$_WM_COMPOSE_STAGE:/watermelon-toolchains:ro" {{ shellQuote .SetupBaseImage }} /bin/sh -c 'cp -a /watermelon-toolchains/. /usr/local/ && /sbin/ldconfig'
+        wm_nerdctl commit watermelon-combined-setup {{ shellQuote .SetupImage }}
+        wm_nerdctl rm watermelon-combined-setup
+        /bin/rm -rf -- "$_WM_COMPOSE_STAGE"
+{{- end }}
+{{- if .SetupImage }}
+        fi
 {{- end }}
 {{- end }}
 {{- if .RejectUnknown }}
@@ -862,6 +961,83 @@ provision:
       chmod +x /usr/local/bin/{{ .Cmd }}
 {{- end }}
       fi
+{{- if .SetupImage }}
+      /bin/mkdir -p /usr/local/share/watermelon-runtime/bin
+{{- range .SetupRuntimeAssets }}
+      cat > /usr/local/share/watermelon-runtime/{{ .Name }} << 'WATERMELON_RUNTIME_ASSET'
+{{ indent 6 .Content }}
+      WATERMELON_RUNTIME_ASSET
+      /bin/chmod 0755 /usr/local/share/watermelon-runtime/{{ .Name }}
+{{- end }}
+      # One image and one persistent workspace environment serve install,
+      # exec, shells and IDE tool wrappers. Containers remain rootless in the
+      # guest; their root maps to the ordinary Watermelon workload user.
+      cat > /usr/local/bin/watermelon-project << 'WATERMELON_PROJECT'
+      #!/bin/bash
+      set -euo pipefail
+      _wm_root={{ shellQuote .Workdir }}
+      _wm_current=$(/bin/pwd -P)
+      _wm_real_root=$(/usr/bin/realpath -e "$_wm_root")
+      case "$_wm_current/" in "$_wm_real_root/"*) ;; *) echo "command workdir must stay within the project" >&2; exit 1 ;; esac
+      _wm_relative=${_wm_current#"$_wm_real_root"}
+      _wm_home={{ if .WorkspaceDisk }}/workspace/home{{ else }}{{ .VMUserHome }}/.watermelon-project{{ end }}
+      _wm_venv={{ shellQuote .SetupDefaultVenv }}
+      _wm_scan="$_wm_current"
+      while :; do
+        if [ -f "$_wm_scan/.venv/pyvenv.cfg" ] && { [ -x "$_wm_scan/.venv/bin/python" ] || [ -L "$_wm_scan/.venv/bin/python" ]; }; then _wm_venv="$_wm_root${_wm_scan#"$_wm_real_root"}/.venv"; break; fi
+        [ "$_wm_scan" = "$_wm_real_root" ] && break
+        _wm_scan=${_wm_scan%/*}
+      done
+      /bin/mkdir -p -- "$_wm_home"
+      _wm_tty=()
+      if [ -t 0 ] && [ -t 1 ]; then _wm_tty=(-it); else _wm_tty=(-i); fi
+      exec /usr/local/libexec/watermelon/nerdctl run --rm "${_wm_tty[@]}" --network=host --pull=never \
+        -v "$_wm_root:$_wm_root" -v "$_wm_home:$_wm_home" -v /usr/local/share/watermelon-runtime:/watermelon-runtime:ro -w "$_wm_root$_wm_relative" \
+        --env WATERMELON_SANDBOX=1 --env 'PS1=(watermelon) \w \$ ' \
+        --env "HOME=$_wm_home" --env "VIRTUAL_ENV=$_wm_venv" \
+        --env UV_PYTHON_DOWNLOADS=never --env POETRY_VIRTUALENVS_IN_PROJECT=true \
+{{- if .SetupJava }}
+        --env JAVA_HOME=/usr/local/java --env MAVEN_HOME=/usr/local/share/maven --env GRADLE_HOME=/usr/local/share/gradle --env "GRADLE_USER_HOME=$_wm_home/.gradle" \
+        --env "MAVEN_OPTS=-Duser.home=$_wm_home -Dmaven.repo.local=$_wm_home/.m2/repository" --env "MAVEN_USER_HOME=$_wm_home/.m2" --env "GRADLE_OPTS=-Duser.home=$_wm_home" \
+{{- end }}
+{{- if .SetupDotnet }}
+        --env DOTNET_ROOT=/usr/local/share/dotnet --env "DOTNET_CLI_HOME=$_wm_home/.dotnet" --env "NUGET_PACKAGES=$_wm_home/.nuget/packages" \
+        --env DOTNET_CLI_TELEMETRY_OPTOUT=1 --env DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 --env DOTNET_NOLOGO=1 --env DOTNET_GENERATE_ASPNET_CERTIFICATE=false --env DOTNET_MULTILEVEL_LOOKUP=0 \
+{{- end }}
+{{- if .SetupCPP }}
+        --env LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib --env CC=/usr/local/bin/gcc --env CXX=/usr/local/bin/g++ \
+{{- end }}
+{{- if .SetupRuby }}
+        --env "GEM_HOME=$_wm_home/.gem" --env "BUNDLE_USER_HOME=$_wm_home/.bundle" --env "BUNDLE_PATH=$_wm_home/.bundle/gems" \
+{{- end }}
+{{- if .SetupPHP }}
+        --env PHPRC=/usr/local/etc/php --env PHP_INI_SCAN_DIR=/usr/local/etc/php/conf.d --env "COMPOSER_HOME=$_wm_home/.composer" --env "COMPOSER_CACHE_DIR=$_wm_home/.cache/composer" --env COMPOSER_ALLOW_SUPERUSER=1 --env COMPOSER_IPRESOLVE=4 \
+{{- end }}
+{{- if .SetupGo }}
+        --env "GOPATH=$_wm_home/go" --env "GOMODCACHE=$_wm_home/go/pkg/mod" --env "GOCACHE=$_wm_home/.cache/go-build" \
+        --env GOTOOLCHAIN=local --env GOENV=off --env GOPROXY=https://proxy.golang.org --env GOSUMDB=sum.golang.org \
+        --env GOPRIVATE= --env GONOPROXY=none --env GONOSUMDB= --env GOVCS=off \
+{{- end }}
+{{- if .SetupRust }}
+        --env "CARGO_HOME=$_wm_home/.cargo" --env RUSTUP_HOME=/usr/local/rustup --env CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+{{- end }}
+        --env "PATH=/watermelon-runtime/bin:{{ if .SetupJava }}/usr/local/java/bin:/usr/local/share/maven/bin:/usr/local/share/gradle/bin:{{ end }}{{ if .SetupDotnet }}/usr/local/share/dotnet:{{ end }}{{ if .SetupRuby }}$_wm_home/.gem/bin:{{ end }}{{ if .SetupPython }}$_wm_venv/bin:{{ end }}{{ if .SetupGo }}$_wm_home/go/bin:/usr/local/go/bin:{{ end }}{{ if .SetupRust }}$_wm_home/.cargo/bin:/usr/local/cargo/bin:{{ end }}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+{{- if .SetupRust }}
+{{- if or .SetupComposeSources .SetupExtendedAssembly }}
+        --entrypoint /bin/sh {{ shellQuote .SetupImage }} -c '_wm_toolchain=$(/usr/local/cargo/bin/rustup default); export RUSTUP_TOOLCHAIN="${_wm_toolchain%% *}"; export RUST_VERSION="${RUSTUP_TOOLCHAIN%%-*}"; exec "$@"' watermelon-runtime "$@"
+{{- else }}
+        --entrypoint /bin/sh {{ shellQuote .SetupImage }} -c 'export RUSTUP_TOOLCHAIN="${RUST_VERSION:?missing image toolchain version}"; exec "$@"' watermelon-runtime "$@"
+{{- end }}
+{{- else }}
+        {{ shellQuote .SetupImage }} "$@"
+{{- end }}
+      WATERMELON_PROJECT
+      /bin/chmod 0755 /usr/local/bin/watermelon-project
+{{- range .SetupCommands }}
+      /usr/bin/printf '%s\n' '#!/bin/sh' 'exec /usr/local/bin/watermelon-project {{ . }} "$@"' > /usr/local/bin/{{ . }}
+      /bin/chmod 0755 /usr/local/bin/{{ . }}
+{{- end }}
+{{- end }}
 {{- if .NetworkProcessRules }}
       # Per-process network namespaces
 {{- $netIndex := 1 }}
@@ -1179,6 +1355,7 @@ portForwards:
 {{- range .PortForwards }}
   - guestPort: {{ . }}
     hostPort: {{ . }}
+    hostIP: "127.0.0.1"
 {{- end }}
   # Disable automatic port forwarding for security isolation
   - ignore: true
@@ -1217,6 +1394,27 @@ type mountData struct {
 }
 
 type templateData struct {
+	WorkspaceDisk         string
+	FormatWorkspaceDisk   bool
+	SetupImage            string
+	SetupCommands         []string
+	SetupPython           bool
+	SetupGo               bool
+	SetupRust             bool
+	SetupRustImage        string
+	SetupBaseImage        string
+	SetupComposeSources   []string
+	SetupDefaultVenv      string
+	SetupExtendedAssembly bool
+	SetupAssemblyCopies   []runtimeCopy
+	SetupRuntimeAssets    []runtimeAsset
+	SetupJava             bool
+	SetupDotnet           bool
+	SetupRuby             bool
+	SetupPHP              bool
+	SetupCPP              bool
+	SetupPHPImage         string
+
 	MinimumLimaVersion   string
 	VMType               string
 	VMUser               string
@@ -1412,10 +1610,13 @@ func readProvisionScripts(projectDir string, scripts []string) ([]string, error)
 // modes. LogHostDir, when set, is mounted read-write at the fixed instance-state
 // path.
 type GenerateOptions struct {
-	VerdictServerPort int
-	VerdictAuthKey    string
-	NfqdSHA256        string
-	BootstrapHostDir  string
+	// Initialization is explicitly allowed only for a newly owned empty disk.
+	// Replacement VMs must never format retained workspace data.
+	FormatWorkspaceDisk bool
+	VerdictServerPort   int
+	VerdictAuthKey      string
+	NfqdSHA256          string
+	BootstrapHostDir    string
 	// NfqdHostDir is a deprecated compatibility alias for BootstrapHostDir.
 	NfqdHostDir string
 	LogHostDir  string
@@ -1751,6 +1952,9 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 	}
 
 	logHostDir := opts.LogHostDir
+	if cfg.Workspace.Disk != "" && logHostDir != "" {
+		return "", fmt.Errorf("managed workspaces keep logs on the guest disk and cannot mount writable host log state")
+	}
 	if logHostDir != "" {
 		if err := validateProjectDir(logHostDir); err != nil {
 			return "", fmt.Errorf("invalid log host directory: %w", err)
@@ -1769,7 +1973,9 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 	}
 	logDir := logStateGuestDir
 	logInGuest := false
-	if logHostDir == "" {
+	if cfg.Workspace.Disk != "" {
+		logDir = "/mnt/lima-" + cfg.Workspace.Disk + "/logs"
+	} else if logHostDir == "" {
 		if mountProject {
 			logDir = "/project/.watermelon"
 		} else {
@@ -1793,6 +1999,8 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 	rejectUnknown := cfg.Security.Enforcement == "fail" || cfg.Security.Enforcement == "silent" || cfg.Security.Enforcement == "ask"
 
 	data := templateData{
+		WorkspaceDisk:        cfg.Workspace.Disk,
+		FormatWorkspaceDisk:  opts.FormatWorkspaceDisk,
 		MinimumLimaVersion:   MinimumSupportedVersion,
 		VMType:               vmType,
 		VMUser:               "watermelon",
@@ -1840,6 +2048,65 @@ func generateConfig(cfg *config.Config, projectDir string, mountSources map[stri
 		ProcessDNSWildcards:  processDNSWildcards,
 		DNSAllowlistOnly:     cfg.Security.Enforcement == "fail" || cfg.Security.Enforcement == "silent",
 		ProvisionScripts:     provisionScripts,
+	}
+	data.SetupImage, err = config.SetupImage(cfg.Setup)
+	if err != nil {
+		return "", err
+	}
+	if data.SetupImage != "" {
+		data.SmartWrappers = nil
+		data.SetupCommands = config.AllSetupCommands(cfg.Setup)
+		data.SetupPython = config.SetupHasProfile(cfg.Setup, "python")
+		data.SetupGo = config.SetupHasProfile(cfg.Setup, "go")
+		data.SetupRust = config.SetupHasProfile(cfg.Setup, "rust")
+		profiles, err := config.SetupProfiles(cfg.Setup)
+		if err != nil {
+			return "", err
+		}
+		images := map[string]string{}
+		for _, profile := range profiles {
+			images[profile.Profile], _ = config.SetupImage(profile)
+		}
+		data.SetupRustImage = images["rust"]
+		data.SetupRuntimeAssets, err = prepareRuntimeAssets(cfg, workdir)
+		if err != nil {
+			return "", err
+		}
+		data.SetupDefaultVenv = path.Join(workdir, ".venv")
+		var pythonDirs []string
+		for _, project := range cfg.Setup.Projects {
+			if project.Profile == "python" {
+				pythonDirs = append(pythonDirs, project.Directory)
+			}
+		}
+		if len(pythonDirs) == 1 {
+			data.SetupDefaultVenv = path.Join(workdir, pythonDirs[0], ".venv")
+		}
+		if len(profiles) > 1 {
+			for _, profile := range []string{"python", "rust", "node", "go"} {
+				if images[profile] != "" {
+					data.SetupBaseImage = images[profile]
+					break
+				}
+			}
+			filtered := []string{}
+			for _, image := range data.BootstrapImages {
+				if image != data.SetupImage {
+					filtered = append(filtered, image)
+				}
+			}
+			for _, profile := range profiles {
+				image := images[profile.Profile]
+				filtered = append(filtered, image)
+				if image != data.SetupBaseImage {
+					data.SetupComposeSources = append(data.SetupComposeSources, image)
+				}
+			}
+			data.BootstrapImages = filtered
+		}
+		if err := configureExtendedRuntime(&data, profiles); err != nil {
+			return "", err
+		}
 	}
 
 	var buf bytes.Buffer

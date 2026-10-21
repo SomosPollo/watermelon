@@ -2,7 +2,24 @@
 
 Sandbox configuration for full-stack monorepos with multiple languages. The included `.watermelon.toml` uses the default project mount and strict `fail` network policy.
 
-## Option A: Mount the project (default)
+## Automatic setup
+
+For a public untrusted repository, keep source in a managed guest workspace:
+
+```bash
+watermelon clone https://github.com/owner/monorepo
+cd monorepo
+watermelon exec --cwd frontend npm test
+watermelon exec --cwd backend python -m pytest
+```
+
+For an existing local checkout, run `watermelon init` and `watermelon up`.
+Automatic detection prepares Node, Python, Go, and Rust projects in subdirectories
+with shared toolchains and separate project dependencies. The local checkout is
+mounted read-write. See [Project workflows](../../WORKSPACES.md) for version
+selection, workspace handling and discovery limits.
+
+## Option A: Manual mounted configuration
 
 ```bash
 cd your-monorepo

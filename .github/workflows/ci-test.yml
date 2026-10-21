@@ -10,6 +10,11 @@ on:
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Optional version to validate without publishing (for example v0.5.0)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -76,6 +81,8 @@ jobs:
         run: go vet ./...
 
   cross-build:
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -87,22 +94,112 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Select build version and prepare candidate notes
+        id: version
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if [ -z "$RELEASE_VERSION" ]; then
+            echo 'version=v0.0.0-snapshot' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! printf '%s\n' "$RELEASE_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo 'release_version must be a stable vMAJOR.MINOR.PATCH version' >&2
+            exit 1
+          fi
+          sh ./test/release_notes.sh "$RELEASE_VERSION" CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if git rev-parse --verify "refs/tags/$RELEASE_VERSION" >/dev/null 2>&1; then
+            test "$(git rev-parse "refs/tags/$RELEASE_VERSION^{commit}")" = "$(git rev-parse HEAD)"
+          else
+            # Runner-local only: never push this tag or create a GitHub release.
+            git tag -- "$RELEASE_VERSION"
+          fi
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build a GoReleaser snapshot
+        if: inputs.release_version == ''
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
           version: v2.17.1
           args: release --snapshot --clean
 
-      - name: Validate snapshot artifacts and installer
+      - name: Build exact candidate artifacts without publishing
+        if: inputs.release_version != ''
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --clean --skip=publish --release-notes=${{ runner.temp }}/release-notes.md
+
+      - name: Stage and verify artifacts
         run: |
           ./test/stage_release_assets.sh dist release-dist
           (cd release-dist && sha256sum --check checksums.txt)
-          ./test/install_smoke.sh release-dist v0.0.0-snapshot
+
+      - name: Validate candidate build metadata
+        if: inputs.release_version != ''
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: sh ./test/release_buildinfo.sh release-dist "$RELEASE_VERSION"
+
+      - name: Pack artifacts
+        run: tar -czf release-assets.tar.gz -C release-dist .
+
+      - name: Upload artifacts for native installer gates
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: release-assets.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  installer-smoke:
+    needs: cross-build
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-15-intel
+          - macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+
+      - name: Smoke test native artifacts and installer
+        env:
+          EXPECTED_VERSION: ${{ needs.cross-build.outputs.version }}
+        run: |
+          mkdir dist
+          tar -xzf release-assets.tar.gz -C dist
+          ./test/install_smoke.sh dist "$EXPECTED_VERSION"
 
   real-vm-lifecycle:
+    name: Live VM (${{ matrix.suite }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: lifecycle
+            tests: '^TestE2ERealVMLifecycle$'
+          - suite: projects
+            tests: '^TestE2EManagedWorkspaceProjects$'
+          - suite: multi-language
+            tests: '^TestE2EManagedWorkspaceMultiLanguage$'
+          - suite: logs
+            tests: '^TestE2EManagedWorkspaceLogs$'
+          - suite: extended
+            tests: '^TestE2EExtendedLanguages$'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -132,10 +229,15 @@ jobs:
           tar -xzf "${archive_path}" -C "${RUNNER_TEMP}/lima"
           echo "${RUNNER_TEMP}/lima/bin" >> "${GITHUB_PATH}"
 
+      - name: Free space for extended SDK fixtures
+        if: matrix.suite == 'extended'
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
       - name: Test live VM security boundary
         env:
           WATERMELON_E2E_REQUIRE_REAL_VM: "1"
-        run: go test -tags=e2e -run '^TestE2ERealVMLifecycle$' -timeout=50m -count=1 -v ./test/...
+          WATERMELON_E2E_PATTERN: ${{ matrix.tests }}
+        run: go test -tags=e2e -run "${WATERMELON_E2E_PATTERN}" -timeout=65m -count=1 -v ./test/...
 
   real-vm-ask:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

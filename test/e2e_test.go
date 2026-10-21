@@ -109,6 +109,10 @@ func newHarness(t *testing.T) *e2eHarness {
 		t.Fatalf("creating short E2E root: %v", err)
 	}
 	t.Cleanup(func() {
+		if t.Failed() && os.Getenv("WATERMELON_E2E_KEEP_FAILED") == "1" {
+			t.Logf("retaining failed E2E directory %s", root)
+			return
+		}
 		if err := os.RemoveAll(root); err != nil {
 			t.Errorf("removing E2E root %q: %v", root, err)
 		}
@@ -123,6 +127,15 @@ func newHarness(t *testing.T) *e2eHarness {
 	for _, dir := range []string{home, project} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatalf("creating %s: %v", dir, err)
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		library := filepath.Join(home, "Library")
+		if err := os.Mkdir(library, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(e2eSharedCache, filepath.Join(library, "Caches")); err != nil {
+			t.Fatal(err)
 		}
 	}
 

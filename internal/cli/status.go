@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ var cliGetVMStatusWithError = lima.GetStatusWithError
 
 func NewStatusCmd() *cobra.Command {
 	var name string
+	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show sandbox VM status for the resolved project",
@@ -28,10 +30,14 @@ func NewStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runStatusForName(os.Stdout, dir, name)
+			if jsonOutput {
+				return runStatusJSON(cmd.OutOrStdout(), dir, name)
+			}
+			return runStatusForName(cmd.OutOrStdout(), dir, name)
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit versioned project, VM, policy and setup state")
 	return cmd
 }
 
@@ -111,6 +117,31 @@ func runStatusForName(out io.Writer, dir, name string) error {
 		countLabel(cfg.Resources.CPUs, "CPU", "CPUs"),
 		cfg.Resources.Disk,
 	)
+	if cfg.Workspace.Disk != "" {
+		fmt.Fprintf(out, "Workspace: guest %s (disk %s, retained on VM deletion)\n", target.Workdir, cfg.Workspace.Disk)
+	}
+	if cfg.Setup.Profile != "" || cfg.Workspace.Disk != "" {
+		state, err := loadWorkspaceState(dir)
+		if err == nil {
+			fmt.Fprintf(out, "Setup:    %s (recorded; run 'watermelon up' to check manifests)\n", state.Stage)
+			if state.LastError != "" {
+				fmt.Fprintf(out, "Setup error: %q\n", state.LastError)
+			}
+		} else if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(out, "Setup:    not prepared; run 'watermelon up'")
+		} else {
+			return err
+		}
+	}
+	if cfg.Workspace.Disk != "" {
+		fmt.Fprintln(out, "Logs:     guest workspace disk (watermelon logs; sandbox must be running)")
+		if staleIdentity != nil || policyRequiresRecreation(assessment.State) {
+			fmt.Fprintf(out, "Next:     %s\n", recreatePolicyCommandForVM(dir, vmName, target.NameExplicit))
+		} else if status == lima.StatusNotFound {
+			fmt.Fprintf(out, "Next:     %s\n", runPolicyCommandForVM(dir, vmName, target.NameExplicit))
+		}
+		return nil
+	}
 	logPath := logs.LogPath(dir)
 	if staleIdentity != nil {
 		logPath = staleIdentity.Paths.GuestNetworkLogPath
@@ -131,6 +162,52 @@ func runStatusForName(out io.Writer, dir, name string) error {
 	}
 
 	return nil
+}
+
+func runStatusJSON(out io.Writer, dir, name string) error {
+	target, err := resolveManagementTarget(dir, name)
+	if err != nil {
+		return err
+	}
+	target, err = prepareTargetProvisionScripts(target)
+	if err != nil {
+		return err
+	}
+	lock, err := acquireVMLifecycleLock(target.VMName)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	status, err := cliGetVMStatusWithError(target.VMName)
+	if err != nil {
+		return err
+	}
+	if status != lima.StatusNotFound {
+		if err := requireVMProjectBinding(target.ProjectRoot, target.VMName); err != nil {
+			return err
+		}
+	}
+	assessment := assessAppliedPolicyForVM(target.ProjectRoot, target.VMName, status, target.Config)
+	report := struct {
+		Version   int                     `json:"schema_version"`
+		Project   string                  `json:"project"`
+		VM        string                  `json:"vm"`
+		Status    string                  `json:"status"`
+		Policy    string                  `json:"applied_policy"`
+		Workspace *config.WorkspaceConfig `json:"workspace,omitempty"`
+		Setup     *workspaceState         `json:"setup,omitempty"`
+	}{Version: 1, Project: target.ProjectRoot, VM: target.VMName, Status: status.String(), Policy: formatAppliedPolicy(assessment)}
+	if target.Config != nil && target.Config.Workspace.Disk != "" {
+		workspace := target.Config.Workspace
+		report.Workspace = &workspace
+	}
+	state, err := loadWorkspaceState(target.ProjectRoot)
+	if err == nil {
+		report.Setup = &state
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return json.NewEncoder(out).Encode(report)
 }
 
 func configSnapshotStatus(assessment appliedPolicyAssessment) string {

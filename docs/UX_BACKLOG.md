@@ -9,6 +9,15 @@ Release state and external links can change independently of the repository.
 
 ## Recommended order
 
+The managed-workspace release adds `clone`, guided Node/Python/Go/Rust `init`, `up`,
+`rebuild`, config validation, JSON status, and host-only setup state. See
+[Project workflows](WORKSPACES.md). The checkboxes below reflect those changes
+and the current centralized validation implementation; older explanatory
+paragraphs describe the original audit findings.
+
+The current managed-workspace security/UX review and release evidence are in
+[Release review](RELEASE_REVIEW.md), including all nine automatic toolchains.
+
 1. Cut and validate a release containing the strict-by-default implementation.
 2. Fix destructive-command argument validation and guest exit-code propagation.
 3. Fix ask-mode prompt semantics and terminal ownership.
@@ -231,8 +240,8 @@ target/status/recovery tests, and `loadProjectConfig` in `internal/cli/run.go`.
 
 ### Centralize resource and port validation
 
-- [ ] Validate memory and disk syntax/positivity in `config.Validate`.
-- [ ] Validate forwarded-port range and duplicates in `config.Validate`.
+- [x] Validate memory and disk syntax/positivity in `config.Validate`.
+- [x] Validate forwarded-port range and duplicates in `config.Validate`.
 - [ ] Return precise field paths.
 
 Today memory/disk are checked only for nonempty strings and then transformed by
@@ -248,7 +257,7 @@ Acceptance criteria:
 
 ### Validate provisioning by exposed commands, not image-name substrings
 
-- [ ] Replace `hasToolImage` image-name heuristics with command-based checks.
+- [x] Replace `hasToolImage` image-name heuristics with command-based checks.
 
 Config validation guesses package-manager support from image names, while Lima
 generation checks commands exposed in `[tools]`. A custom JavaScript image that
@@ -262,9 +271,9 @@ Evidence:
 
 ### Add automation-friendly config and status interfaces
 
-- [ ] Add `watermelon config validate`.
-- [ ] Add JSON or another stable machine-readable status mode.
-- [ ] Document exit semantics for missing config, missing VM, invalid config,
+- [x] Add `watermelon config validate`.
+- [x] Add JSON or another stable machine-readable status mode.
+- [x] Document exit semantics for missing config, missing VM, invalid config,
   stale policy, and runtime failures.
 - [ ] Consider aggregating and sorting semantic validation errors.
 
@@ -275,9 +284,9 @@ exit success, requiring automation to parse text.
 
 ### Add useful init presets or project detection
 
-- [ ] Provide presets such as `watermelon init --template node` and `python`, or
+- [x] Provide presets such as `watermelon init --template node` and `python`, or
   safely detect common project manifests.
-- [ ] Keep a minimal/manual mode.
+- [x] Keep a minimal/manual mode.
 
 Quick Start is now accurate, but `init` still produces an empty allowlist and no
 active tool. Users must manually uncomment both the tool and required domains
@@ -287,8 +296,8 @@ before the advertised `npm install` flow works.
 
 - [ ] Include or link every supported option.
 - [ ] Add `[network.process]` and package-provision examples.
-- [ ] Print a concise next step.
-- [ ] Correct `docs/COMMANDS.md` if the template intentionally remains minimal.
+- [x] Print a concise next step.
+- [x] Correct `docs/COMMANDS.md` if the template intentionally remains minimal.
 
 The template includes `[provision]` but only shows `scripts`; it omits `npm`,
 `pip`, `cargo`, `go`, `gem`, and `[network.process]`. Documentation claims it

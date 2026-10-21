@@ -42,6 +42,87 @@ command = "code"
 
 ## Sections
 
+### `[workspace]` and `[setup]`
+
+`clone` creates `[workspace]` with an independently owned Lima `disk` and
+credential-free public GitHub HTTPS `source`. These are host policy, stored in
+the host settings directory outside the guest checkout. The disk name is bound
+to the canonical owning directory and private host state. It cannot be copied
+to adopt another project's disk. Managed workspaces require
+`vm.mount_project = false`, `vm.workdir = "/workspace/project"`, no additional
+host mounts, no fixed VM-name override, and no root provision scripts.
+
+`[setup]` enables automatic project preparation:
+
+```toml
+[setup]
+profile = "node"   # node, python, go, rust, java, dotnet, ruby, php or cpp
+runtime = "24"     # Numeric runtime; Go/Rust use 1.minor or 1.minor.patch
+
+[tools]
+"node:24-bookworm" = ["node", "npm", "npx"]
+```
+
+Multi-project detection generates a combined declaration instead:
+
+```toml
+[setup]
+profile = "multi"
+# only = "node"  # Set by an explicit one-language --template restriction
+
+[setup.runtimes]
+node = "24"
+python = "3.13"
+
+[[setup.projects]]
+directory = "frontend"
+profile = "node"
+
+[[setup.projects]]
+directory = "backend"
+profile = "python"
+```
+
+`runtimes` selects one version per detected language; `projects` lists 1–64
+relative, confined project directories and their language. Each runtime must
+have a project. `runtime` is used only for a single root profile. A multi setup
+with several projects of the same language still uses its official image;
+multiple languages use a deterministic `watermelon-project:<hash>` guest image.
+Watermelon generates the matching `[tools]` entry containing all required
+commands and assembles the image during trusted bootstrap. Re-run `up` to review
+discovered project changes; use `up --runtime language=version,...` to change runtime pins through a new
+approval plan.
+
+`manager` optionally pins an alternate package manager, for example
+`manager = "pnpm@10.20.0"` for a Node root or `manager = "uv@0.12.0"` for Python.
+Multi-project configurations record the same field on each `[[setup.projects]]`
+entry. Supported manager names are pnpm/Yarn for Node and uv/Poetry for Python;
+versions must be numeric exact pins. Detection writes these fields and required
+tool wrappers automatically. Manager choices are bound to the approval digest.
+
+Extended profiles use a guest-built `watermelon-project:<hash>` image even for
+one project. JDKs, .NET SDKs, Ruby, PHP and GCC come from fixed official image
+repositories; project-selected images or shell fragments are not accepted as
+runtime versions. The supported selectors and manual-setup boundaries are
+listed in [Project workflows](WORKSPACES.md).
+
+The profile's required commands must come from its corresponding runtime
+image. `init`/`clone` generate these declarations and the registry allowlist.
+Go defaults to `golang:1.27-bookworm` (`go`, `gofmt`); Rust defaults to
+`rust:1.99-bookworm` (`cargo`, `rustc`, `rustdoc`, `rustfmt`, with clippy available
+through Cargo). Node supports 22/24 and Python
+supports 3.12/3.13/3.14. Go and Rust accept numeric stable 1.x versions; image
+availability is checked during VM preparation. Version pins, minimum runtime
+requirements, and dependency commands are described in [Project workflows](WORKSPACES.md).
+Setup profiles cannot be combined with `[network.process]` or global
+`[provision]` package installation. Empty/omitted `[setup]` retains manual
+behavior. Workspace and setup declarations participate in applied-policy
+comparisons; changing them requires explicit recreation. Existing snapshots
+for configurations without these sections retain their semantic digest.
+
+See [Project workflows](WORKSPACES.md) for setup approval, metadata limits,
+dependency persistence, and disk deletion.
+
 ### `[vm]`
 
 Configures the base virtual machine.

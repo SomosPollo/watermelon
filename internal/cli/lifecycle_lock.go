@@ -76,7 +76,7 @@ func acquirePersistentVMLock(vmName, suffix, description string, mode int) (*per
 	if err := config.ValidateVMName(vmName); err != nil {
 		return nil, fmt.Errorf("invalid VM name for %s: %w", description, err)
 	}
-	if mode != unix.LOCK_SH && mode != unix.LOCK_EX {
+	if mode != unix.LOCK_SH && mode != unix.LOCK_EX && mode != unix.LOCK_EX|unix.LOCK_NB {
 		return nil, fmt.Errorf("invalid internal flock mode for %s", description)
 	}
 

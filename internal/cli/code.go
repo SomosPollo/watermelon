@@ -44,6 +44,13 @@ func NewCodeCmd() *cobra.Command {
 		Long:  "Launch your IDE connected to the sandbox VM via SSH. Configure with [ide] command in .watermelon.toml",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			dir, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			if err := ensureSetupForCommand(cmd, dir, name); err != nil {
+				return err
+			}
 			return runCodeWithName(name)
 		},
 	}

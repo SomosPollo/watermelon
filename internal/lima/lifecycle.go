@@ -337,18 +337,30 @@ func parseStatus(s string) VMStatus {
 // make the create command fail instead of being accepted with an unapplied
 // configuration.
 func Start(vmName, configPath string) error {
+	return StartWithRunner(vmName, configPath, nil)
+}
+
+func StartWithRunner(vmName, configPath string, runner CommandRunner) error {
+	// Automated project preparation owns the generated configuration; Lima
+	// must not open an editor or introduce another interactive approval step.
+	arguments := func(args ...string) []string {
+		if runner != nil {
+			return append([]string{"--tty=false"}, args...)
+		}
+		return args
+	}
 	if configPath != "" {
-		createCmd := execCommand("limactl", "create", "--name", vmName, configPath)
+		createCmd := execCommand("limactl", arguments("create", "--name", vmName, configPath)...)
 		createCmd.Stdout = os.Stdout
 		createCmd.Stderr = os.Stderr
-		if err := createCmd.Run(); err != nil {
+		if err := runAttachedCommand(createCmd, runner); err != nil {
 			return &StartError{Stage: StartStageCreate, Err: fmt.Errorf("creating VM %q: %w", vmName, err)}
 		}
 
-		startCmd := execCommand("limactl", "start", "--timeout="+startTimeout, vmName)
+		startCmd := execCommand("limactl", arguments("start", "--timeout="+startTimeout, vmName)...)
 		startCmd.Stdout = os.Stdout
 		startCmd.Stderr = os.Stderr
-		if err := startCmd.Run(); err != nil {
+		if err := runAttachedCommand(startCmd, runner); err != nil {
 			return &StartError{Stage: StartStageStart, Err: fmt.Errorf("starting newly created VM %q: %w", vmName, err)}
 		}
 		return nil
@@ -360,10 +372,10 @@ func Start(vmName, configPath string) error {
 	case StatusRunning:
 		return nil // already running
 	case StatusStopped:
-		cmd := execCommand("limactl", "start", "--timeout="+startTimeout, vmName)
+		cmd := execCommand("limactl", arguments("start", "--timeout="+startTimeout, vmName)...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+		if err := runAttachedCommand(cmd, runner); err != nil {
 			return &StartError{Stage: StartStageStart, Err: fmt.Errorf("starting VM %q: %w", vmName, err)}
 		}
 		return nil
