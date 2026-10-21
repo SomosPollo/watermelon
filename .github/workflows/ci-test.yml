@@ -243,7 +243,8 @@ jobs:
         env:
           WATERMELON_E2E_REQUIRE_REAL_VM: "1"
           WATERMELON_E2E_PATTERN: ${{ matrix.tests }}
-        run: go test -tags=e2e -run "${WATERMELON_E2E_PATTERN}" -timeout=65m -count=1 -v ./test/...
+          WATERMELON_E2E_COUNT: ${{ inputs.release_version != '' && (matrix.suite == 'projects-node' || matrix.suite == 'projects-go') && '2' || '1' }}
+        run: go test -tags=e2e -run "${WATERMELON_E2E_PATTERN}" -timeout=65m -count="${WATERMELON_E2E_COUNT}" -v ./test/...
 
   real-vm-ask:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

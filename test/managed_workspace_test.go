@@ -184,9 +184,16 @@ func testManagedWorkspaceProjects(t *testing.T, controlledSource bool) {
 				t.Fatalf("setup was repeated: %s", out)
 			}
 			requireBlockedNetworkLog(t, h, timings, "exec", "bash", "-lc", blockedNetworkProbe)
+			writtenLogs := h.run(timings.status, "logs")
 			h.run(timings.status, "logs", "--clear")
-			if out := h.run(timings.status, "logs"); strings.Contains(out, "DST=93.184.216.34") {
-				t.Fatal("managed log clear retained blocked event")
+			clearedLogs := h.run(timings.status, "logs")
+			// New events can arrive asynchronously after truncation. Check the
+			// materialized records, including timestamp and source port, rather
+			// than treating every later event for the same destination as stale.
+			for _, line := range strings.Split(writtenLogs, "\n") {
+				if strings.TrimSpace(line) != "" && hasOutputLine(clearedLogs, line) {
+					t.Fatalf("managed log clear retained a written record %q:\n%s", line, clearedLogs)
+				}
 			}
 			h.run(timings.command, "exec", "sh", "-c", `mkdir -p nested; cd nested; pwd | grep '/project/nested$'`)
 			h.run(timings.stop, "stop")

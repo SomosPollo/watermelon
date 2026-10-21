@@ -20,7 +20,8 @@ owned Lima disk, which is retained when the VM is destroyed or rebuilt.
 
 Managed VMs have no writable host mounts. Their network logs also live on the
 guest data disk and survive rebuilds. Use `watermelon logs` or `logs --clear`
-while the VM is running; the CLI retrieves only a bounded tail. Logs from an
+while the VM is running; the CLI retrieves only a bounded tail. Clearing removes
+records already written; events still in flight can appear afterward. Logs from an
 earlier development build's host logging mount are not migrated automatically;
 rebuild that VM when prompted so the stricter boundary takes effect.
 

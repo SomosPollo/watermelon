@@ -94,7 +94,9 @@ and extended-language suites also passed.
 The Go public-checkout fixture rejected its forbidden connection correctly,
 but a single-probe log assertion timed out. Policy events are intentionally
 rate-limited. The fixture now repeats strictly rejected probes while waiting
-for an event, and includes the last log output on failure. Public Node,
+for an event, and includes the last log output on failure. Its clear assertion
+also checks removal of materialized records rather than rejecting new events
+for the same destination that arrive after truncation. Public Node,
 Python, Go and Rust checkout checks run independently in both CI and the tag
 release workflow. Final readiness requires all of these gates to pass together
 on the updated candidate.
