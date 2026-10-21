@@ -60,7 +60,10 @@ jobs:
         test:
           - TestE2ENamedNoMountAskToolWorkflow
           - TestE2ERealVMLifecycle
-          - TestE2EManagedWorkspaceProjects
+          - TestE2EManagedWorkspaceProjects/node
+          - TestE2EManagedWorkspaceProjects/python
+          - TestE2EManagedWorkspaceProjects/go
+          - TestE2EManagedWorkspaceProjects/rust
           - TestE2EManagedWorkspaceMultiLanguage
           - TestE2EManagedWorkspaceLogs
           - TestE2EExtendedLanguages

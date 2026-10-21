@@ -21,7 +21,7 @@ managed workspaces must be rebuilt when Watermelon reports a policy or runtime
 change:
 
 ```bash
-watermelon rebuild --force --yes
+watermelon rebuild
 ```
 
 Run this from the project's settings directory, with the same explicit
@@ -56,6 +56,8 @@ configuration.
 ### Changed
 
 - Require Go 1.27.3 for builds and use the patched Go module parser.
+- Validate unpublished version candidates with exact build metadata, checksums,
+  native installers on all four platforms, and independent language VM gates.
 - Explicit development-port forwards bind to host loopback.
 - Managed workspaces bootstrap DNS through the managed resolver's upstreams,
   avoiding unreachable GitHub addresses returned through Lima's host resolver.

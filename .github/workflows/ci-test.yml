@@ -190,8 +190,14 @@ jobs:
         include:
           - suite: lifecycle
             tests: '^TestE2ERealVMLifecycle$'
-          - suite: projects
-            tests: '^TestE2EManagedWorkspaceProjects$'
+          - suite: projects-node
+            tests: '^TestE2EManagedWorkspaceProjects$/^node$'
+          - suite: projects-python
+            tests: '^TestE2EManagedWorkspaceProjects$/^python$'
+          - suite: projects-go
+            tests: '^TestE2EManagedWorkspaceProjects$/^go$'
+          - suite: projects-rust
+            tests: '^TestE2EManagedWorkspaceProjects$/^rust$'
           - suite: multi-language
             tests: '^TestE2EManagedWorkspaceMultiLanguage$'
           - suite: logs

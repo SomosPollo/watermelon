@@ -2,10 +2,11 @@
 
 Review date: 2026-10-21.
 
-The implementation is a release candidate. Publication still requires passing
-the repository's Linux real-VM, Lima compatibility, release-artifact identity,
-and installer matrix gates on the final release commit. Local macOS validation
-does not replace those gates. No release has been published by this review.
+Release candidate: **v0.5.0**. Versioned release notes and upgrade guidance are
+in [CHANGELOG.md](../CHANGELOG.md). Publication requires green Linux real-VM,
+Lima compatibility, release-artifact identity, and native installer matrix gates
+on the candidate commit. The [candidate CI runs](https://github.com/SomosPollo/watermelon/actions/workflows/ci-test.yml?query=branch%3Acodex%2Fprepare-v0.5.0)
+record the final platform results. No release is published by candidate CI.
 
 ## Scope reviewed
 
@@ -81,6 +82,22 @@ PHP/native extensions, CMake, pnpm, Yarn, uv, and Poetry in a shared sandbox.
 The final logging and rebuild changes were then verified with the Node and
 dedicated guest-log fixtures. Disposable test VMs, disks, and ownership fixtures
 were removed after validation.
+
+## Platform CI review
+
+The initial candidate passed Linux/macOS unit checks, Linux race/vet and
+vulnerability checks, short E2E tests, Lima 2.0.0/2.2.0 compatibility, all six
+exact-version build identities and checksums, and native installation on
+Linux/macOS amd64/arm64. Live ask-mode, lifecycle, guest-log, mixed-language,
+and extended-language suites also passed.
+
+The Go public-checkout fixture rejected its forbidden connection correctly,
+but a single-probe log assertion timed out. Policy events are intentionally
+rate-limited. The fixture now repeats strictly rejected probes while waiting
+for an event, and includes the last log output on failure. Public Node,
+Python, Go and Rust checkout checks run independently in both CI and the tag
+release workflow. Final readiness requires all of these gates to pass together
+on the updated candidate.
 
 ## Publication gates and supported boundaries
 

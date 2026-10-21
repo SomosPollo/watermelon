@@ -905,6 +905,58 @@ func hasOutputLine(output, want string) bool {
 	return false
 }
 
+func TestE2EBlockedProbeRetriesWhenLogIsRateLimited(t *testing.T) {
+	dir := t.TempDir()
+	probeFile := filepath.Join(dir, "probes")
+	wm := filepath.Join(dir, "watermelon")
+	script := `#!/bin/sh
+set -eu
+case "$1" in
+ exec) printf x >> "$WM_PROBE_FILE"; exit 73 ;;
+ logs)
+  if [ "$(wc -c < "$WM_PROBE_FILE")" -ge 2 ]; then
+   printf '%s\n' 'watermelon-net DST=93.184.216.34 DPT=80'
+  else
+   printf '%s\n' 'No logs recorded'
+  fi ;;
+ *) exit 99 ;;
+esac
+`
+	if err := os.WriteFile(wm, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	h := &e2eHarness{t: t, wm: wm, project: dir, env: append(os.Environ(), "WM_PROBE_FILE="+probeFile)}
+	requireBlockedNetworkLog(t, h, e2eTimings{command: time.Second, status: time.Second, logWait: 5 * time.Second}, "exec", "probe")
+	probes, err := os.ReadFile(probeFile)
+	if err != nil || string(probes) != "xx" {
+		t.Fatalf("expected a fresh blocked probe after the missing event, got %q: %v", probes, err)
+	}
+}
+
+// Policy events are intentionally rate-limited. A single denied connection can
+// consume no log token after dependency/bootstrap traffic, so keep asserting the
+// rejection and emit a fresh probe while waiting for the asynchronous writer.
+// Every attempt must return the policy-block status; allowed traffic, timeouts,
+// and launcher failures still fail immediately.
+func requireBlockedNetworkLog(t *testing.T, h *e2eHarness, timings e2eTimings, args ...string) {
+	t.Helper()
+	deadline := time.Now().Add(timings.logWait)
+	var lastLogs string
+	for {
+		h.runBlockedNetwork(timings.command, args...)
+		lastLogs = h.run(timings.status, "logs")
+		if outputHasLineContainingAll(lastLogs, "watermelon-net", "DST=93.184.216.34", "DPT=80") {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		// Match the 30/minute policy-event refill rate instead of flooding it.
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("blocked network probe produced no policy event within %s; last logs:\n%s", timings.logWait, lastLogs)
+}
+
 func waitForLogLine(t *testing.T, h *e2eHarness, timeout, commandTimeout time.Duration, needles ...string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

@@ -83,8 +83,7 @@ func TestE2EManagedWorkspaceLogs(t *testing.T) {
 	})
 	h.run(timings.boot, "run", "--no-shell")
 	h.run(timings.command, "exec", "sh", "-c", `test ! -e /mnt/watermelon/state; test -d "$1"`, "fixture", "/mnt/lima-"+disk+"/logs")
-	h.runBlockedNetwork(timings.command, "exec", "bash", "-lc", blockedNetworkProbe)
-	waitForLogLine(t, h, timings.logWait, timings.status, "watermelon-net", "DST=93.184.216.34", "DPT=80")
+	requireBlockedNetworkLog(t, h, timings, "exec", "bash", "-lc", blockedNetworkProbe)
 	h.run(timings.command, "exec", "sh", "-c", `printf '%s\n' managed-log-retained >> "$1"`, "fixture", "/mnt/lima-"+disk+"/logs/logs.log")
 	// This is intentionally a manual/no-profile workspace. Rebuild must retain
 	// source and guest logs without forcing automatic manifest detection.
@@ -184,8 +183,7 @@ func testManagedWorkspaceProjects(t *testing.T, controlledSource bool) {
 			if out := h.run(timings.command, "up", "--yes"); !strings.Contains(out, "unchanged") {
 				t.Fatalf("setup was repeated: %s", out)
 			}
-			h.runBlockedNetwork(timings.command, "exec", "bash", "-lc", blockedNetworkProbe)
-			waitForLogLine(t, h, timings.logWait, timings.status, "watermelon-net", "DST=93.184.216.34", "DPT=80")
+			requireBlockedNetworkLog(t, h, timings, "exec", "bash", "-lc", blockedNetworkProbe)
 			h.run(timings.status, "logs", "--clear")
 			if out := h.run(timings.status, "logs"); strings.Contains(out, "DST=93.184.216.34") {
 				t.Fatal("managed log clear retained blocked event")
