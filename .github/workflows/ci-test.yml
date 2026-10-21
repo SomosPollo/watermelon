@@ -34,6 +34,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Check Go formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf 'Run gofmt on:\n%s\n' "$unformatted"
+            exit 1
+          fi
+
       - name: Test
         run: go test -count=1 ./...
 

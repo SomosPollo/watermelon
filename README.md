@@ -268,8 +268,15 @@ Development requires Go 1.27.3 or newer (including current standard-library secu
 ```bash
 go build -o watermelon ./cmd/watermelon
 go test ./...
+go test -race ./...
+go vet ./...
 go test -tags=e2e ./test/...  # CLI and full VM e2e; Linux normally requires usable /dev/kvm
 ```
+
+The Lima configuration template lives in
+`internal/lima/templates/lima.yaml.tmpl`. It and the helpers under
+`internal/lima/runtime/` are embedded at build time; edit these source assets
+directly without a separate generation step.
 
 Managed-workspace coverage can also be run separately:
 
