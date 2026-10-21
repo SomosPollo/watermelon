@@ -109,6 +109,10 @@ func newHarness(t *testing.T) *e2eHarness {
 		t.Fatalf("creating short E2E root: %v", err)
 	}
 	t.Cleanup(func() {
+		if t.Failed() && os.Getenv("WATERMELON_E2E_KEEP_FAILED") == "1" {
+			t.Logf("retaining failed E2E directory %s", root)
+			return
+		}
 		if err := os.RemoveAll(root); err != nil {
 			t.Errorf("removing E2E root %q: %v", root, err)
 		}
@@ -123,6 +127,15 @@ func newHarness(t *testing.T) *e2eHarness {
 	for _, dir := range []string{home, project} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatalf("creating %s: %v", dir, err)
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		library := filepath.Join(home, "Library")
+		if err := os.Mkdir(library, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(e2eSharedCache, filepath.Join(library, "Caches")); err != nil {
+			t.Fatal(err)
 		}
 	}
 
@@ -890,6 +903,58 @@ func hasOutputLine(output, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestE2EBlockedProbeRetriesWhenLogIsRateLimited(t *testing.T) {
+	dir := t.TempDir()
+	probeFile := filepath.Join(dir, "probes")
+	wm := filepath.Join(dir, "watermelon")
+	script := `#!/bin/sh
+set -eu
+case "$1" in
+ exec) printf x >> "$WM_PROBE_FILE"; exit 73 ;;
+ logs)
+  if [ "$(wc -c < "$WM_PROBE_FILE")" -ge 2 ]; then
+   printf '%s\n' 'watermelon-net DST=93.184.216.34 DPT=80'
+  else
+   printf '%s\n' 'No logs recorded'
+  fi ;;
+ *) exit 99 ;;
+esac
+`
+	if err := os.WriteFile(wm, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	h := &e2eHarness{t: t, wm: wm, project: dir, env: append(os.Environ(), "WM_PROBE_FILE="+probeFile)}
+	requireBlockedNetworkLog(t, h, e2eTimings{command: time.Second, status: time.Second, logWait: 5 * time.Second}, "exec", "probe")
+	probes, err := os.ReadFile(probeFile)
+	if err != nil || string(probes) != "xx" {
+		t.Fatalf("expected a fresh blocked probe after the missing event, got %q: %v", probes, err)
+	}
+}
+
+// Policy events are intentionally rate-limited. A single denied connection can
+// consume no log token after dependency/bootstrap traffic, so keep asserting the
+// rejection and emit a fresh probe while waiting for the asynchronous writer.
+// Every attempt must return the policy-block status; allowed traffic, timeouts,
+// and launcher failures still fail immediately.
+func requireBlockedNetworkLog(t *testing.T, h *e2eHarness, timings e2eTimings, args ...string) {
+	t.Helper()
+	deadline := time.Now().Add(timings.logWait)
+	var lastLogs string
+	for {
+		h.runBlockedNetwork(timings.command, args...)
+		lastLogs = h.run(timings.status, "logs")
+		if outputHasLineContainingAll(lastLogs, "watermelon-net", "DST=93.184.216.34", "DPT=80") {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		// Match the 30/minute policy-event refill rate instead of flooding it.
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("blocked network probe produced no policy event within %s; last logs:\n%s", timings.logWait, lastLogs)
 }
 
 func waitForLogLine(t *testing.T, h *e2eHarness, timeout, commandTimeout time.Duration, needles ...string) {

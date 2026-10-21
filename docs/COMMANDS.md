@@ -54,6 +54,38 @@ for support tooling and automation.
 
 ---
 
+## Project preparation commands
+
+`watermelon clone <github-url> [directory]` checks out a public GitHub HTTPS
+repository inside a managed guest workspace and prepares Node/npm,
+Python, Go, Rust, JVM, .NET, Ruby, PHP and C/C++ projects together after displaying
+an approval plan.
+Root and nested projects share one sandbox. Flags are
+`--template all|node|python|go|rust|java|dotnet|ruby|php|cpp`, `--runtime <numeric-version|language=version,...>`, `--no-setup`, and
+`--yes`. The host destination contains settings; the checkout lives in the
+guest at `/workspace/project`.
+
+`watermelon up` creates/starts the configured environment and installs approved
+dependencies, skipping unchanged manifests. `--yes` approves the displayed
+plan, `--refresh` reinstalls, and `--dry-run` inspects local settings without VM
+operations. `--runtime node=22,go=1.27` overrides selected runtime versions and
+requires approval of the updated plan before VM replacement. `--name` is supported for local mounted projects only.
+
+`watermelon rebuild [--force] [--yes] [--name <name>]` replaces VM-local state while
+preserving a managed workspace disk or the mounted host project. It never
+implicitly grants new network/mount permissions.
+Projects without an automatic setup profile retain their manual workflow; a
+rebuild does not force manifest detection or dependency installation.
+
+`--force` confirms VM replacement; `--yes` separately approves a changed setup
+plan when noninteractive use is intended.
+
+`watermelon config validate [--json]` validates configuration and referenced
+provision-script inputs without changing a VM. JSON uses `schema_version: 1`.
+
+See [Project workflows](WORKSPACES.md) for storage, trust boundaries, supported
+declarations, and recovery details.
+
 ## `watermelon init`
 
 Creates a `.watermelon.toml` configuration file in the current directory. It
@@ -65,14 +97,16 @@ watermelon init
 ```
 
 **Behavior:**
-- Creates a commented template with all available options
+- Detects supported languages and package managers, including nested and mixed-language projects, and creates an active runtime and network profile
+- Accepts `--template node|python|go|rust|java|dotnet|ruby|php|cpp|manual` and `--runtime <numeric-version>`
+- Uses a commented minimal template when no supported manifests are present
 - Fails if `.watermelon.toml` already exists
 - Does not create or modify the VM
 
 **Example output:**
 ```
-Created .watermelon.toml
-Edit this file to configure your sandbox, then run 'watermelon run'
+Created /path/to/project/.watermelon.toml with the node profile (node:24-bookworm).
+The host project will be mounted read-write. Review the config, then run 'watermelon up'.
 ```
 
 ---
@@ -196,6 +230,9 @@ The host project is not mounted and `/project` is not assumed. With an explicit 
 ## `watermelon exec`
 
 Runs a single command inside the VM without an interactive shell.
+`--cwd <relative-directory>` selects a project subdirectory and its Python
+environment, for example `watermelon exec --cwd backend python -m pytest`.
+Place the flag before the command.
 
 ```bash
 watermelon exec [--name <vm-name>] -- <command> [args...]
@@ -222,7 +259,7 @@ producer | watermelon exec -- consumer
 Redirected stdin is forwarded unchanged to the guest command. In Linux `ask` mode, verdicts still come from the controlling terminal, so bytes from `producer` in the pipeline above can never be interpreted as a verdict. A redirected stdin does not by itself disable prompts when Watermelon still has a foreground controlling terminal. In a detached session, CI job, or other environment with no controlling terminal, non-allowlisted requests block by default rather than waiting on or consuming the pipe. macOS displays its native dialog independently of stdin.
 
 **Behavior:**
-- Requires the VM to already exist (run `watermelon run` first)
+- With a setup profile, ensures approved project setup is ready; manual projects require an existing VM (run `watermelon run` first)
 - Starts the VM if it was stopped
 - Passes multi-argument commands directly to `limactl shell`
 - Runs a single string containing spaces or shell operators through `sh -lc` inside the VM
@@ -263,6 +300,11 @@ watermelon stop [--name <vm-name>]
 
 Permanently deletes the VM and all its state.
 
+Managed workspace disks are retained unless `--delete-workspace` is explicitly
+supplied. That flag permanently deletes source files, uncommitted edits, and
+project dependencies after confirming their loss. It requires a valid owned
+managed workspace and refuses an active setup operation.
+
 ```bash
 watermelon destroy [--name <vm-name>]
 watermelon destroy --force  # Skip confirmation
@@ -288,6 +330,11 @@ watermelon destroy -f       # Short form
 ---
 
 ## `watermelon status`
+
+`--json` emits schema version 1, including VM state, recorded applied policy,
+and available managed-workspace/setup state. Missing VMs retain the command's
+existing successful exit semantics. Human output includes the guest workspace
+path, retained disk, setup stage, and a bounded last-setup error when available.
 
 Shows the status of the VM for the resolved project.
 
@@ -370,7 +417,7 @@ The VM name is explicit; `copy` does not accept `--name` or infer a VM from `.wa
 Shows rate-limited IPv4 network policy events recorded by the firewall.
 
 ```bash
-watermelon logs [--name <vm-name>]  # Show all logs
+watermelon logs [--name <vm-name>]  # Show a bounded tail of recent logs
 watermelon logs --clear              # Clear the log
 watermelon logs --name build --clear # Clear a named VM's log
 ```
@@ -380,6 +427,11 @@ watermelon logs --name build --clear # Clear a named VM's log
 | `--name <name>` | Override `[vm].name` and select the resolved project's registered VM log |
 | `--clear` | Clear the selected log |
 
+Managed workspace logs are stored on the persistent guest disk. The sandbox
+must be running to read or clear them; `logs` does not start it automatically.
+These logs survive VM rebuilds. Other VM modes retain their existing host log
+locations.
+
 **Example output:**
 ```
 2024-01-15T10:30:45 kernel: watermelon-net ... DST=203.0.113.10 ... DPT=443
@@ -387,7 +439,7 @@ watermelon logs --name build --clear # Clear a named VM's log
 ```
 
 **Behavior:**
-- Reads the registered per-VM host log for custom-named, no-mount, and `ask` VMs; legacy path-derived mounted VMs use `.watermelon/logs.log` in the project
+- Reads managed logs from the guest data disk; other registered VMs use their host log and legacy mounted VMs use `.watermelon/logs.log` in the project
 - Refuses a custom name whose secure identity record is missing or owned by another project
 - In `fail`, each event represents traffic that was blocked
 - In `log`, each event represents IPv4 traffic that was observed and allowed; IPv6 is allowed but is not currently captured

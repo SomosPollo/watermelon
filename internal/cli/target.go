@@ -63,6 +63,9 @@ func resolveManagementTarget(dir, flagName string) (targetContext, error) {
 	if err := config.ValidateVMName(vmName); err != nil {
 		return partial, fmt.Errorf("invalid VM name %q: %w", vmName, err)
 	}
+	if err := requireWorkspaceOwnership(projectRoot, vmName, cfg); err != nil {
+		return partial, err
+	}
 	effective := *cfg
 	effective.VM = cfg.VM
 	if flagName != "" {
@@ -106,6 +109,9 @@ func resolveConfiguredTarget(dir, flagName string) (targetContext, error) {
 	}
 	if err := config.ValidateVMName(vmName); err != nil {
 		return targetContext{}, fmt.Errorf("invalid VM name %q: %w", vmName, err)
+	}
+	if err := requireWorkspaceOwnership(projectRoot, vmName, cfg); err != nil {
+		return targetContext{}, err
 	}
 
 	// Record an explicit CLI override in the effective VM configuration. This

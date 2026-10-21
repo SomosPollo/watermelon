@@ -7,6 +7,77 @@ and Watermelon follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-21
+
+Watermelon v0.5.0 introduces managed guest workspaces: clone a public GitHub
+project, review its setup, and run its detected languages and dependencies in
+one isolated Linux sandbox. Source and dependencies stay on the guest disk.
+
+### Upgrading
+
+Run `watermelon doctor` after installing the update. Existing manual mounted
+projects remain supported. Development VMs created with automatic profiles or
+managed workspaces must be rebuilt when Watermelon reports a policy or runtime
+change:
+
+```bash
+watermelon rebuild
+```
+
+Run this from the project's settings directory, with the same explicit
+`--name` if one was used. A managed rebuild retains source, dependencies,
+caches and guest logs. Permanent deletion requires `destroy --delete-workspace`.
+Review the setup plan before approving dependency scripts from an untrusted
+repository. Private repositories and custom platform SDKs still need manual
+configuration.
+
+### Added
+
+- Automatic JVM (Java/Kotlin), .NET, Ruby, PHP and C/C++ setup, composed official
+  toolchains, persistent ecosystem caches, and Linux compatibility checks.
+- pnpm/Yarn and uv/Poetry detection, numeric manager pins, lockfile preservation,
+  workspace-aware installation and guest-only manager bootstrapping.
+- Managed guest workspaces through `clone`, with public GitHub HTTPS acquisition,
+  separate persistent disks, reviewed Node/npm, Python/pip, Go modules and
+  Rust/Cargo setup, and explicit
+  permanent workspace deletion.
+- Guided `init`, repeatable `up`, VM `rebuild`, `config validate`, and versioned
+  JSON status. Profile-backed shell, command, and IDE workflows prepare their
+  approved environment automatically.
+- Rootless project runtime launchers with persistent project dependencies,
+  Python virtual environments, subdirectory support, and no lazy image pulls.
+- Automatic multi-language and nested-project discovery, compatible shared
+  toolchains in one runtime image, per-project dependency setup, and `exec --cwd`.
+- Automatic Go/Rust version selection, module/crate fetching, retained caches,
+  lockfile checks, and real-VM build/server coverage.
+- Regression and real-VM tests for workspace ownership, manifest inspection,
+  setup approval/recovery, dependency persistence, and retained edits.
+
+### Changed
+
+- Require Go 1.27.3 for builds and use the patched Go module parser.
+- Validate unpublished version candidates with exact build metadata, checksums,
+  native installers on all four platforms, and independent language VM gates.
+- Explicit development-port forwards bind to host loopback.
+- Managed workspaces bootstrap DNS through the managed resolver's upstreams,
+  avoiding unreachable GitHub addresses returned through Lima's host resolver.
+- Managed-workspace VM deletion retains project data unless
+  `--delete-workspace` is explicitly requested. Existing mounted-project
+  workflows and unchanged legacy configuration snapshots retain their behavior.
+
+### Fixed
+
+- Keep managed workspace logs on the guest disk, eliminating writable host log
+  mounts; provide bounded log reads and safe clearing through the running VM.
+- Bind setup approval and provisioning to the same settings and selected VM;
+  preserve configured VM names when using an invocation-only override.
+- Allow approved profile updates before a local project's first VM is created,
+  and route internal VM-removal progress through the command's output stream.
+- Remove obsolete profile registry grants and retain Corepack integrity pins.
+- Escape untrusted setup command arguments before requesting approval.
+- Handle spaced/multiple Ruby version constraints, reject unsupported .NET
+  targets before provisioning, and avoid silently skipping unlisted Gradle builds.
+
 ## [0.4.2] - 2026-08-17
 
 ### Changed
@@ -274,7 +345,9 @@ Initial Watermelon release.
   troubleshooting documentation, and example configurations.
 - Disabled Lima's automatic port forwarding to preserve the sandbox boundary.
 
-[Unreleased]: https://github.com/SomosPollo/watermelon/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/SomosPollo/watermelon/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/SomosPollo/watermelon/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/SomosPollo/watermelon/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/SomosPollo/watermelon/compare/v0.3.0...v0.4.1
 [0.4.0]: https://github.com/SomosPollo/watermelon/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/SomosPollo/watermelon/compare/v0.2.0...v0.3.0

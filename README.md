@@ -14,6 +14,12 @@ Watermelon provides a Linux VM where your project runs normally, the unmounted h
 
 ## How It Works
 
+Managed clones keep their source and dependencies on a guest disk. Automatic
+setup detects Node, Python, Go, Rust, JVM, .NET, Ruby, PHP, and C/C++ projects,
+including monorepos, and prepares their toolchains and dependencies together in one sandbox. Existing
+local projects use the mounted-directory workflow shown below; that workflow
+exposes the host project read-write by default.
+
 ```
 ┌─────────────────────────────────────────┐
 │          Host (macOS/Linux)             │
@@ -34,7 +40,7 @@ The project mount is enabled by default. Set `vm.mount_project = false` when the
 
 ## Quick Start
 
-Before the first run—and after changes—review `.watermelon.toml` as trusted host policy, not sandboxed project code. It controls enforcement and allow rules, host mounts, container images, provisioning, and forwarded ports. Watermelon refuses applied-config drift for an existing VM, but that check does not make an attacker-authored configuration safe.
+Install Lima and Watermelon, then check host readiness:
 
 ```bash
 # Requirements: curl, an OpenSSH client, and stable Lima 2.0.0 or newer
@@ -42,14 +48,41 @@ Before the first run—and after changes—review `.watermelon.toml` as trusted 
 # Linux: install Lima plus the architecture-appropriate QEMU system emulator
 curl -fsSL https://raw.githubusercontent.com/SomosPollo/watermelon/main/install.sh | sh
 watermelon doctor
+```
 
+To try an untrusted public GitHub project, clone it directly into a managed
+Linux workspace:
+
+```bash
+watermelon clone https://github.com/owner/project
+cd project
+watermelon exec npm run dev    # Or the project's documented command
+watermelon code
+```
+
+`clone` checks out source inside the VM, detects supported languages and package
+managers (including mixed-language projects), and
+shows a setup plan before installing dependencies. The host `project` directory
+contains settings; source code, dependencies, and edits stay on a separate guest
+disk. VM rebuilds preserve that disk. Use `--no-setup` to inspect source first,
+or `--yes` to approve the displayed setup plan in automation. Private repositories
+and unsupported toolchains require manual configuration in this release.
+
+See [managed workspace workflows](docs/WORKSPACES.md) for runtime selection,
+editing, forwarding ports, exporting files, recovery, and permanent deletion.
+
+For an existing local project, the host project remains mounted read-write:
+
+Before the first run—and after changes—review `.watermelon.toml` as trusted host policy, not sandboxed project code. It controls enforcement and allow rules, host mounts, container images, provisioning, and forwarded ports. Watermelon refuses applied-config drift for an existing VM, but that check does not make an attacker-authored configuration safe.
+
+```bash
 cd your-project
-watermelon init                      # Create .watermelon.toml
-# Edit config: uncomment the Node tool and allow registry.npmjs.org
+watermelon init                      # Detect supported languages and managers
+# Review the generated .watermelon.toml
 # security.enforcement = "fail" is the strict default
 
-watermelon run                       # Enter sandbox
-npm install                          # Runs inside the VM
+watermelon up                        # Review setup and install dependencies
+watermelon run                       # Enter the project runtime
 exit
 ```
 
@@ -124,6 +157,10 @@ This deletes VM-local state but preserves the host project. `watermelon status` 
 | Command | Description |
 |---------|-------------|
 | `watermelon init` | Create `.watermelon.toml` config |
+| `watermelon clone <github-url>` | Clone and prepare a managed guest workspace |
+| `watermelon up` | Create/start the environment and prepare approved dependencies |
+| `watermelon rebuild` | Replace the VM while retaining managed workspace data |
+| `watermelon config validate` | Validate host settings without changing the VM |
 | `watermelon doctor` | Check host and Lima readiness; add `--json` for automation |
 | `watermelon run` | Enter sandbox (creates VM if needed) |
 | `watermelon code` | Open an IDE and remain foreground until its remote window exits |
@@ -226,13 +263,30 @@ notes.
 
 ## Development
 
-Development requires Go 1.25.12 or newer.
+Development requires Go 1.27.3 or newer (including current standard-library security fixes).
 
 ```bash
 go build -o watermelon ./cmd/watermelon
 go test ./...
 go test -tags=e2e ./test/...  # CLI and full VM e2e; Linux normally requires usable /dev/kvm
 ```
+
+Managed-workspace coverage can also be run separately:
+
+```bash
+go test -tags=e2e -run '^TestE2EManagedWorkspaceProjects$' -v ./test/...
+go test -tags=e2e -run '^TestE2EManagedWorkspaceRuntime$' -v ./test/...
+go test -tags=e2e -run '^TestE2EManagedWorkspaceMultiLanguage$' -v ./test/...
+go test -tags=e2e -run '^TestE2EExtendedLanguages$' -timeout=65m -v ./test/...
+```
+
+The first tests live public GitHub acquisition. The second uses controlled
+guest-only source fixtures to isolate runtime, policy, rebuild, forwarding,
+and export checks from GitHub transport availability. The third verifies all
+four languages together, cross-language hooks, nested dependencies, restart
+and rebuild persistence. The extended test adds JVM, .NET, Ruby, PHP, C/C++,
+pnpm/Yarn, and uv/Poetry in one VM. All require real VMs
+and network access for trusted images and package registries.
 
 Set `WATERMELON_E2E_ALLOW_TCG=1` to try the full Linux VM lifecycle under slow QEMU TCG when KVM is unavailable.
 CI sets `WATERMELON_E2E_REQUIRE_REAL_VM=1` so missing prerequisites fail instead of silently skipping the security scenarios.

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"github.com/saeta-eth/watermelon/internal/config"
+	"github.com/saeta-eth/watermelon/internal/project"
 	"os"
 	"path/filepath"
 
@@ -9,7 +11,7 @@ import (
 )
 
 const defaultConfig = `# Watermelon sandbox configuration
-# See: https://github.com/saeta-eth/watermelon
+# See: https://github.com/SomosPollo/watermelon/blob/main/docs/CONFIG_SPEC.md
 
 [vm]
 image = "ubuntu-22.04"
@@ -61,7 +63,8 @@ command = "code"
 `
 
 func NewInitCmd() *cobra.Command {
-	return &cobra.Command{
+	var template, runtime string
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create .watermelon.toml in the current directory",
 		Args:  cobra.NoArgs,
@@ -70,12 +73,19 @@ func NewInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runInit(dir)
+			return runInitWithTemplate(dir, template, runtime)
 		},
 	}
+	cmd.Flags().StringVar(&template, "template", "", "Use all detected languages (all), one language, or manual configuration")
+	cmd.Flags().StringVar(&runtime, "runtime", "", "Set a numeric version or language=version overrides")
+	return cmd
 }
 
 func runInit(dir string) error {
+	return runInitWithTemplate(dir, "", "")
+}
+
+func runInitWithTemplate(dir, template, runtime string) error {
 	configPath := filepath.Join(dir, projectConfigName)
 
 	if _, err := os.Stat(configPath); err == nil {
@@ -84,10 +94,33 @@ func runInit(dir string) error {
 		return fmt.Errorf("checking config: %w", err)
 	}
 
-	if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+	if template != "manual" {
+		files, err := project.ReadLocal(dir)
+		if err != nil {
+			return err
+		}
+		if len(files) != 0 || template != "" {
+			plan, err := project.Detect(files, template, runtime)
+			if err != nil {
+				return err
+			}
+			cfg := config.NewConfig()
+			configureProfile(cfg, plan)
+			if err := writeProjectConfig(dir, cfg, true); err != nil {
+				return err
+			}
+			fmt.Printf("Created %s with the %s profile (%s).\nThe host project will be mounted read-write. Review the config, then run 'watermelon up'.\n", configPath, plan.Profile, plan.Image)
+			return nil
+		}
+	}
+	if runtime != "" {
+		return fmt.Errorf("--runtime requires an automatic setup profile")
+	}
+	if err := writeNewPrivateIdentityFile(configPath, []byte(defaultConfig)); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
 	fmt.Printf("Created %s\n", configPath)
+	fmt.Println("Next: configure tools and network access, then run 'watermelon up'.")
 	return nil
 }

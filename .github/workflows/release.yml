@@ -60,8 +60,15 @@ jobs:
         test:
           - TestE2ENamedNoMountAskToolWorkflow
           - TestE2ERealVMLifecycle
+          - TestE2EManagedWorkspaceProjects/node
+          - TestE2EManagedWorkspaceProjects/python
+          - TestE2EManagedWorkspaceProjects/go
+          - TestE2EManagedWorkspaceProjects/rust
+          - TestE2EManagedWorkspaceMultiLanguage
+          - TestE2EManagedWorkspaceLogs
+          - TestE2EExtendedLanguages
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -91,11 +98,15 @@ jobs:
           tar -xzf "${archive_path}" -C "${RUNNER_TEMP}/lima"
           echo "${RUNNER_TEMP}/lima/bin" >> "${GITHUB_PATH}"
 
+      - name: Free space for extended SDK fixtures
+        if: matrix.test == 'TestE2EExtendedLanguages'
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
       - name: Test live VM security boundary
         env:
           WATERMELON_E2E_REQUIRE_REAL_VM: "1"
           WATERMELON_E2E_TEST: ${{ matrix.test }}
-        run: go test -tags=e2e -run "^${WATERMELON_E2E_TEST}$" -timeout=50m -count=1 -v ./test/...
+        run: go test -tags=e2e -run "^${WATERMELON_E2E_TEST}$" -timeout=65m -count=1 -v ./test/...
 
   lima-compatibility:
     strategy:

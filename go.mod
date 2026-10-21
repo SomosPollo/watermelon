@@ -1,14 +1,16 @@
 module github.com/saeta-eth/watermelon
 
-go 1.25.13
+go 1.27.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/florianl/go-nfqueue/v2 v2.0.2
 	github.com/mattn/go-shellwords v1.0.14
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/mod v0.40.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

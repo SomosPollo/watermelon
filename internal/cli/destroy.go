@@ -15,10 +15,13 @@ import (
 )
 
 var (
-	destroyGetStatus   = lima.GetStatus
-	destroyStop        = lima.Stop
-	destroyDelete      = lima.Delete
-	destroyInstanceDir = lima.InstanceDir
+	errNoSandboxVM       = errors.New("no sandbox VM found for this project")
+	destroyGetStatus     = lima.GetStatus
+	destroyStop          = lima.Stop
+	destroyDelete        = lima.Delete
+	destroyInstanceDir   = lima.InstanceDir
+	destroyWorkspaceDisk = lima.DeleteWorkspaceDisk
+	releaseWorkspaceDisk = lima.ReleaseWorkspaceDisk
 )
 
 type legacyDestroyIncarnation struct {
@@ -119,7 +122,12 @@ func inspectDestroyTarget(target targetContext, identity *namedVMIdentity) (lima
 		}
 	}
 	if status == lima.StatusNotFound && identity == nil {
-		return status, nil, fmt.Errorf("no sandbox VM found for this project")
+		if target.Config == nil || target.Config.Workspace.Disk == "" {
+			return status, nil, errNoSandboxVM
+		}
+		if err := requireWorkspaceOwnership(dir, vmName, target.Config); err != nil {
+			return status, nil, err
+		}
 	}
 	if status != lima.StatusNotFound {
 		if err := requireVMProjectBinding(dir, vmName); err != nil {
@@ -137,17 +145,26 @@ func sameDestroyIdentity(first, second *namedVMIdentity) bool {
 }
 
 func NewDestroyCmd() *cobra.Command {
+	return newDestroyCmdAt("")
+}
+
+func newDestroyCmdAt(directory string) *cobra.Command {
 	var force bool
+	var deleteWorkspace bool
 	var name string
 
 	cmd := &cobra.Command{
 		Use:   "destroy",
-		Short: "Destroy the project sandbox VM and all its state",
+		Short: "Delete the sandbox VM, retaining managed workspace files by default",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, err := os.Getwd()
-			if err != nil {
-				return err
+			dir := directory
+			var err error
+			if dir == "" {
+				dir, err = os.Getwd()
+				if err != nil {
+					return err
+				}
 			}
 			dir, err = canonicalProjectRoot(dir)
 			if err != nil {
@@ -163,6 +180,17 @@ func NewDestroyCmd() *cobra.Command {
 				return err
 			}
 			vmName := initialTarget.VMName
+			var storageLock *persistentVMLock
+			if deleteWorkspace {
+				if initialTarget.Config == nil || initialTarget.Config.Workspace.Disk == "" {
+					return fmt.Errorf("--delete-workspace requires a valid managed workspace configuration")
+				}
+				storageLock, err = acquirePersistentVMLock("wm-setup-"+fullPathDigest(initialTarget.ProjectRoot)[:24], lifecycleLockSuffix, "workspace removal lock", unix.LOCK_EX|unix.LOCK_NB)
+				if err != nil {
+					return fmt.Errorf("cannot remove workspace while preparation is active; stop setup first: %w", err)
+				}
+				defer storageLock.release()
+			}
 			var promptedStatus lima.VMStatus
 			var legacyIncarnation *legacyDestroyIncarnation
 			if !force {
@@ -173,7 +201,7 @@ func NewDestroyCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if initialIdentity == nil {
+				if initialIdentity == nil && promptedStatus != lima.StatusNotFound {
 					legacyIncarnation, err = captureLegacyDestroyIncarnation(vmName)
 					if err != nil {
 						return fmt.Errorf("recording VM %q incarnation before confirmation: %w", vmName, err)
@@ -182,16 +210,23 @@ func NewDestroyCmd() *cobra.Command {
 				}
 
 				if promptedStatus == lima.StatusNotFound {
-					fmt.Printf("This will remove stale Watermelon host state for VM '%s'.\n", vmName)
+					fmt.Fprintf(cmd.OutOrStdout(), "This will remove stale Watermelon host state for VM '%s'.\n", vmName)
 				} else {
-					fmt.Printf("This will delete VM '%s' and all installed dependencies.\n", vmName)
+					fmt.Fprintf(cmd.OutOrStdout(), "This will delete VM '%s' and all installed dependencies.\n", vmName)
 				}
-				fmt.Print("Are you sure? [y/N] ")
+				if initialTarget.Config != nil && initialTarget.Config.Workspace.Disk != "" {
+					if deleteWorkspace {
+						fmt.Fprintf(cmd.OutOrStdout(), "This also permanently deletes workspace disk %s, including source files and uncommitted edits.\n", initialTarget.Config.Workspace.Disk)
+					} else {
+						fmt.Fprintln(cmd.OutOrStdout(), "The managed workspace disk, source files and project dependencies will be retained.")
+					}
+				}
+				fmt.Fprint(cmd.OutOrStdout(), "Are you sure? [y/N] ")
 				reader := bufio.NewReader(cmd.InOrStdin())
 				response, _ := reader.ReadString('\n')
 				response = strings.TrimSpace(strings.ToLower(response))
 				if response != "y" && response != "yes" {
-					fmt.Println("Cancelled")
+					fmt.Fprintln(cmd.OutOrStdout(), "Cancelled")
 					return nil
 				}
 			}
@@ -215,6 +250,9 @@ func NewDestroyCmd() *cobra.Command {
 			if target.VMName != vmName {
 				return fmt.Errorf("sandbox target changed from %q to %q while destruction was awaiting confirmation; retry the command", vmName, target.VMName)
 			}
+			if deleteWorkspace && (target.Config == nil || target.Config.Workspace != initialTarget.Config.Workspace) {
+				return fmt.Errorf("workspace settings changed while awaiting confirmation; retry")
+			}
 			status, identity, err := inspectDestroyTarget(target, identity)
 			if err != nil {
 				return err
@@ -226,7 +264,7 @@ func NewDestroyCmd() *cobra.Command {
 				if !sameDestroyIdentity(initialIdentity, identity) {
 					return fmt.Errorf("VM %q identity changed while destruction was awaiting confirmation; retry the command", vmName)
 				}
-				if initialIdentity == nil {
+				if initialIdentity == nil && promptedStatus != lima.StatusNotFound {
 					same, err := sameLegacyDestroyIncarnation(legacyIncarnation, vmName)
 					if err != nil {
 						return fmt.Errorf("rechecking VM %q incarnation after confirmation: %w", vmName, err)
@@ -239,9 +277,9 @@ func NewDestroyCmd() *cobra.Command {
 			dir = target.ProjectRoot
 
 			if status == lima.StatusNotFound {
-				fmt.Println("Removing stale sandbox VM host state...")
+				fmt.Fprintln(cmd.OutOrStdout(), "Removing stale sandbox VM host state...")
 			} else {
-				fmt.Println("Destroying sandbox VM...")
+				fmt.Fprintln(cmd.OutOrStdout(), "Destroying sandbox VM...")
 				if err := requireVMProjectBinding(dir, vmName); err != nil {
 					return err
 				}
@@ -253,7 +291,7 @@ func NewDestroyCmd() *cobra.Command {
 						// A broken/unknown Lima instance may not support a clean stop.
 						// Continue only after the exclusive usage lease below proves no
 						// Watermelon client is still attached.
-						fmt.Fprintf(os.Stderr, "Warning: VM could not be stopped cleanly before forced deletion: %v\n", err)
+						fmt.Fprintf(cmd.ErrOrStderr(), "Warning: VM could not be stopped cleanly before forced deletion: %v\n", err)
 					}
 				}
 			}
@@ -273,6 +311,11 @@ func NewDestroyCmd() *cobra.Command {
 				}
 			}
 			var cleanupErrors []error
+			if target.Config != nil && target.Config.Workspace.Disk != "" {
+				if err := releaseWorkspaceDisk(target.Config.Workspace.Disk, vmName); err != nil && !errors.Is(err, os.ErrNotExist) {
+					cleanupErrors = append(cleanupErrors, fmt.Errorf("workspace disk was retained but its attachment could not be released: %w", err))
+				}
+			}
 			if err := clearAppliedPolicySnapshotForVM(dir, vmName); err != nil {
 				cleanupErrors = append(cleanupErrors, fmt.Errorf("applied-policy snapshot could not be removed: %w", err))
 			}
@@ -284,11 +327,40 @@ func NewDestroyCmd() *cobra.Command {
 			if len(cleanupErrors) > 0 {
 				return fmt.Errorf("sandbox state cleanup failed: %w", errors.Join(cleanupErrors...))
 			}
+			if target.Config != nil && (target.Config.Setup.Profile != "" || target.Config.Workspace.Disk != "") {
+				if err := invalidateWorkspaceSetup(dir); err != nil {
+					return fmt.Errorf("VM removed but setup state could not be updated: %w", err)
+				}
+			}
+			if deleteWorkspace {
+				state, err := loadWorkspaceState(dir)
+				if err != nil {
+					return err
+				}
+				if state.Disk != target.Config.Workspace.Disk || !state.DiskCreated {
+					return fmt.Errorf("workspace disk ownership changed; refusing deletion")
+				}
+				if err := destroyWorkspaceDisk(state.Disk); err != nil {
+					return fmt.Errorf("VM removed, but workspace disk was retained: %w", err)
+				}
+				state.DiskCreated = false
+				state.DiskInitialized = false
+				state.Cloned = false
+				state.ReadyFingerprint = ""
+				state.ApprovedConfig = ""
+				state.Stage = "workspace permanently deleted"
+				state.LastError = ""
+				if err := saveWorkspaceState(dir, state); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "Workspace disk permanently deleted. Create a new clone in a new directory to start again.")
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation prompt")
+	cmd.Flags().BoolVar(&deleteWorkspace, "delete-workspace", false, "Permanently delete the owned managed disk, source files and edits")
 	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
 	return cmd
 }

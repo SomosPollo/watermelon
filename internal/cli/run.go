@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,6 +35,18 @@ func NewRunCmd() *cobra.Command {
 		Long:  "Discover the nearest project config, start its VM (creating it if needed), and open an interactive shell.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if workdir != "" {
+				if err := config.ValidateGuestWorkdir(workdir); err != nil {
+					return NewUsageError(fmt.Errorf("invalid --workdir %q: %w", workdir, err))
+				}
+			}
+			dir, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			if err := ensureSetupForCommand(cmd, dir, name); err != nil {
+				return err
+			}
 			return runRunWithOptions(runOptions{OpenShell: !noShell, Name: name, Workdir: workdir})
 		},
 	}
@@ -44,9 +57,17 @@ func NewRunCmd() *cobra.Command {
 }
 
 type runOptions struct {
-	OpenShell bool
-	Name      string
-	Workdir   string
+	// Setup binds provisioning to the exact configuration that was inspected
+	// and approved, including the selected VM and captured provision scripts.
+	ExpectedConfigDigest string
+	ExpectedVMName       string
+	Context              context.Context
+	Err                  io.Writer
+	Dir                  string
+	Out                  io.Writer
+	OpenShell            bool
+	Name                 string
+	Workdir              string
 }
 
 type askTerminalCoordinator interface {
@@ -133,24 +154,27 @@ type appliedPolicyHostContext struct {
 }
 
 var (
-	cliProjectMountSource = lima.ProjectMountSource
-	cliInstanceMount      = lima.InstanceMount
-	cliGetVMStatus        = lima.GetStatus
-	cliStartVM            = lima.Start
-	cliStopVM             = lima.Stop
-	cliShellVM            = lima.Shell
-	cliShellVMWithRunner  = lima.ShellWithRunner
-	cliVerifyPolicy       = lima.VerifyProvisioningComplete
-	cliGenerateConfig     = lima.GenerateConfigForInstance
-	cliSavePolicySnapshot = saveAppliedPolicySnapshotWithHost
-	cliSaveVerdictPort    = savePort
-	cliSaveVerdictPortAt  = savePortAt
-	cliNfqdHostArch       = lima.HostArchitecture
-	cliReadBuildInfo      = debug.ReadBuildInfo
-	cliExecutable         = os.Executable
-	cliNewNfqdRelease     = newNfqdReleaseSource
-	cliNewAskCoordinator  = func() askTerminalCoordinator { return ask.NewTerminalCoordinator() }
-	cliStartAskServer     = startAskVerdictServerForExistingVMWithDialog
+	cliProjectMountSource   = lima.ProjectMountSource
+	cliInstanceMount        = lima.InstanceMount
+	cliGetVMStatus          = lima.GetStatus
+	cliStartVM              = lima.Start
+	cliStartVMWithRunner    = lima.StartWithRunner
+	cliStopVM               = lima.Stop
+	cliShellVM              = lima.Shell
+	cliShellVMWithRunner    = lima.ShellWithRunner
+	cliVerifyPolicy         = lima.VerifyProvisioningComplete
+	cliGenerateConfig       = lima.GenerateConfigForInstance
+	cliSavePolicySnapshot   = saveAppliedPolicySnapshotWithHost
+	cliSaveVerdictPort      = savePort
+	cliSaveVerdictPortAt    = savePortAt
+	cliNfqdHostArch         = lima.HostArchitecture
+	cliReadBuildInfo        = debug.ReadBuildInfo
+	cliExecutable           = os.Executable
+	cliNewNfqdRelease       = newNfqdReleaseSource
+	cliNewAskCoordinator    = func() askTerminalCoordinator { return ask.NewTerminalCoordinator() }
+	cliStartAskServer       = startAskVerdictServerForExistingVMWithDialog
+	cliInspectWorkspaceDisk = lima.InspectWorkspaceDisk
+	cliCheckForwardedPorts  = checkForwardedPorts
 )
 
 func runRun() error {
@@ -223,19 +247,47 @@ func verdictAuthKeyForInstance(instance namedVMInstanceIdentity) (ask.AuthKey, e
 }
 
 func runRunWithOptions(opts runOptions) error {
+	out := opts.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	var starter lima.CommandRunner
+	if opts.Context != nil {
+		if err := opts.Context.Err(); err != nil {
+			return err
+		}
+		errOut := opts.Err
+		if errOut == nil {
+			errOut = os.Stderr
+		}
+		starter = &setupRunner{ctx: opts.Context, out: out, err: errOut}
+	}
 	if opts.Workdir != "" {
 		if err := config.ValidateGuestWorkdir(opts.Workdir); err != nil {
 			return NewUsageError(fmt.Errorf("invalid --workdir %q: %w", opts.Workdir, err))
 		}
 	}
 
-	dir, err := os.Getwd()
-	if err != nil {
-		return err
+	dir := opts.Dir
+	var err error
+	if dir == "" {
+		dir, err = os.Getwd()
+		if err != nil {
+			return err
+		}
 	}
 	target, err := resolveConfiguredTarget(dir, opts.Name)
 	if err != nil {
 		return err
+	}
+	if opts.ExpectedConfigDigest != "" {
+		digest, err := config.AppliedConfigDigest(target.Config)
+		if err != nil {
+			return err
+		}
+		if digest != opts.ExpectedConfigDigest || target.VMName != opts.ExpectedVMName {
+			return fmt.Errorf("project settings changed during setup; retry 'watermelon up' to review the current plan")
+		}
 	}
 	dir = target.ProjectRoot
 	cfg := target.Config
@@ -252,6 +304,15 @@ func runRunWithOptions(opts runOptions) error {
 		return fmt.Errorf("locking VM %q lifecycle: %w", vmName, err)
 	}
 	defer lifecycleLock.Release()
+	if cfg.Workspace.Disk != "" {
+		disk, err := cliInspectWorkspaceDisk(cfg.Workspace.Disk)
+		if err != nil {
+			return err
+		}
+		if disk.Instance != "" && disk.Instance != vmName {
+			return fmt.Errorf("workspace disk is in use by another VM %q", disk.Instance)
+		}
+	}
 
 	status := cliGetVMStatus(vmName)
 	if status != lima.StatusNotFound {
@@ -266,6 +327,11 @@ func runRunWithOptions(opts runOptions) error {
 	if status == lima.StatusUnknown {
 		return fmt.Errorf("cannot safely use VM %q because its Lima state is unknown", vmName)
 	}
+	if status == lima.StatusNotFound || status == lima.StatusStopped {
+		if err := cliCheckForwardedPorts(cfg.Ports.Forward); err != nil {
+			return err
+		}
+	}
 	// Rejecting a headless ask-mode session must happen only after the locked
 	// applied-policy check above. Otherwise changing a running VM from a more
 	// permissive policy to ask and invoking --no-shell could leave the stale VM
@@ -274,7 +340,7 @@ func runRunWithOptions(opts runOptions) error {
 		return errors.New("ask enforcement requires a foreground verdict server; run without --no-shell and keep the interactive session open")
 	}
 
-	needsIdentity := !config.MountProjectEnabled(&cfg.VM) || cfg.VM.Name != "" || cfg.Security.Enforcement == config.EnforcementAsk
+	needsIdentity := !config.MountProjectEnabled(&cfg.VM) || cfg.VM.Name != "" || cfg.Security.Enforcement == config.EnforcementAsk || cfg.Setup.Profile != ""
 	var instanceIdentity *namedVMInstanceIdentity
 	removeReservedIdentity := false
 	if needsIdentity {
@@ -353,7 +419,7 @@ func runRunWithOptions(opts runOptions) error {
 			ask.WithRecreateCommand(deferredRecreatePolicyCommandForVM(dir, vmName)),
 		)
 		go srv.Serve(verdictListener)
-		fmt.Printf("Verdict server listening on port %d...\n", verdictPort)
+		fmt.Fprintf(out, "Verdict server listening on port %d...\n", verdictPort)
 	}
 
 	created := false
@@ -362,7 +428,7 @@ func runRunWithOptions(opts runOptions) error {
 		if err := clearAppliedPolicySnapshotForVM(dir, vmName); err != nil {
 			return fmt.Errorf("clearing previous applied-policy snapshot: %w", err)
 		}
-		fmt.Println("Creating sandbox VM...")
+		fmt.Fprintln(out, "Creating sandbox VM...")
 
 		// Save verdict port for future sessions
 		if verdictPort > 0 {
@@ -406,9 +472,12 @@ func runRunWithOptions(opts runOptions) error {
 		}
 		tmpFile.Close()
 
-		if err := startVMFailClosed(dir, vmName, tmpFile.Name()); err != nil {
+		if err := startVMFailClosed(dir, vmName, tmpFile.Name(), starter); err != nil {
 			var staged *lima.StartError
 			if errors.As(err, &staged) && staged.Stage == lima.StartStageStart {
+				removeReservedIdentity = false
+			}
+			if opts.Context != nil && opts.Context.Err() != nil && instanceIdentity != nil && requireNamedVMIdentityMount(*instanceIdentity) == nil {
 				removeReservedIdentity = false
 			}
 			return err
@@ -419,8 +488,8 @@ func runRunWithOptions(opts runOptions) error {
 		if err := requireVMProjectBinding(dir, vmName); err != nil {
 			return err
 		}
-		fmt.Println("Starting sandbox VM...")
-		if err := startVMFailClosed(dir, vmName, ""); err != nil {
+		fmt.Fprintln(out, "Starting sandbox VM...")
+		if err := startVMFailClosed(dir, vmName, "", starter); err != nil {
 			return err
 		}
 	}
@@ -440,9 +509,21 @@ func runRunWithOptions(opts runOptions) error {
 		}
 	}
 
+	if cfg.Workspace.Disk != "" {
+		state, err := loadWorkspaceState(dir)
+		if err != nil {
+			return err
+		}
+		if !state.DiskInitialized {
+			state.DiskInitialized = true
+			if err := saveWorkspaceState(dir, state); err != nil {
+				_ = cliStopVM(vmName)
+				return fmt.Errorf("recording workspace initialization: %w", err)
+			}
+		}
+	}
 	sshHost := lima.GetSSHHost(vmName)
-	fmt.Printf("IDE: connect to %s\n", sshHost)
-	fmt.Println()
+	fmt.Fprintf(out, "IDE: connect to %s\n\n", sshHost)
 
 	if !opts.OpenShell {
 		return lifecycleLock.Release()
@@ -461,7 +542,13 @@ func runRunWithOptions(opts runOptions) error {
 		return errors.Join(err, usageLease.Release())
 	}
 	var shellErr error
-	if terminalCoordinator != nil {
+	if cfg.Setup.Profile != "" {
+		if terminalCoordinator != nil {
+			shellErr = cliExecVMWithRunner(vmName, projectCommandArgs(cfg, []string{"bash"}), terminalCoordinator, workdir)
+		} else {
+			shellErr = cliExecVM(vmName, projectCommandArgs(cfg, []string{"bash"}), workdir)
+		}
+	} else if terminalCoordinator != nil {
 		shellErr = cliShellVMWithRunner(vmName, terminalCoordinator, workdir)
 	} else {
 		shellErr = cliShellVM(vmName, workdir)
@@ -598,8 +685,17 @@ func stopBoundVMForConfigErrorForTarget(dir, vmName string, configErr error) err
 	return resultErr
 }
 
-func startVMFailClosed(dir, vmName, configPath string) error {
-	if err := cliStartVM(vmName, configPath); err != nil {
+func startVMFailClosed(dir, vmName, configPath string, runners ...lima.CommandRunner) error {
+	if len(runners) > 1 {
+		return errors.New("expected at most one startup runner")
+	}
+	var err error
+	if len(runners) == 1 && runners[0] != nil {
+		err = cliStartVMWithRunner(vmName, configPath, runners[0])
+	} else {
+		err = cliStartVM(vmName, configPath)
+	}
+	if err != nil {
 		startErr := fmt.Errorf("starting VM: %w", err)
 		var staged *lima.StartError
 		if !errors.As(err, &staged) || staged.Stage != lima.StartStageStart {
@@ -847,7 +943,9 @@ func generateConfigForInstanceWithIdentity(cfg *config.Config, projectDir string
 	logHostDir := ""
 	if identity != nil {
 		bootstrapHostDir = identity.Paths.BootstrapDir
-		logHostDir = identity.Paths.GuestStateDir
+		if cfg.Workspace.Disk == "" {
+			logHostDir = identity.Paths.GuestStateDir
+		}
 	}
 	if cfg.Security.Enforcement == config.EnforcementAsk {
 		if identity == nil {
@@ -866,7 +964,16 @@ func generateConfigForInstanceWithIdentity(cfg *config.Config, projectDir string
 	if len(preparedScripts) == 1 {
 		prepared = preparedScripts[0]
 	}
+	formatWorkspace := false
+	if cfg.Workspace.Disk != "" {
+		state, err := loadWorkspaceState(projectDir)
+		if err != nil {
+			return "", err
+		}
+		formatWorkspace = !state.DiskInitialized
+	}
 	return cliGenerateConfig(cfg, projectDir, mountSources, lima.GenerateOptions{
+		FormatWorkspaceDisk:      formatWorkspace,
 		VerdictServerPort:        verdictPort,
 		NfqdSHA256:               nfqdDigest,
 		VerdictAuthKey:           identityVerdictAuthKey(identity),

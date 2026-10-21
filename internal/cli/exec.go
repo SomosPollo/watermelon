@@ -16,15 +16,21 @@ var (
 )
 
 func NewExecCmd() *cobra.Command {
-	var name string
+	var name, cwd string
 
 	cmd := &cobra.Command{
 		Use:   "exec [command] [args...]",
 		Short: "Run a command in the sandbox without interactive shell",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cwd != "" && !config.ValidProjectDirectory(cwd) {
+				return NewUsageError(fmt.Errorf("--cwd must be a relative directory within the project"))
+			}
 			dir, err := os.Getwd()
 			if err != nil {
+				return err
+			}
+			if err := ensureSetupForCommand(cmd, dir, name); err != nil {
 				return err
 			}
 			target, err := resolveConfiguredTarget(dir, name)
@@ -33,6 +39,9 @@ func NewExecCmd() *cobra.Command {
 			}
 			dir = target.ProjectRoot
 			cfg := target.Config
+			if cwd != "" && config.DefaultWorkdir(cfg) == "" {
+				return NewUsageError(fmt.Errorf("--cwd requires a configured project workdir"))
+			}
 			vmName := target.VMName
 			if err := requireCompatibleLima(); err != nil {
 				return err
@@ -98,6 +107,7 @@ func NewExecCmd() *cobra.Command {
 				return errors.Join(err, usageLease.Release())
 			}
 			var execErr error
+			args = projectCommandArgsInDir(cfg, cwd, args)
 			if terminalCoordinator != nil {
 				execErr = cliExecVMWithRunner(vmName, args, terminalCoordinator, target.Workdir)
 			} else {
@@ -108,6 +118,7 @@ func NewExecCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "VM name (overrides vm.name and the name derived from the resolved project root)")
+	cmd.Flags().StringVar(&cwd, "cwd", "", "Run from this relative project directory")
 	// Once the guest command starts, every remaining argument belongs to that
 	// command. In particular, flags such as `docker run --name web` must not be
 	// consumed as Watermelon flags. Watermelon flags therefore have to precede

@@ -97,6 +97,9 @@ func Validate(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	if err := validateProjectSetup(cfg, toolProviders); err != nil {
+		return err
+	}
 
 	mountSources := make([]string, 0, len(cfg.Mounts))
 	for source := range cfg.Mounts {
@@ -383,7 +386,7 @@ func BuildToolCommandProviders(tools map[string][]string) (map[string]string, er
 			if err := ValidateCommandName(command); err != nil {
 				return nil, fmt.Errorf("invalid tool command for image %q: %w", image, err)
 			}
-			if command == "nerdctl" {
+			if command == "nerdctl" || command == "watermelon-project" {
 				return nil, fmt.Errorf("tool command %q is reserved by Watermelon", command)
 			}
 			if _, exists := seenInImage[command]; exists {

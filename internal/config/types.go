@@ -11,6 +11,30 @@ type Config struct {
 	Resources ResourcesConfig     `toml:"resources" json:"resources"`
 	Security  SecurityConfig      `toml:"security" json:"security"`
 	IDE       IDEConfig           `toml:"ide" json:"ide"`
+	Workspace WorkspaceConfig     `toml:"workspace" json:"workspace,omitempty"`
+	Setup     SetupConfig         `toml:"setup" json:"setup,omitempty"`
+}
+
+// Workspace settings are host policy. A managed workspace is never a host
+// source mount; its disk is separately owned and survives VM deletion.
+type WorkspaceConfig struct {
+	Disk   string `toml:"disk" json:"disk,omitempty"`
+	Source string `toml:"source" json:"source,omitempty"`
+}
+
+type SetupConfig struct {
+	Manager  string            `toml:"manager,omitempty" json:"manager,omitempty"`
+	Only     string            `toml:"only,omitempty" json:"only,omitempty"`
+	Profile  string            `toml:"profile" json:"profile,omitempty"`
+	Runtime  string            `toml:"runtime" json:"runtime,omitempty"`
+	Runtimes map[string]string `toml:"runtimes,omitempty" json:"runtimes,omitempty"`
+	Projects []SetupProject    `toml:"projects,omitempty" json:"projects,omitempty"`
+}
+
+type SetupProject struct {
+	Manager   string `toml:"manager,omitempty" json:"manager,omitempty"`
+	Directory string `toml:"directory" json:"directory"`
+	Profile   string `toml:"profile" json:"profile"`
 }
 
 type VMConfig struct {
