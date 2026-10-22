@@ -10,7 +10,7 @@ allow = [
 "node:20-slim" = ["node", "npm", "npx"]
 
 [provision]
-npm = ["pnpm"]
+npm = ["pnpm@10.20.0"]
 
 [ports]
 forward = [3000, 5173]

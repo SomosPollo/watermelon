@@ -1,24 +1,34 @@
 # Django Example
 
-Sandbox configuration for Django web development.
+Sandbox configuration for an existing Django project with `requirements.txt`
+or a supported `pyproject.toml`.
 
 ## Setup
 
 ```bash
 cd your-django-project
 cp /path/to/watermelon/docs/examples/python-django/.watermelon.toml ./
+watermelon config validate
+watermelon up
 watermelon run
 ```
+
+Review the settings before `up`. It creates the project virtual environment
+and installs declared dependencies after approval. Use this example in a local
+project without an existing Watermelon configuration; otherwise merge the
+settings you need.
 
 ## Inside the sandbox
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
 python manage.py runserver 0.0.0.0:8000
 # Visit http://localhost:8000 on your host
 ```
+
+The automatic profile keeps Python, pip, and console scripts in the same
+project environment. You do not need to create or activate another virtual
+environment. After changing dependencies, exit to the host and run
+`watermelon up` again.
 
 ## Database
 

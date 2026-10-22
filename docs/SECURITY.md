@@ -1,5 +1,7 @@
 # Security Model
 
+[Documentation](README.md) · [Configuration reference](CONFIG_SPEC.md)
+
 How watermelon protects your system and its limitations.
 
 ## Threat Model
@@ -217,7 +219,12 @@ When mounting sensitive files, use read-only mode:
 "~/.gitconfig" = { target = "/mnt/watermelon/gitconfig", mode = "ro" }
 ```
 
-Configured targets are restricted to `/mnt/watermelon` and its descendants. This prevents an additional mount from replacing guest system, home, policy, or project paths; tools must be pointed at mounted configuration files explicitly.
+Configured targets must be descendants of `/mnt/watermelon`; the root itself
+and the managed `bootstrap` and `state` subtrees are reserved. This prevents an
+additional mount from replacing guest system, home, policy, or project paths.
+These files are available in the guest; tool containers need explicit access
+as described in the [mount reference](CONFIG_SPEC.md#mounts). Read-only mounts
+still let guest code read and copy their contents.
 
 ### Audit Mode
 

@@ -2,6 +2,11 @@
 
 Sandbox configuration for Ethereum smart contract development with Hardhat.
 
+The example uses Node 24 and permits Hardhat's compiler downloads, including
+its Linux ARM64 compiler mirror. npm registry access alone is not enough to
+compile Solidity. Match the runtime to your project's Hardhat version before
+creating the VM.
+
 ## Why sandbox blockchain development?
 
 npm packages run postinstall scripts with full system access. A malicious package could:
@@ -30,7 +35,9 @@ npx hardhat node  # Start local node on port 8545
 
 ## Connecting to testnets/mainnet
 
-Add your RPC provider to the allowlist:
+Add your RPC provider to the existing allowlist, keeping the compiler download
+hosts from the example. Apply VM-affecting changes with `watermelon rebuild`
+before running the project again:
 
 ```toml
 [network]

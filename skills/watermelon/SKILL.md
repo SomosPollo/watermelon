@@ -144,10 +144,15 @@ Rules are **additive** — each process gets the general `allow` list plus its o
 "python:3.12-slim" = ["python", "python3", "pip"]
 "golang:1.22" = ["go"]
 "rust:latest" = ["cargo", "rustc"]
-"ghcr.io/foundry-rs/foundry" = ["forge", "cast", "anvil", "chisel"]
 ```
 
 Each command becomes a wrapper script running inside the container. With the default project mount, it binds and uses `/project`. With `mount_project = false`, it never refers to `/project`: it binds a configured existing `vm.workdir`, or resolves and binds the wrapper's current guest directory when no workdir is configured.
+
+Mounted-project manual wrappers do not inherit the guest shell's current
+subdirectory, environment variables, or Python virtual-environment activation.
+Use automatic setup for Python and mixed-language project workflows. Images
+with shell entrypoints may discard arguments; use the explicit-entrypoint
+helper in the [Foundry example](../../docs/examples/foundry/README.md).
 
 ### Provision (pre-installed packages)
 
@@ -178,7 +183,12 @@ Package fields require the matching tool image in `[tools]`. Packages are baked 
 forward = [3000, 8000, 8080]  # Range: 1-65535
 ```
 
-Additional mount targets must be `/mnt/watermelon` or a descendant so they cannot shadow guest system, home, policy, or project paths. Point tools explicitly at mounted configuration files. The project directory is separately mounted read-write at `/project` by default and is absent with `vm.mount_project = false`; Watermelon may still mount narrow bootstrap and per-VM log state for its own operation.
+Additional mount targets must be descendants of `/mnt/watermelon`; the root
+itself and its `bootstrap` and `state` subtrees are reserved. Mounts expose
+files to the guest, not automatically to tool containers. The project directory
+is separately mounted read-write at `/project` by default and is absent with
+`vm.mount_project = false`; Watermelon may still mount narrow bootstrap and
+per-VM log state for its own operation.
 
 Registered fixed-name, no-mount, and ask VMs resolve log storage through per-VM host state; legacy path-derived mounted VMs use the project's `.watermelon/logs.log`. Ask decisions appear through the prompt rather than as policy events. Always use `watermelon logs` so ownership and the correct location are resolved. `watermelon copy` is the exception to normal ownership checks: it accepts one explicit `vm-name:path` and does not read project config, but it does coordinate the name and hold a shared usage lease. Stop/destroy may interrupt the transfer and leave a partial destination; destroy then waits for the copy client to detach before cleanup or name reuse.
 
@@ -187,10 +197,10 @@ Registered fixed-name, no-mount, and ask VMs resolve log storage through per-VM 
 | Stack | Tools | Key Domains | Ports |
 |-------|-------|-------------|-------|
 | Node/React/Vite | `"node:20-slim"` = `["node", "npm", "npx"]` | `registry.npmjs.org` | 3000, 5173 |
-| Python/Django | `"python:3.12-slim"` = `["python", "python3", "pip"]` | `pypi.org`, `files.pythonhosted.org` | 8000 |
-| Rust | `"rust:latest"` = `["cargo", "rustc"]` | `crates.io`, `static.crates.io` | — |
-| Go | `"golang:1.22"` = `["go"]` | `proxy.golang.org`, `sum.golang.org` | — |
-| Foundry | `"ghcr.io/foundry-rs/foundry"` = `["forge", "cast", "anvil", "chisel"]` | `github.com`, `*.githubusercontent.com` for installs | 8545 |
+| Python/Django | [Automatic Python example](../../docs/examples/python-django/README.md) | `pypi.org`, `files.pythonhosted.org` | 8000 |
+| Rust | `"rust:latest"` = `["cargo", "rustc"]` | `index.crates.io`, `static.crates.io` | — |
+| Go | `"golang:1.22"` = `["go"]` | `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` | — |
+| Foundry | [Explicit-entrypoint helper](../../docs/examples/foundry/README.md) | `github.com`, `raw.githubusercontent.com`, `binaries.soliditylang.org` | 8545 |
 
 Configured base images are pulled during trusted bootstrap before workload policy is activated. Do not add registry domains to `[network].allow` solely for image pulls.
 

@@ -1,8 +1,22 @@
 # Project workflows
 
+[Documentation](README.md) · [Command reference](COMMANDS.md)
+
 Watermelon supports managed guest workspaces for untrusted repositories and
 mounted host projects for existing local development. Both retain strict
 `fail` network enforcement by default.
+
+Run the commands in this guide on the host. `watermelon run` opens a guest
+shell; use `exit` to return to the host before running another Watermelon command.
+
+| Goal | Section |
+|------|---------|
+| Keep a public repository's source inside the VM | [Clone a public project](#clone-a-public-project) |
+| Use files already on your host | [Prepare a local project](#prepare-a-local-project) |
+| Choose languages, runtimes, or package managers | [Runtime and dependency support](#runtime-and-dependency-support) |
+| Run commands, edit, or export files | [Work, edit and serve](#work-edit-and-serve) |
+| Open an app in your host browser | [Run a development server](#run-a-development-server) |
+| Understand what survives stop, rebuild, or deletion | [Inspect, recover and delete](#inspect-recover-and-delete) |
 
 ## Clone a public project
 
@@ -44,10 +58,10 @@ variables, which may contain credentials. Corporate proxy environments need
 explicit manual configuration. Private-repository authentication is outside
 automatic onboarding in this release.
 
-Managed workspaces use `8.8.8.8` and `8.8.4.4` during trusted VM bootstrap,
-matching the managed resolver's upstreams. Exact allowed names are then captured
-for enforcement; workload DNS remains restricted to the approved names. This
-avoids pinning an unreachable answer from Lima's host DNS path.
+Trusted VM bootstrap uses Lima's network DNS defaults. After bootstrap,
+Watermelon's managed resolver uses `8.8.8.8` and `8.8.4.4` for permitted
+forwarded lookups. Exact allowed names are captured during bootstrap; in strict
+mode, workload DNS answers only approved names.
 Host-side Lima downloads still use the host's network and DNS configuration.
 If an existing VM repeatedly stalls during GitHub TLS negotiation, compare its
 captured address with current DNS and use `watermelon rebuild` to refresh the VM
@@ -71,6 +85,7 @@ checkout is not automatically discarded.
 ```bash
 cd existing-project
 watermelon init
+# Review the generated .watermelon.toml
 watermelon config validate
 watermelon up
 ```
@@ -292,29 +307,65 @@ watermelon status                    # Read the VM Name
 watermelon copy VM_NAME:/workspace/project/result.txt ./result.txt
 ```
 
-For a dev server, add the desired port to the host `.watermelon.toml`, rebuild,
-and start the application's documented server command. Explicit forwards bind
-to host `127.0.0.1`. Network changes never silently enable permissive discovery
-mode. Package downloads from Git, alternate registries, and external build
-assets may require reviewed allowlist additions and a rebuild. Permitted
-destinations remain potential data-exfiltration paths.
+Package downloads from Git, alternate registries, and external build assets
+may require reviewed allowlist additions and a rebuild. Permitted destinations
+remain potential data-exfiltration paths.
 
 Automatic setup supports noninteractive `fail`, `silent`, or explicitly chosen
 `log` policies. `ask` requires a foreground controller: use `watermelon run`
 and install dependencies interactively, keeping that session open. `up` does
 not detach an ask-mode controller or silently change enforcement.
 
+### Run a development server
+
+1. Set the app's listening port in the host `.watermelon.toml`. For Vite:
+
+   ```toml
+   [ports]
+   forward = [5173]
+   ```
+
+2. Apply the change from the host:
+
+   ```bash
+   watermelon rebuild
+   ```
+
+   Rebuild removes VM-local system state; mounted host files and managed
+   workspace disks remain. Preserve any needed files stored elsewhere in the VM.
+
+3. Start the server from the host, using your project's command. For Vite:
+
+   ```bash
+   watermelon exec -- npm run dev -- --host 0.0.0.0 --port 5173
+   ```
+
+4. Keep that command running and open `http://127.0.0.1:5173` on the host.
+
+Explicit forwards bind to host `127.0.0.1` and use the same host and guest port.
+They expose guest services to the host; they do not grant guest access to host
+services. Changing the forwarded port also requires changing the server's
+listening port. Network changes never silently enable permissive discovery mode.
+
 ## Inspect, recover and delete
+
+Choose one lifecycle action; these are alternatives:
+
+| Command | VM system state | Mounted host project | Managed workspace disk |
+|---------|-----------------|----------------------|------------------------|
+| `stop` | Kept; VM stops | Kept | Kept |
+| `rebuild` | Replaced | Kept | Kept |
+| `destroy` | Deleted | Kept | Kept |
+| `destroy --delete-workspace` | Deleted | Not applicable | Permanently deleted, including source and edits |
+
+`stop`, `rebuild`, and `destroy` interrupt active guest work. Finish commands
+and save changes before using them. The commands below inspect current state:
 
 ```bash
 watermelon up --dry-run               # Inspect settings without VM operations
 watermelon config validate --json
 watermelon status --json
 watermelon logs
-watermelon stop
-watermelon rebuild --force
-watermelon destroy
-watermelon destroy --delete-workspace
 ```
 
 `status --json` and config validation use `schema_version: 1`. Status describes

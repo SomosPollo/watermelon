@@ -4,10 +4,12 @@ image = "ubuntu-22.04"
 [network]
 allow = [
     "registry.npmjs.org",
+    "binaries.soliditylang.org",
+    "solc-linux-arm64-mirror.hardhat.org",
 ]
 
 [tools]
-"node:20-slim" = ["node", "npm", "npx"]
+"node:24-bookworm" = ["node", "npm", "npx"]
 
 [ports]
 forward = [8545]

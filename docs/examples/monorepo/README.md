@@ -13,37 +13,48 @@ watermelon exec --cwd frontend npm test
 watermelon exec --cwd backend python -m pytest
 ```
 
-For an existing local checkout, run `watermelon init` and `watermelon up`.
-Automatic detection prepares Node, Python, Go, and Rust projects in subdirectories
-with shared toolchains and separate project dependencies. The local checkout is
-mounted read-write. See [Project workflows](../../WORKSPACES.md) for version
-selection, workspace handling and discovery limits.
-
-## Option A: Manual mounted configuration
+For an existing local checkout, generate the configuration from its manifests:
 
 ```bash
 cd your-monorepo
-cp /path/to/watermelon/docs/examples/monorepo/.watermelon.toml ./
-watermelon run
+watermelon init
+# Review .watermelon.toml, including network rules and forwarded ports
+watermelon config validate
+watermelon up
 ```
 
-The repository is mounted read-write at `/project`, which is also the default shell, exec, and tool-container workdir.
+Automatic detection prepares supported languages in subdirectories with shared
+toolchains and separate project dependencies. The local checkout is mounted
+read-write. See [Project workflows](../../WORKSPACES.md) for version selection,
+workspace handling, and discovery limits.
 
-## Inside the sandbox
+## Run services
+
+For a Node frontend and Django backend, add these ports to the host
+configuration before `up`:
+
+```toml
+[ports]
+forward = [3000, 8000]
+```
+
+If the VM already exists, apply the change with `watermelon rebuild` first.
+Then use separate host terminals for the two services:
 
 ```bash
-# Frontend
-cd frontend
-npm install
-npm run dev &
-
-# Backend
-cd ../backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python manage.py runserver 0.0.0.0:8000
+# Terminal 1: the frontend must listen on port 3000
+watermelon exec --cwd frontend npm run dev
 ```
+
+```bash
+# Terminal 2
+watermelon exec --cwd backend python manage.py runserver 0.0.0.0:8000
+```
+
+Open `http://127.0.0.1:3000` and `http://127.0.0.1:8000` on the host. For Vite,
+use its port `5173` in both the app command and the forward instead. Automatic
+setup creates the backend's Python environment; do not create another one in
+the guest shell.
 
 ## Typical monorepo structure
 
@@ -59,21 +70,17 @@ myapp/
 └── shared/            # Shared types/utils
 ```
 
-## Running multiple services
+## Manual configuration
 
-Use backgrounding or a process manager inside the sandbox:
+The included `.watermelon.toml` is an alternative starting point for custom
+manual tools. It does not enable the automatic setup used above. Manual
+wrappers start separate containers at the configured VM workdir: changing the
+guest shell's directory or activating a Python environment does not reconfigure
+those wrappers. For Node commands in a child directory, use an explicit option
+such as `npm --prefix frontend install`. Use automatic setup for the combined
+frontend/backend workflow in this guide.
 
-```bash
-# Option 1: Background processes
-npm run dev --prefix frontend &
-python backend/manage.py runserver 0.0.0.0:8000 &
-
-# Option 2: Use tmux inside sandbox
-tmux new-session -d -s frontend 'npm run dev --prefix frontend'
-tmux new-session -d -s backend 'cd backend && python manage.py runserver'
-```
-
-## Option B: Keep the host project unmounted
+## Keep the host project unmounted
 
 Use no-mount mode when you want to copy only selected content into a persistent, project-owned VM. This is not a shared global VM: Watermelon binds the fixed name to the directory containing this configuration and rejects collisions or lifecycle commands from another project.
 
