@@ -10,6 +10,12 @@ export const repoRoot = path.resolve(siteRoot, '..');
 export const repository = 'https://github.com/SomosPollo/watermelon';
 export const escape = (text) => String(text).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 
+// GitHub Pages does not serve dotfiles. Download links retain the source name
+// through their download attribute while using a non-hidden public filename.
+export function publicAssetPath(source) {
+  return path.posix.join(path.posix.dirname(source), path.posix.basename(source).replace(/^\./, ''));
+}
+
 export function normalizeBase(value = '/') {
   if (!/^\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]*$/.test(value)) throw new Error('PAGES_BASE_PATH must be a URL path such as / or /watermelon/');
   return value === '/' ? '/' : `${value.replace(/\/$/, '')}/`;
@@ -70,7 +76,7 @@ export function createRenderer(pages, base) {
       const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(env.source), decodeURIComponent(pathname)));
       const target = bySource.get(resolved) ?? bySource.get(`${resolved.replace(/\/$/, '')}/README.md`);
       if (target) token.attrSet('href', base + target.route + (query ? `?${query}` : '') + (fragment ? `#${fragment}` : ''));
-      else if (env.files.has(resolved)) token.attrSet('href', base + resolved + (fragment ? `#${fragment}` : ''));
+      else if (env.files.has(resolved)) token.attrSet('href', base + publicAssetPath(resolved) + (fragment ? `#${fragment}` : ''));
       else if (resolved.endsWith('.md')) throw new Error(`Unknown documentation link ${href} in ${env.source}`);
       else token.attrSet('href', `${repository}/blob/main/${resolved}` + (fragment ? `#${fragment}` : ''));
     }

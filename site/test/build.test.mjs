@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile, readdir, stat, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { parse } from 'parse5';
-import { loadContent, normalizeBase, siteRoot } from '../lib/content.mjs';
+import { loadContent, normalizeBase, publicAssetPath, repoRoot, siteRoot } from '../lib/content.mjs';
 
 const root = path.join(siteRoot, '.check-dist');
 const cache = new Map();
@@ -50,7 +50,15 @@ for (const base of ['/', '/watermelon/']) {
     const built = await files(root);
     assert.equal(built.filter((file) => file.endsWith('.html')).length, pages.length + 2);
     for (const page of pages) assert.ok(built.includes(path.join(root, page.route, 'index.html')), `Missing article ${page.source}`);
-    for (const source of sources.filter((file) => !file.endsWith('.md'))) assert.ok(built.includes(path.join(root, source)), `Missing download ${source}`);
+    for (const source of sources.filter((file) => !file.endsWith('.md'))) {
+      const published = path.join(root, publicAssetPath(source));
+      assert.ok(built.includes(published), `Missing download ${source}`);
+      assert.ok(!path.basename(published).startsWith('.'), `Hidden download cannot be served by Pages: ${source}`);
+      assert.deepEqual(await readFile(published), await readFile(path.join(repoRoot, source)), `Download contents changed: ${source}`);
+    }
+    const example = await document(path.join(root, 'docs/examples/react-app/index.html'));
+    const configurationLink = example.find((node) => attr(node, 'download') === '.watermelon.toml');
+    assert.equal(attr(configurationLink, 'href'), `${base}docs/examples/react-app/watermelon.toml`);
     for (const file of built.filter((file) => file.endsWith('.html'))) {
       const nodes = await document(file);
       assert.equal(nodes.filter((node) => node.tagName === 'h1').length, 1, `Expected one h1 in ${file}`);
