@@ -25,15 +25,20 @@ If you want common CLIs available every time the VM is created:
 
 ```toml
 [provision]
-npm = ["typescript", "eslint"]
+npm = ["pnpm@10.20.0", "typescript", "eslint"]
 ```
 
 This uses `npm install -g ...` during provisioning and creates the command wrappers when the VM is built. Prefer this configuration over an ad-hoc global install: a newly installed executable is not automatically exposed in the guest command path.
 
 ## Notes
 
-- The example provisions `pnpm` globally during VM creation (`[provision].npm = ["pnpm"]`), so you can run `pnpm` directly.
+- The example provisions `pnpm@10.20.0` during VM creation, so `pnpm` is available directly. Match this pin to your project's required pnpm version before creating the VM; leaving it unpinned can select a major release with different installation behavior.
 - Watermelon pulls the base `node` image during trusted bootstrap, so Docker Hub does not need to be in the workload allowlist.
+
+If pnpm reports ignored dependency build scripts, review the listed packages
+and use `pnpm approve-builds` to approve only the scripts your project needs,
+then retry installation. Keep the resulting project settings so later installs
+use the same decisions.
 
 ## Troubleshooting network allowlist
 

@@ -4,11 +4,14 @@ image = "ubuntu-22.04"
 [network]
 allow = [
     "github.com",
+    "raw.githubusercontent.com",
     "*.githubusercontent.com",
+    "binaries.soliditylang.org",
 ]
 
 [tools]
-"ghcr.io/foundry-rs/foundry" = ["forge", "cast", "anvil", "chisel"]
+# Preload the image; foundry.sh selects the entrypoint explicitly.
+"ghcr.io/foundry-rs/foundry:latest" = []
 
 [ports]
 forward = [8545]

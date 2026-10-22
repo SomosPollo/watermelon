@@ -14,16 +14,18 @@ cd audit-workspace
 cp /path/to/watermelon/docs/examples/audit-package/.watermelon.toml ./
 ```
 
-## Download the package offline first
+## Download the package archive
 
-On your host (or a separate sandboxed environment with network):
+In the disposable host `audit-workspace` directory, download an exact tarball
+without running a package-manager command. Replace the package name and version:
 
 ```bash
-# Download package tarball without executing
-npm pack suspicious-package
-# or
-curl -O https://registry.npmjs.org/suspicious-package/-/suspicious-package-1.0.0.tgz
+curl -fL -o suspicious-package-1.0.0.tgz \
+  https://registry.npmjs.org/suspicious-package/-/suspicious-package-1.0.0.tgz
 ```
+
+Leave the archive unexpanded until you are inside the sandbox. The example's
+empty network allowlist prevents downloading it from the inspection VM.
 
 ## Inspect in the sandbox
 
@@ -36,8 +38,7 @@ cd package
 
 # Examine the code
 cat package.json
-find . -name "*.js" | xargs grep -l "postinstall\|preinstall"
-cat scripts/postinstall.js
+grep -R -n -E "preinstall|postinstall" --include="*.json" --include="*.js" .
 
 # Check for suspicious patterns
 grep -r "child_process" .
@@ -45,6 +46,11 @@ grep -r "fs.readFile.*ssh\|aws\|credentials" .
 grep -r "http\|https\|fetch\|axios" .
 grep -r "eval\|Function(" .
 ```
+
+Searches exit with status 1 when they find no matches; that is not a sandbox
+failure. Open files referenced by the package's actual lifecycle scripts rather
+than assuming a path such as `scripts/postinstall.js` exists. These searches
+are starting points for inspection, not proof that a package is safe.
 
 ## What this protects against
 

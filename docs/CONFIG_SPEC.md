@@ -1,10 +1,48 @@
 # Watermelon Configuration Specification
 
+[Documentation](README.md) · [Command reference](COMMANDS.md)
+
 This document describes the `.watermelon.toml` configuration file format for Watermelon sandboxes.
+
+| Configure | Section |
+|-----------|---------|
+| Managed storage and automatic setup | [workspace and setup](#workspace-and-setup) |
+| VM name, image, mounts, and working directory | [vm](#vm) |
+| Allowed destinations and per-process rules | [network](#network) |
+| Global packages and root setup scripts | [provision](#provision) |
+| Container images and command wrappers | [tools](#tools) |
+| Additional host files exposed to the VM | [mounts](#mounts) |
+| Guest services reachable from the host | [ports](#ports) |
+| Memory, CPU, and disk limits | [resources](#resources) |
+| Block, observe, or prompt for network access | [security](#security) |
+| Remote editor | [ide](#ide) |
 
 ## Overview
 
-The `.watermelon.toml` file defines how your project's sandbox VM is configured. Place this file in your project's root directory. Parsing is strict: unknown or misspelled keys are rejected at every level, including fields inside individual `[mounts]` entries. Watermelon never silently ignores them and substitutes a safety-sensitive default.
+Use `watermelon init` for a local project or `watermelon clone` for a managed
+workspace. These commands generate the settings for detected toolchains; see
+[project workflows](WORKSPACES.md) before editing `[workspace]` or `[setup]`
+by hand. A managed workspace's host settings directory is separate from its
+guest source checkout.
+
+Review settings before running the VM, then validate them on the host:
+
+```bash
+watermelon config validate
+```
+
+VM-affecting changes require recreation. Use `watermelon rebuild` after
+reviewing changes; preserve any needed VM-local files first. Mounted host files
+and managed workspace disks are retained. Editing a setting and restarting
+with `stop`/`run` does not apply it. IDE-only settings do not require a rebuild.
+
+Parsing is strict: unknown or misspelled keys are rejected at every level,
+including fields inside individual `[mounts]` entries.
+
+The example below is a **manual configuration**: it exposes tools but does not
+enable automatic dependency installation. Create it as `.watermelon.toml` in
+your project root and use `watermelon run`, then install project dependencies
+inside the guest.
 
 ```toml
 # Example .watermelon.toml
@@ -319,6 +357,14 @@ Defines containerized tools available in the sandbox. Tools are run via nerdctl 
 **Format:** `"<docker-image>:<tag>" = ["cmd1", "cmd2", ...]`
 
 Each command becomes available as a wrapper script in `/usr/local/bin/` inside the VM.
+For a mounted project, manual wrappers launch separate containers at
+`vm.workdir` (or `/project` by default). A guest shell's `cd`, environment
+variables, or Python activation do not reconfigure those containers. Use a
+tool's explicit directory option, such as `npm --prefix frontend install`, or
+use automatic `[setup]` for shared
+runtime state and project-relative commands. Automatic Python setup keeps the
+interpreter, pip, and console scripts in the selected project environment.
+
 One command may be declared only once across the entire table; duplicate declarations are rejected instead of choosing an image based on map iteration order.
 The command `nerdctl` and Watermelon's internal `watermelon-npm`, `watermelon-pip`, `watermelon-cargo`, `watermelon-go`, and `watermelon-gem` Docker Hub image names are reserved because generated wrappers and provisioned images depend on them.
 
@@ -332,9 +378,6 @@ Configured base images are pulled during Watermelon's trusted bootstrap, before 
 # Python tools
 "python:3.12-slim" = ["python", "python3", "pip"]
 
-# Foundry (Ethereum development)
-"ghcr.io/foundry-rs/foundry" = ["forge", "cast", "anvil", "chisel"]
-
 # Go compiler
 "golang:1.22" = ["go"]
 
@@ -343,6 +386,12 @@ Configured base images are pulled during Watermelon's trusted bootstrap, before 
 ```
 
 **How it works:**
+
+Generic wrappers append the command and arguments to the image's entrypoint.
+An image with a shell entrypoint may discard those arguments. The
+[Foundry example](examples/foundry/README.md) includes a helper that selects the
+entrypoint explicitly. An image mapped to an empty command list is preloaded
+without generating wrappers.
 
 1. When you run `npm install` in the sandbox, it executes:
    ```bash
@@ -387,6 +436,12 @@ Additional host paths to mount into the VM (beyond the project directory).
 
 Targets are normalized, must be descendants of `/mnt/watermelon`, and must be unique after normalization; `..` traversal is rejected. The root itself and Watermelon's managed `/mnt/watermelon/bootstrap` and `/mnt/watermelon/state` subtrees are reserved. This dedicated namespace prevents additional mounts from shadowing guest system, home, policy, or project paths. Applications do not automatically treat these paths as home-directory configuration: point the relevant tool at the mounted file or directory explicitly.
 
+These mounts expose files to the guest. Manual tool containers receive their
+configured working-directory mount, not every guest mount. To use another
+mounted file in a custom container invocation, add that guest path as an
+explicit container bind; passing its path or exporting an environment variable
+in the guest shell alone does not expose it to a tool wrapper.
+
 **Note:** With the default `mount_project = true`, the project directory is separately mounted at `/project` with read-write access. It is absent when `mount_project = false`.
 
 ---
@@ -402,15 +457,20 @@ Ports to forward from the VM to the host machine.
 **Port requirements:**
 - Must be in range 1-65535
 - Must not be listed more than once
-- Ports are forwarded bidirectionally (guest port = host port)
+- Host `127.0.0.1:<port>` forwards to the same guest port
+- Forwarding exposes a guest service to the host; it does not expose host services to the guest
+
+Changing this list requires a rebuild. The application must listen on the
+configured guest port; changing the list does not change the application's
+port. See [run a development server](WORKSPACES.md#run-a-development-server).
 
 ```toml
 [ports]
 # Single port
 forward = [3000]
 
-# Multiple ports
-forward = [3000, 8000, 8080, 8545]
+# Or replace the line above to forward multiple ports:
+# forward = [3000, 8000, 8080, 8545]
 ```
 
 **Common ports by framework:**

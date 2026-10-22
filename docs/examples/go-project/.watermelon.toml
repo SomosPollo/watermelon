@@ -5,6 +5,7 @@ image = "ubuntu-22.04"
 allow = [
     "proxy.golang.org",
     "sum.golang.org",
+    "storage.googleapis.com",
     "github.com",
 ]
 

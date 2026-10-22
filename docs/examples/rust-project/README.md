@@ -27,13 +27,21 @@ cargo run
 cargo test
 ```
 
-## Speeding up builds
+## Build outputs and caches
 
-To share the cargo registry between sandbox sessions:
+Build outputs in the project's `target` directory remain on the mounted host
+project. The manual Cargo wrapper does not inherit a guest-shell `CARGO_HOME`
+or automatically expose additional guest mounts inside its tool container.
 
-```toml
-[mounts]
-"~/.cargo/registry" = { target = "/mnt/watermelon/cargo-home/registry" }
+For persistent guest Cargo caches and automatic runtime selection, use an
+automatic profile instead of copying the manual example. From a local project
+that does not already have `.watermelon.toml`:
+
+```bash
+watermelon init --template rust
+# Review the generated settings
+watermelon up
+watermelon exec cargo test --locked
 ```
 
-Set `CARGO_HOME=/mnt/watermelon/cargo-home` when using this cache. This gives build scripts read access to cached crates; for maximum security, don't share this mount.
+See [runtime and cache behavior](../../WORKSPACES.md#runtime-and-dependency-support).

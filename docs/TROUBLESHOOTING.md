@@ -1,6 +1,32 @@
 # Troubleshooting
 
-Common issues and solutions.
+[Documentation](README.md) · [Command reference](COMMANDS.md)
+
+Run these checks on the host, from the directory containing your project's
+`.watermelon.toml` or a descendant:
+
+```bash
+watermelon doctor
+watermelon status
+watermelon logs
+```
+
+`doctor` also works without a project. Managed workspace logs need a running
+VM; `logs` does not start it. In the default `fail` mode, events show blocked
+traffic. An empty log does not prove that a command has network access.
+
+| Symptom | Start here |
+|---------|------------|
+| Installation or host readiness fails | [Installation issues](#installation-issues) |
+| VM fails to start, runs out of disk, or has an old policy | [VM issues](#vm-issues) |
+| Settings cannot be found or a tool is unavailable | [Command issues](#command-issues) |
+| Dependency downloads or external requests fail | [Network issues](#network-issues) |
+| App runs but cannot be reached from the host | [Port issues](#port-issues) |
+| File access or resource use is slow | [Performance issues](#performance-issues) |
+
+Before rebuilding or destroying a VM, preserve needed VM-local files. Mounted
+host project files and managed workspace disks survive normal recreation.
+`destroy --delete-workspace` permanently deletes the managed source disk too.
 
 ## Installation Issues
 
@@ -83,7 +109,8 @@ Watermelon with the shell installer, place the matching
 or set `WATERMELON_NFQD_BINARY` to a matching regular binary. Unreleased,
 locally modified, and custom builds require one of those explicit sidecar
 paths. The `fail`, `silent`, and `log` modes do not use this sidecar. The
-source-build command is documented in the README's installation section.
+source-build command is in the
+[installation guide](INSTALLATION.md#the-ask-mode-network-interceptor).
 
 ---
 
@@ -138,8 +165,7 @@ disk = "30GB"
 
 Then:
 ```bash
-watermelon destroy --force
-watermelon run
+watermelon rebuild
 ```
 
 ### Existing VM policy is unverified
@@ -156,9 +182,29 @@ This removes VM-local state but preserves project files on the host. `watermelon
 
 ## Command Issues
 
+### Configuration is missing or the wrong project is selected
+
+Run `watermelon status` and check its `Project:` path. Watermelon searches for
+the nearest `.watermelon.toml` from the current directory, stopping at Git,
+filesystem, or untrusted-directory boundaries. A nearer invalid configuration
+returns an error; it does not fall back to a parent configuration.
+
+For a new local project, run `watermelon init` from the intended root. For a
+managed clone, run commands from the host settings directory created by
+`clone`; the source checkout is inside the guest. Do not run `init` inside a
+subdirectory just to reconnect to an existing sandbox: it creates a separate
+configuration. See [project discovery](CONFIG_SPEC.md#file-location).
+
 ### "Command not found" inside VM
 
-**Cause:** The tool is not configured in `.watermelon.toml`, or its package was installed ad hoc and no guest command wrapper was created.
+First check whether the project uses automatic `[setup]` or manual `[tools]`.
+For automatic setup, run `watermelon up` to check the detected toolchains and
+dependencies. Use `watermelon up --refresh` if dependency directories were
+removed but manifests are unchanged. Do not add global `[provision]` package
+lists to an automatic profile; those settings cannot be combined.
+
+For manual configurations, the tool may be missing from `[tools]`, or an ad-hoc
+package installation may not have created a guest command wrapper.
 
 **Solution:** Add the base command under `[tools]`:
 ```toml
@@ -219,8 +265,10 @@ This is intentional. Watermelon removes the VM user's general passwordless `sudo
 ### Command hangs
 
 **Possible causes:**
+
 1. A non-allowlisted request was blocked in `fail`, `silent`, or `ask` mode
-2. Waiting for input (use `watermelon exec` for non-interactive)
+2. The guest program is waiting for input; use that program's documented noninteractive option for automation
+3. An `ask`-mode request has no foreground prompt controller; keep `watermelon run` open for that session
 
 **Check logs:**
 ```bash
@@ -258,29 +306,25 @@ allow = [
 enforcement = "fail"
 ```
 
-Network policy changes require VM reprovisioning. In `fail`, `log`, or `silent`, run `watermelon destroy --force && watermelon run --no-shell`. In `ask`, omit `--no-shell` and keep the resulting interactive Watermelon shell open as the sole foreground prompt controller. Reprovisioning removes VM-local state but preserves project files on the host.
+Apply reviewed network changes with `watermelon rebuild`. This removes
+VM-local system state while retaining mounted host files and managed workspace
+disks. For a manual `ask` configuration, use the exact recreation command
+printed by Watermelon, then keep `watermelon run` open as the sole foreground
+prompt controller. Automatic `up` dependency setup does not support `ask`.
 
 ### Common domains by package manager
 
-**npm:**
-```toml
-allow = ["registry.npmjs.org"]
-```
+Add required names to `[network].allow`, preserving the project's other rules:
 
-**pip:**
-```toml
-allow = ["pypi.org", "files.pythonhosted.org"]
-```
+| Package manager | Default public download destinations |
+|-----------------|--------------------------------------|
+| npm | `registry.npmjs.org` |
+| pip | `pypi.org`, `files.pythonhosted.org` |
+| Cargo, using the sparse registry | `index.crates.io`, `static.crates.io` |
+| Go, using the public proxy | `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` |
 
-**cargo:**
-```toml
-allow = ["crates.io", "static.crates.io"]
-```
-
-**go:**
-```toml
-allow = ["proxy.golang.org", "sum.golang.org"]
-```
+These are starting points for standard registries. Git dependencies, alternate
+registries, and install hooks may need additional reviewed destinations.
 
 ### Git operations fail
 
@@ -298,31 +342,44 @@ allow = [
 
 ### Port not accessible on host
 
-**Check port is forwarded:**
+Check that the app's listening port is forwarded in the host settings:
 ```toml
 [ports]
 forward = [3000]
 ```
 
-**Verify inside VM:**
+If you changed the port list, apply it with `watermelon rebuild`. Keep the app
+running, then use another host terminal to check it inside the VM:
+
 ```bash
-watermelon run
-curl localhost:3000  # Should work inside VM
+watermelon exec -- curl -I http://127.0.0.1:3000
 ```
 
-**On host:**
+In `ask` mode, run `curl` from the existing guest shell instead; a second
+`exec` cannot start while that VM's prompt controller is active.
+
+Then check the forwarded port from the host:
+
 ```bash
-curl localhost:3000  # Should also work
+curl -I http://127.0.0.1:3000
 ```
+
+If the guest check fails, check the app's logs, listening address, and port.
+If only the host check fails, review `[ports].forward` and rebuild after any
+change. See [run a development server](WORKSPACES.md#run-a-development-server).
 
 ### Port already in use
 
-Stop other processes using the port, or use a different port:
+Stop the host process using the port, or choose a different port for both the
+app and its forward:
 
 ```toml
 [ports]
 forward = [3001]  # Use alternative port
 ```
+
+Configure the app to listen on `3001`, then rebuild and restart it. Forwarding
+`3001` does not remap an app that still listens on `3000`.
 
 ---
 
@@ -361,7 +418,10 @@ memory = "8GB"  # Increase if needed
 4. Review that project's `.watermelon.toml`
 
 If issues persist, [open an issue](https://github.com/SomosPollo/watermelon/issues) with:
+
 - Your `.watermelon.toml`
 - Output of `watermelon doctor`
 - Output of `watermelon status`
 - The error message
+
+Remove credentials, tokens, and other secrets from settings and output before sharing.
