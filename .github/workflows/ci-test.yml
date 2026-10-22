@@ -325,6 +325,6 @@ jobs:
 
       - name: Test Lima compatibility contract
         env:
-          WATERMELON_TEST_REAL_LIMA_INFO: "1"
+          WATERMELON_TEST_REAL_LIMA: "1"
           WATERMELON_EXPECT_LIMA_VERSION: ${{ matrix.version }}
         run: go test -count=1 ./internal/lima

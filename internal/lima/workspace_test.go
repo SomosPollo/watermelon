@@ -52,8 +52,8 @@ func TestManagedWorkspaceGeneration(t *testing.T) {
 			t.Fatalf("host SSH capability inherits defaults: %s", field)
 		}
 	}
-	if !strings.Contains(generated, "hostResolver:\n  enabled: false\ndns:\n  - 8.8.8.8\n  - 8.8.4.4") {
-		t.Fatal("managed workspace bootstrap does not use managed DNS upstreams")
+	if !strings.Contains(generated, "hostResolver:\n  enabled: false") || strings.Contains(generated, "\ndns:\n") {
+		t.Fatal("managed workspace bootstrap must disable the optional host resolver without pinning public DNS servers")
 	}
 	for _, want := range []string{"additionalDisks:", `name: "w0123456789"`, "format: false", "mounts: []", "/usr/bin/mountpoint -q", "watermelon-project", "--pull=never", `--env "PATH=/watermelon-runtime/bin:$_wm_venv/bin:`, "git python3", `hostIP: "127.0.0.1"`} {
 		if !strings.Contains(generated, want) {
@@ -67,7 +67,8 @@ func TestManagedWorkspaceGeneration(t *testing.T) {
 			t.Fatalf("invalid provision script: %v %s", err, out)
 		}
 	}
-	if binary, err := exec.LookPath("limactl"); err == nil {
+	t.Run("real Lima contract", func(t *testing.T) {
+		binary := realLimaBinaryForTest(t)
 		path := filepath.Join(t.TempDir(), "workspace.yaml")
 		if err := os.WriteFile(path, []byte(generated), 0600); err != nil {
 			t.Fatal(err)
@@ -75,7 +76,7 @@ func TestManagedWorkspaceGeneration(t *testing.T) {
 		if out, err := exec.Command(binary, "validate", "--tty=false", path).CombinedOutput(); err != nil {
 			t.Fatalf("invalid Lima config: %v %s", err, out)
 		}
-	}
+	})
 }
 
 func TestGoRustRuntimeGeneration(t *testing.T) {
@@ -275,7 +276,8 @@ func TestExtendedRuntimeAssemblyUsesOnlyTrustedDonors(t *testing.T) {
 			t.Fatalf("invalid runtime script: %v %s", err, out)
 		}
 	}
-	if binary, err := exec.LookPath("limactl"); err == nil {
+	t.Run("real Lima contract", func(t *testing.T) {
+		binary := realLimaBinaryForTest(t)
 		file := filepath.Join(t.TempDir(), "extended.yaml")
 		if err := os.WriteFile(file, []byte(generated), 0600); err != nil {
 			t.Fatal(err)
@@ -283,5 +285,5 @@ func TestExtendedRuntimeAssemblyUsesOnlyTrustedDonors(t *testing.T) {
 		if out, err := exec.Command(binary, "validate", "--tty=false", file).CombinedOutput(); err != nil {
 			t.Fatalf("invalid extended Lima config: %v %s", err, out)
 		}
-	}
+	})
 }

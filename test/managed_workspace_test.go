@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -124,16 +125,10 @@ func testManagedWorkspaceProjects(t *testing.T, controlledSource bool) {
 				h.project = destination
 				h.run(timings.boot, "run", "--no-shell")
 			} else {
-				// Reproduce a stale/unreachable answer in Lima's host resolver.
-				// Public acquisition must use the managed DNS upstreams instead.
-				configDir := filepath.Join(h.home, ".lima", "_config")
-				if err := os.MkdirAll(configDir, 0700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(configDir, "default.yaml"), []byte("hostResolver:\n  hosts:\n    github.com: 192.0.2.1\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
-				h.run(timings.boot, "clone", "--no-setup", "https://github.com/octocat/Hello-World", destination)
+				// Exercise poisoned bootstrap DNS once, before language-specific
+				// setup. Lima's VZ resolver can make this override affect unrelated
+				// .com lookups too; a stopped, recoverable VM is the safe outcome.
+				cloneManagedWorkspace(t, h, &destination, timings, profile == "node")
 				h.project = destination
 				h.run(timings.command, "exec", "sh", "-c", `git rev-parse --verify HEAD; for host in example.com api.github.com nested.github.com; do if getent ahostsv4 "$host" >/dev/null; then echo "unexpected DNS permission: $host" >&2; exit 1; fi; done`)
 			}
@@ -254,6 +249,47 @@ func testManagedWorkspaceProjects(t *testing.T, controlledSource bool) {
 			}
 		})
 	}
+}
+
+func cloneManagedWorkspace(t *testing.T, h *e2eHarness, destination *string, timings e2eTimings, poisonDNS bool) {
+	t.Helper()
+	selected := *destination
+	if !poisonDNS {
+		h.run(timings.boot, "clone", "--no-setup", "https://github.com/octocat/Hello-World", selected)
+		return
+	}
+	configDir := filepath.Join(h.home, ".lima", "_config")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "default.yaml")
+	if err := os.WriteFile(configPath, []byte("hostResolver:\n  hosts:\n    github.com: 192.0.2.1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, cloneErr := h.command(timings.boot, "clone", "--no-setup", "https://github.com/octocat/Hello-World", selected)
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+	if cloneErr == nil {
+		return
+	}
+	if errors.Is(cloneErr, context.DeadlineExceeded) || !strings.Contains(out, "sandbox provisioning is not complete") || !strings.Contains(out, "the VM was stopped") {
+		t.Fatalf("poisoned bootstrap DNS did not fail closed: %v\n%s", cloneErr, out)
+	}
+	h.project = selected
+	requireVMStatus(t, h.run(timings.status, "status"), "Stopped")
+	if _, err := os.Stat(filepath.Join(selected, "README")); !os.IsNotExist(err) {
+		t.Fatal("failed acquisition exposed repository content on the host")
+	}
+	t.Log("Injected Lima DNS failure stopped the VM; checking cleanup and fresh public acquisition")
+	h.run(timings.cleanup, "destroy", "--force", "--delete-workspace")
+	// Permanent disk deletion keeps its ownership tombstone. A fresh directory
+	// is the documented recovery path and must complete the actual clone.
+	// Keep Lima's reserved SSH control-socket suffix below macOS UNIX_PATH_MAX.
+	selected += "-r"
+	*destination = selected
+	h.run(timings.boot, "clone", "--no-setup", "https://github.com/octocat/Hello-World", selected)
+	return
 }
 
 func seedManagedWorkspace(t *testing.T, h *e2eHarness, destination string) {

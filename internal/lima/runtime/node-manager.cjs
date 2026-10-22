@@ -23,6 +23,18 @@ if (!fs.existsSync(corepack)) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 const env = {...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT:'0', COREPACK_ENABLE_AUTO_PIN:'0', COREPACK_DEFAULT_TO_LATEST:'0'};
+// Fetch only the approved manager before running any project command. Registry
+// failures are safe to retry here; an install can execute non-idempotent hooks.
+let prepared;
+for (let attempt = 0; attempt < 3; attempt++) {
+  prepared = cp.spawnSync('/usr/local/bin/node', [corepack, 'install', '--global', name+'@'+version], {stdio:['ignore','ignore','inherit'],env,timeout:120000});
+  if (prepared.error && prepared.error.code !== 'ETIMEDOUT') throw prepared.error;
+  if (prepared.status === 0) break;
+  if (prepared.signal && !prepared.error) process.exit(1);
+  if (attempt < 2) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, (attempt + 1) * 1000);
+}
+if (prepared.error) throw prepared.error;
+if (prepared.status !== 0) process.exit(prepared.status === null ? 1 : prepared.status);
 const result = cp.spawnSync('/usr/local/bin/node', [corepack, name+'@'+version, ...process.argv.slice(3)], {stdio:'inherit',env});
 if (result.error) throw result.error;
 process.exit(result.status === null ? 1 : result.status);

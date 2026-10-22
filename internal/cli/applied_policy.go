@@ -115,7 +115,7 @@ func assessAppliedPolicyForVM(dir, vmName string, status lima.VMStatus, cfg *con
 		return appliedPolicyAssessment{State: policyUnverifiedInvalid, Err: err}
 	}
 	data, err := readAppliedPolicySnapshotFile(host.SnapshotPath)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		if _, legacyErr := os.Stat(legacyConfigDigestPath(dir)); legacyErr == nil {
 			return appliedPolicyAssessment{State: policyUnverifiedLegacy, Err: config.ErrLegacyAppliedPolicySnapshot}
 		} else if !os.IsNotExist(legacyErr) {
@@ -322,35 +322,7 @@ func saveAppliedPolicySnapshotWithHost(host appliedPolicyHostContext, cfg *confi
 	if err := secureAppliedPolicyStateDirectories(host, true); err != nil {
 		return err
 	}
-	if info, err := os.Lstat(host.SnapshotPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return fmt.Errorf("applied-policy snapshot %q must be a regular file, not a symlink or non-regular file", host.SnapshotPath)
-		}
-		if !ownedByCurrentUser(info) {
-			return fmt.Errorf("applied-policy snapshot %q is not owned by the current user", host.SnapshotPath)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("inspecting applied-policy snapshot %q: %w", host.SnapshotPath, err)
-	}
-
-	tmp, err := os.CreateTemp(host.StateDir, ".applied-policy-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, host.SnapshotPath)
+	return replacePrivateStateFile(host.SnapshotPath, "applied-policy snapshot", data, maxAppliedPolicySnapshotFileSize)
 }
 
 func clearAppliedPolicySnapshot(dir string) error {
@@ -413,32 +385,8 @@ func secureAppliedPolicyStateDirectories(host appliedPolicyHostContext, create b
 	return nil
 }
 
-func readAppliedPolicySnapshotFile(path string) ([]byte, error) {
-	before, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("applied-policy snapshot %q must be a regular file, not a symlink or non-regular file", path)
-	}
-	if !ownedByCurrentUser(before) {
-		return nil, fmt.Errorf("applied-policy snapshot %q is not owned by the current user", path)
-	}
-	if before.Mode().Perm() != 0600 {
-		return nil, fmt.Errorf("applied-policy snapshot %q has insecure mode %04o; want 0600", path, before.Mode().Perm())
-	}
+const maxAppliedPolicySnapshotFileSize = 4 << 20
 
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	after, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !os.SameFile(before, after) || !after.Mode().IsRegular() || !ownedByCurrentUser(after) || after.Mode().Perm() != 0600 {
-		return nil, fmt.Errorf("applied-policy snapshot %q changed while it was being opened", path)
-	}
-	return io.ReadAll(io.LimitReader(file, 4<<20))
+func readAppliedPolicySnapshotFile(path string) ([]byte, error) {
+	return readPrivateStateFile(path, "applied-policy snapshot", maxAppliedPolicySnapshotFileSize)
 }

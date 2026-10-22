@@ -14,14 +14,11 @@ ssh:
   loadDotSSHPubKeys: false
 {{- end }}
 {{- if .WorkspaceDisk }}
-# Resolve public workspace dependencies through the same upstreams as managed
-# DNS. Lima's host DNS path can return a different, unreachable GitHub edge;
-# capturing that answer would pin it for the lifetime of this VM.
+# Use Lima's network DNS defaults for trusted workspace bootstrap instead of
+# forcing public resolvers that may be unreachable on the host's network.
+# Workload DNS is mediated separately after trusted bootstrap.
 hostResolver:
   enabled: false
-dns:
-  - 8.8.8.8
-  - 8.8.4.4
 additionalDisks:
   - name: {{ yamlQuote .WorkspaceDisk }}
     format: {{ .FormatWorkspaceDisk }}
@@ -74,6 +71,26 @@ mounts: []
 {{- end }}
 
 provision:
+  - mode: dependency
+    script: |
+      #!/bin/sh
+      set -eu
+      PATH=/usr/sbin:/usr/bin:/sbin:/bin
+      export PATH
+      rm -f -- /run/watermelon-provisioning-complete /run/watermelon-bootstrap-apt-configured
+      # Lima installs rootless-container prerequisites before system provisions.
+      # Apply these settings there too: a partial apt update otherwise returns
+      # success and can leave uidmap unavailable after a transient mirror error.
+      install -d -o root -g root -m 0755 /etc/apt/apt.conf.d
+      cat > /etc/apt/apt.conf.d/80-watermelon-bootstrap << 'WATERMELON_APT'
+      Acquire::ForceIPv4 "true";
+      Acquire::Retries "5";
+      Acquire::http::Timeout "30";
+      Acquire::https::Timeout "30";
+      APT::Update::Error-Mode "any";
+      WATERMELON_APT
+      chmod 0644 /etc/apt/apt.conf.d/80-watermelon-bootstrap
+      install -o root -g root -m 0600 /dev/null /run/watermelon-bootstrap-apt-configured
   - mode: system
     script: |
       #!/bin/bash
@@ -356,7 +373,22 @@ provision:
 
         # Trusted bootstrap prerequisites. Configured package installation is
         # deliberately deferred until after policy becomes active.
-        apt-get update && apt-get install -y dnsmasq-base ipset{{ if or .WorkspaceDisk .SetupImage }} git python3{{ end }}
+        wm_install_bootstrap_prerequisites() {
+          _wm_apt_status=1
+          for _wm_apt_attempt in 1 2 3; do
+            if apt-get update && apt-get install -y dnsmasq-base ipset{{ if or .WorkspaceDisk .SetupImage }} git python3{{ end }}; then
+              return 0
+            else
+              _wm_apt_status=$?
+            fi
+            echo "trusted bootstrap APT attempt $_wm_apt_attempt failed (status $_wm_apt_status)" >&2
+            if [ "$_wm_apt_attempt" -lt 3 ]; then
+              sleep 5
+            fi
+          done
+          return "$_wm_apt_status"
+        }
+        wm_install_bootstrap_prerequisites
         if ! id -u watermelon-dns >/dev/null 2>&1; then
           useradd --system --user-group --no-create-home --shell /usr/sbin/nologin watermelon-dns
         fi
@@ -1286,6 +1318,7 @@ provision:
           exit 1
         fi
       }
+      wm_require_provision_stage /run/watermelon-bootstrap-apt-configured
       wm_require_provision_stage /run/watermelon-policy-applied
 {{- range .ProvisionScripts }}
       wm_require_provision_stage /run/watermelon-provisioning/{{ .Name }}.complete

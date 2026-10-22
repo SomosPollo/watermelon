@@ -270,8 +270,23 @@ go build -o watermelon ./cmd/watermelon
 go test ./...
 go test -race ./...
 go vet ./...
+WATERMELON_TEST_REAL_LIMA=1 go test -count=1 ./internal/lima  # Installed-Lima contracts; no VM boot
+go test -tags=e2e -short -count=1 ./test/...  # CLI workflow without a VM; requires Lima
 go test -tags=e2e ./test/...  # CLI and full VM e2e; Linux normally requires usable /dev/kvm
 ```
+
+The package suite checks config and project detection, generated policy, host
+state, authenticated verdicts, and CLI lifecycle orchestration. CLI and Lima
+tests that replace package-level command seams or change process environment
+must remain serial; restore overrides with `t.Cleanup`.
+
+Real Lima parsing and templating checks are opt-in, so installing Lima does
+not change ordinary unit-test behavior. The CI Lima compatibility matrix
+enables them for every supported boundary version, and an explicit opt-in
+fails if Lima is missing. `WATERMELON_TEST_REAL_LIMA_INFO=1` remains a legacy
+alias. Full VM E2E tests verify the actual filesystem, privilege, networking,
+and persistence boundaries; generated-script assertions alone cannot prove
+those boundaries.
 
 The Lima configuration template lives in
 `internal/lima/templates/lima.yaml.tmpl`. It and the helpers under
