@@ -1,6 +1,6 @@
 import { mkdir, rm, writeFile, readFile, cp } from 'node:fs/promises';
 import path from 'node:path';
-import { createRenderer, escape, loadContent, normalizeBase, repoRoot, siteRoot } from './lib/content.mjs';
+import { createRenderer, escape, loadContent, normalizeBase, publicAssetPath, repoRoot, siteRoot } from './lib/content.mjs';
 import { article, layout } from './lib/layout.mjs';
 import { home } from './lib/home.mjs';
 
@@ -40,7 +40,7 @@ for (const page of pages) {
       for (const source of assets) {
         const content = await readFile(path.join(repoRoot, source), 'utf8');
         const previewPage = { ...page, markdown: `\`\`\`${source.endsWith('.toml') ? 'toml' : 'bash'}\n${content}\n\`\`\`` };
-        attachments += `<details><summary>${escape(path.basename(source))}</summary>${render(previewPage, files)}</details><a class="download-link" download="${escape(path.basename(source))}" href="${base}${source}">Download ${escape(path.basename(source))}</a>`;
+        attachments += `<details><summary>${escape(path.basename(source))}</summary>${render(previewPage, files)}</details><a class="download-link" download="${escape(path.basename(source))}" href="${base}${publicAssetPath(source)}">Download ${escape(path.basename(source))}</a>`;
       }
       attachments += '</section>';
       page.headings.push({ id: 'example-files', label: 'Example files', level: 2 });
@@ -56,9 +56,9 @@ for (const page of pages) {
     search.push({ page: page.title, title: heading ? heading[2].replace(/<[^>]+>/g, '') : page.title, url: `${base}${page.route}${heading ? '#' + heading[1] : ''}`, text: plain });
   }
 }
-// Copy the downloadable files, including dotfiles that Pages won't otherwise generate.
+// Publish configurations at non-hidden URLs so GitHub Pages will serve them.
 for (const file of files.filter((file) => !file.endsWith('.md'))) {
-  const target = path.join(out, file);
+  const target = path.join(out, publicAssetPath(file));
   await mkdir(path.dirname(target), { recursive: true });
   await cp(path.join(repoRoot, file), target);
 }

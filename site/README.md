@@ -51,6 +51,8 @@ exist. It also checks unique HTML IDs and one primary heading per page.
   keyboard-accessible search, copy buttons, tabs, and mobile docs navigation.
 - Example `.watermelon.toml` files and helper scripts appear as expandable
   code previews and downloadable files on their example pages.
+  Configuration URLs use `watermelon.toml` because Pages does not serve dotfiles;
+  the download attribute preserves the intended `.watermelon.toml` filename.
 
 The palette uses slate (`#192b43`), pale blue (`#edf3fa`), soft blue
 (`#c4d6ed`), amber (`#f1bb55`), and cobalt (`#26558c`) on a cool white background.
