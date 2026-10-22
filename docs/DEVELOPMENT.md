@@ -89,3 +89,20 @@ The Lima configuration template lives in
 `internal/lima/templates/lima.yaml.tmpl`. It and the helpers under
 `internal/lima/runtime/` are embedded at build time; edit these source assets
 directly without a separate generation step.
+
+## Documentation website
+
+The GitHub Pages website builds directly from the Markdown documentation in
+this repository. For local preview, content organization, checks, and deployment
+setup, see the [website contributor guide](../site/README.md).
+
+```bash
+cd site
+npm ci
+npm run dev
+# Build and verify internal links, section anchors, search, and downloads:
+npm run check
+```
+
+The website build requires Node.js 24 or newer. It does not change the Go
+binary's build requirements.
