@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"testing"
 
+	"github.com/saeta-eth/watermelon/skills"
 	"github.com/spf13/cobra"
 )
 
@@ -34,6 +36,49 @@ func TestRootRegistersDoctor(t *testing.T) {
 	if doctor.Args == nil {
 		t.Fatal("doctor command has no positional-argument contract")
 	}
+}
+
+func TestRootRegistersAgentsInstall(t *testing.T) {
+	root := newRootCmd()
+	cmd, remaining, err := root.Find([]string{"agents", "install"})
+	if err != nil || len(remaining) != 0 || cmd.Name() != "install" || cmd.RunE == nil {
+		t.Fatalf("agents install command = %v, remaining %v, error %v", cmd, remaining, err)
+	}
+	code, stdout, stderr := executeRootForTest(t, newRootCmd(), "agents", "install", "--help")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "--agent") {
+		t.Fatalf("agents install help: code %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+}
+
+func TestBundledSkillQuickReferenceMatchesPublicCommands(t *testing.T) {
+	root := newRootCmd()
+	documented := map[string]bool{}
+	rows := regexp.MustCompile("(?m)^\\| `watermelon ([^`]+)` \\|").FindAllStringSubmatch(skills.Watermelon, -1)
+	for _, row := range rows {
+		command, _, _ := strings.Cut(row[1], " [")
+		found, remaining, err := root.Find(strings.Fields(command))
+		if err != nil || len(remaining) != 0 || found == root {
+			t.Errorf("skill documents an unknown command %q", command)
+		}
+		documented[command] = true
+	}
+	var check func(*cobra.Command)
+	check = func(cmd *cobra.Command) {
+		if cmd.Hidden || cmd.Deprecated != "" {
+			return
+		}
+		if cmd.HasSubCommands() {
+			for _, child := range cmd.Commands() {
+				check(child)
+			}
+			return
+		}
+		command := strings.TrimPrefix(cmd.CommandPath(), "watermelon ")
+		if !documented[command] {
+			t.Errorf("public command %q is missing from the bundled skill's quick reference", command)
+		}
+	}
+	check(root)
 }
 
 func TestResolvedVersionPrefersLinkedVersion(t *testing.T) {

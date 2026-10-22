@@ -8,6 +8,7 @@ built-in usage. Run the examples below on the host unless they say otherwise.
 | Task | Commands |
 |------|----------|
 | Check the host | [doctor](#watermelon-doctor) |
+| Set up coding assistants | [agents install](#watermelon-agents-install) |
 | Prepare a project | [init](#watermelon-init), [clone](#watermelon-clone), [up](#watermelon-up) |
 | Apply settings | [rebuild](#watermelon-rebuild), [config validate](#watermelon-config-validate) |
 | Work in the VM | [run](#watermelon-run), [exec](#watermelon-exec), [code](#watermelon-code) |
@@ -15,7 +16,7 @@ built-in usage. Run the examples below on the host unless they say otherwise.
 | Transfer and inspect | [copy](#watermelon-copy), [logs](#watermelon-logs) |
 
 Most commands use the nearest `.watermelon.toml`. `init` writes only in the
-current directory; `doctor`, `list`, and `copy` work independently of a project.
+current directory; `agents install`, `doctor`, `list`, and `copy` work independently of a project.
 See [project and VM selection](#project-and-vm-selection) for discovery, names,
 and recovery through invalid settings.
 
@@ -50,24 +51,29 @@ for support tooling and automation.
 
 ## `watermelon init`
 
-Creates a `.watermelon.toml` configuration file in the current directory. It
+Creates a `.watermelon.toml` configuration file and adds Watermelon execution
+guidance to `AGENTS.md` and `CLAUDE.md` in the current directory. It
 does not search for or modify an ancestor config, so it can intentionally start
 a nested project.
 
 ```bash
 watermelon init
+watermelon init --instructions-only  # Existing local Watermelon project
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--template <profile>` | Detect `all` supported languages, restrict to one language, or use `manual` for a commented configuration |
 | `--runtime <version>` | Select a numeric version for one language, or overrides such as `node=22,python=3.13` |
+| `--instructions-only` | Add assistant guidance to an existing local configuration without changing `.watermelon.toml`; cannot be combined with template or runtime flags |
 
 **Behavior:**
 - Detects supported languages and package managers, including nested and mixed-language projects, and creates an active runtime and network profile
 - Accepts `--template all|node|python|go|rust|java|dotnet|ruby|php|cpp|manual` and `--runtime <numeric-version|language=version,...>`
 - Uses a commented minimal template when no supported manifests are present
-- Fails if `.watermelon.toml` already exists
+- Appends a marked Watermelon block to `AGENTS.md` and `CLAUDE.md`, creating missing files; existing text, file permissions, and existing Watermelon blocks (including local edits) are preserved
+- Checks both instruction files before writing configuration; refuses symlinks, hard links, special files, invalid text, files larger than 1 MiB, and incomplete or duplicate Watermelon markers
+- Fails if `.watermelon.toml` already exists, unless `--instructions-only` is used
 - Does not create or modify the VM
 
 With `--template manual`, configure tools and network rules, then use
@@ -76,9 +82,60 @@ profiles use `watermelon up` to prepare dependencies after approval.
 
 **Example output:**
 ```
+Added Watermelon guidance to AGENTS.md and CLAUDE.md; existing instructions were preserved.
 Created /path/to/project/.watermelon.toml with the node profile (node:24-bookworm).
 The host project will be mounted read-write. Review the config, then run 'watermelon up'.
 ```
+
+---
+
+## `watermelon agents install`
+
+Installs the skill embedded in the Watermelon binary for local Codex and
+Claude Code sessions. It works outside a project, needs no downloads or API
+credentials, and does not change assistant permissions, hooks, or model settings.
+
+```bash
+watermelon agents install
+watermelon agents install --agent codex
+watermelon agents install --agent claude
+watermelon agents install --agent codex,claude
+watermelon agents install --agent all
+```
+
+| Flag | Description |
+|------|-------------|
+| `--agent <name>` | Select `codex`, `claude`, or `all`; accepts a comma-separated list or repeated flags. Explicit selection does not require the assistant to be installed yet |
+
+Without a selector, detects `codex` and `claude` on `PATH` or their existing
+configuration directories. Codex's default detection directory is `~/.codex`
+(or `CODEX_HOME`); Claude's is `~/.claude` (or `CLAUDE_CONFIG_DIR`). If neither
+is detected, exits with instructions to select one explicitly.
+
+| Assistant | Installed skill |
+|-----------|-----------------|
+| Codex (local app, CLI or IDE) | `~/.agents/skills/watermelon/SKILL.md` |
+| Claude Code | `~/.claude/skills/watermelon/SKILL.md`, or `$CLAUDE_CONFIG_DIR/skills/watermelon/SKILL.md` |
+
+Codex's user skill location remains `~/.agents/skills` when `CODEX_HOME` is
+set. Custom configuration directories must be absolute. Start a new assistant
+session after installation. The skill activates for projects containing
+`.watermelon.toml`; `init` supplies persistent project instructions for both
+assistants. For existing local projects, use `init --instructions-only`.
+
+Reinstallation leaves identical files untouched. If a destination has different
+content, the command refuses to overwrite it and preflights all selected skill
+files before installing any. Move the conflicting skill aside or merge it
+manually before retrying. Symlinked skill files and directories, hard links,
+and special files are refused. Other skills and assistant settings are preserved.
+To remove an installed integration, remove only its `watermelon` skill directory;
+project instructions can be removed between the `watermelon:begin` and
+`watermelon:end` markers, including the markers themselves.
+
+Project instructions route code execution through `watermelon exec` and forbid
+falling back to host execution when it fails. They guide assistant behavior;
+they do not enforce command interception. Host access remains governed by the
+assistant's own permissions. The VM can modify the mounted project.
 
 ---
 

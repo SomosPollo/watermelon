@@ -118,6 +118,36 @@ before rebuilding. Only `destroy --delete-workspace` also permanently deletes
 a managed disk, including source and uncommitted edits. See
 [storage and recovery](docs/WORKSPACES.md#inspect-recover-and-delete).
 
+## Use with Codex or Claude Code
+
+Install the bundled Watermelon skill once for detected local assistants:
+
+```bash
+watermelon agents install
+# Or select assistants explicitly, even before their first launch:
+watermelon agents install --agent codex,claude
+```
+
+For a new local project, `watermelon init` also adds execution guidance to
+`AGENTS.md` (Codex) and `CLAUDE.md` (Claude Code), preserving existing text.
+For a project that already has `.watermelon.toml`, add the guidance with:
+
+```bash
+watermelon init --instructions-only
+```
+
+Start a new assistant session in that local project and give it a normal
+development task. The instructions direct project installs, builds, tests,
+scripts and dev servers through `watermelon exec`; the assistant edits source
+files normally. Review the initial `watermelon up` plan before setup.
+
+This integration guides the assistant; it does not intercept its host shell.
+Only commands routed through Watermelon run in the VM, and the default local
+project mount remains writable. These instructions target local mounted
+projects; managed clones keep source inside the guest. See
+[assistant setup](docs/COMMANDS.md#watermelon-agents-install) for install
+locations and conflict handling.
+
 ## Network policy and limits
 
 The default `security.enforcement = "fail"` blocks connections outside

@@ -32,6 +32,12 @@ state, authenticated verdicts, and CLI lifecycle orchestration. CLI and Lima
 tests that replace package-level command seams or change process environment
 must remain serial; restore overrides with `t.Cleanup`.
 
+`go test ./test -run TestAgentIntegrations -v` builds the real CLI and tests
+Codex and Claude Code installation, reinstallation, project adoption, and
+preservation of custom content in isolated user directories. It requires
+neither assistant credentials nor Lima. It verifies integration files and CLI
+behavior, not live model compliance with instructions.
+
 ## Lima and VM tests
 
 Install the [Lima prerequisites](INSTALLATION.md#requirements), then choose the

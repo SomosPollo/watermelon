@@ -26,6 +26,7 @@ func newRootCmd() *cobra.Command {
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 	rootCmd.AddCommand(cli.NewInitCmd())
+	rootCmd.AddCommand(cli.NewAgentsCmd())
 	rootCmd.AddCommand(cli.NewCloneCmd())
 	rootCmd.AddCommand(cli.NewUpCmd())
 	rootCmd.AddCommand(cli.NewRebuildCmd())
