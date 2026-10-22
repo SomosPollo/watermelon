@@ -49,11 +49,8 @@ func withHostEffectiveUID(t *testing.T, uid int64) {
 	})
 }
 
-func TestGenerateConfigValidatesWithLimaWhenAvailable(t *testing.T) {
-	limactl, err := exec.LookPath("limactl")
-	if err != nil {
-		t.Skip("limactl is not installed")
-	}
+func TestRealLimaGeneratedConfig(t *testing.T) {
+	limactl := realLimaBinaryForTest(t)
 
 	cfg := config.NewConfig()
 	cfg.Network.Allow = []string{"registry.npmjs.org", "*.github.com"}
@@ -193,17 +190,16 @@ func TestGenerateConfigQuotesHostPathsAndCanonicalizesMountTargets(t *testing.T)
 		t.Fatal("host path content escaped its YAML scalar")
 	}
 
-	limactl, err := exec.LookPath("limactl")
-	if err != nil {
-		return
-	}
-	path := filepath.Join(t.TempDir(), "hostile-paths.yaml")
-	if err := os.WriteFile(path, []byte(generated), 0600); err != nil {
-		t.Fatalf("writing generated Lima config: %v", err)
-	}
-	if output, err := exec.Command(limactl, "validate", "--tty=false", path).CombinedOutput(); err != nil {
-		t.Fatalf("limactl rejected safely quoted hostile paths: %v\n%s", err, output)
-	}
+	t.Run("real Lima contract", func(t *testing.T) {
+		limactl := realLimaBinaryForTest(t)
+		path := filepath.Join(t.TempDir(), "hostile-paths.yaml")
+		if err := os.WriteFile(path, []byte(generated), 0600); err != nil {
+			t.Fatalf("writing generated Lima config: %v", err)
+		}
+		if output, err := exec.Command(limactl, "validate", "--tty=false", path).CombinedOutput(); err != nil {
+			t.Fatalf("limactl rejected safely quoted hostile paths: %v\n%s", err, output)
+		}
+	})
 }
 
 func TestGenerateConfigRejectsUnsafeMountSourceRepresentations(t *testing.T) {
@@ -1050,7 +1046,7 @@ func TestGenerateConfigNetworkProcessWithContainerizedTool(t *testing.T) {
 	}
 
 	// apt-get install must appear BEFORE iptables lockdown
-	aptGetPos := strings.Index(yaml, "apt-get update && apt-get install -y dnsmasq-base ipset")
+	aptGetPos := strings.Index(yaml, "apt-get install -y dnsmasq-base ipset")
 	iptablesRejectPos := strings.Index(yaml, "iptables -w -A WM_OUTPUT -j REJECT")
 	if aptGetPos < 0 {
 		t.Fatal("expected yaml to contain apt-get install for dnsmasq")
@@ -1610,7 +1606,7 @@ func TestGenerateConfigGlobalWildcardDomains(t *testing.T) {
 	}
 
 	// Should install dnsmasq-base when no NetworkProcess
-	if !strings.Contains(yaml, "apt-get update && apt-get install -y dnsmasq-base ipset") {
+	if !strings.Contains(yaml, "apt-get install -y dnsmasq-base ipset") {
 		t.Error("expected yaml to install dnsmasq-base and ipset for global wildcard domains")
 	}
 }

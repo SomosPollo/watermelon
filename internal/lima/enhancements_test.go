@@ -1,6 +1,7 @@
 package lima
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -108,11 +109,8 @@ func TestGenerateConfigNoMountHasNoOperationalProjectDependency(t *testing.T) {
 	}
 }
 
-func TestGenerateConfigNoMountValidatesWithLimaWhenAvailable(t *testing.T) {
-	limactl, err := exec.LookPath("limactl")
-	if err != nil {
-		t.Skip("limactl is not installed")
-	}
+func TestRealLimaNoMountConfig(t *testing.T) {
+	limactl := realLimaBinaryForTest(t)
 	cfg := config.NewConfig()
 	cfg.VM.MountProject = boolPointer(false)
 	cfg.Security.Enforcement = config.EnforcementAsk
@@ -409,36 +407,38 @@ func TestGenerateConfigRendersProvisionScriptAndIdempotencyWarning(t *testing.T)
 		}
 	}
 
-	limactl, err := exec.LookPath("limactl")
-	if err != nil {
-		t.Skip("limactl is not installed")
-	}
-	configPath := filepath.Join(t.TempDir(), "provision-literal.yaml")
-	if err := os.WriteFile(configPath, []byte(generated), 0600); err != nil {
-		t.Fatal(err)
-	}
-	out, err := exec.Command(limactl, "template", "yq", configPath, `.provision[] | select(.script | contains(".provision-script-00000000.XXXXXX")) | .script | @base64`).CombinedOutput()
-	if err != nil {
-		t.Fatalf("resolving provision script through Lima templating: %v\n%s", err, out)
-	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(out)))
-	if err != nil {
-		t.Fatalf("decoding Lima-rendered provision script %q: %v", out, err)
-	}
-	const payloadStart = "<<'WATERMELON_PROVISION_PAYLOAD'\n"
-	const payloadEnd = "\nWATERMELON_PROVISION_PAYLOAD\n"
-	start := strings.Index(string(decoded), payloadStart)
-	end := strings.Index(string(decoded), payloadEnd)
-	if start < 0 || end < start {
-		t.Fatalf("Lima-rendered provision wrapper does not contain its encoded payload:\n%s", decoded)
-	}
-	inner, err := base64.StdEncoding.DecodeString(string(decoded)[start+len(payloadStart) : end])
-	if err != nil {
-		t.Fatalf("decoding embedded provision payload: %v", err)
-	}
-	if string(inner) != content {
-		t.Fatalf("Lima-rendered provision payload = %q, want exact bytes %q", inner, content)
-	}
+	t.Run("real Lima contract", func(t *testing.T) {
+		limactl := realLimaBinaryForTest(t)
+		configPath := filepath.Join(t.TempDir(), "provision-literal.yaml")
+		if err := os.WriteFile(configPath, []byte(generated), 0600); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(limactl, "template", "yq", configPath, `.provision[] | select(.script | contains(".provision-script-00000000.XXXXXX")) | .script | @base64`)
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		out, err := command.Output()
+		if err != nil {
+			t.Fatalf("resolving provision script through Lima templating: %v\n%s", err, &stderr)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(out)))
+		if err != nil {
+			t.Fatalf("decoding Lima-rendered provision script %q: %v", out, err)
+		}
+		const payloadStart = "<<'WATERMELON_PROVISION_PAYLOAD'\n"
+		const payloadEnd = "\nWATERMELON_PROVISION_PAYLOAD\n"
+		start := strings.Index(string(decoded), payloadStart)
+		end := strings.Index(string(decoded), payloadEnd)
+		if start < 0 || end < start {
+			t.Fatalf("Lima-rendered provision wrapper does not contain its encoded payload:\n%s", decoded)
+		}
+		inner, err := base64.StdEncoding.DecodeString(string(decoded)[start+len(payloadStart) : end])
+		if err != nil {
+			t.Fatalf("decoding embedded provision payload: %v", err)
+		}
+		if string(inner) != content {
+			t.Fatalf("Lima-rendered provision payload = %q, want exact bytes %q", inner, content)
+		}
+	})
 }
 
 func TestGenerateConfigPublishesCompletionOnlyAfterEveryProvisionStage(t *testing.T) {

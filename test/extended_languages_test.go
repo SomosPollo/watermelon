@@ -70,10 +70,12 @@ func TestE2EExtendedLanguages(t *testing.T) {
 		"cpp/main.cpp":                   "#include <iostream>\nint main(){std::cout << \"cpp-ready\\n\";}\n",
 		"pnpm/package.json":              `{"name":"pnpm-fixture","version":"1.0.0","packageManager":"pnpm@10.20.0","scripts":{"postinstall":"node setup.cjs"},"dependencies":{"is-number":"7.0.0"}}`,
 		"pnpm/setup.cjs":                 `for(const [cmd,args] of [['javac',['--version']],['dotnet',['--version']],['ruby',['-e','puts RUBY_VERSION']],['php',['-r','echo PHP_VERSION;']],['gcc',['-dumpfullversion']],['python',['--version']]]){const r=require('child_process').spawnSync(cmd,args,{stdio:'inherit'});if(r.status!==0)throw Error(cmd+' failed: '+r.error);}require('fs').writeFileSync('installed.txt','ready');`,
-		"yarn/package.json":              `{"name":"yarn-fixture","version":"1.0.0","packageManager":"yarn@4.10.3","dependencies":{"is-number":"7.0.0"}}`,
-		"uv/pyproject.toml":              "[project]\nname='uv-fixture'\nversion='0.1.0'\nrequires-python='>=3.12'\ndependencies=['idna==3.10']\n[tool.uv]\npackage=false\n",
-		"poetry/pyproject.toml":          "[project]\nname='poetry-fixture'\nversion='0.1.0'\nrequires-python='>=3.12,<4.0'\ndependencies=['idna==3.10']\n[tool.poetry]\npackage-mode=false\n",
-		"edit.txt":                       "retained-edit\n",
+		// Yarn 4.18.1 fixes the network retry cancellation crash in older pins:
+		// https://github.com/yarnpkg/berry/pull/7249
+		"yarn/package.json":     `{"name":"yarn-fixture","version":"1.0.0","packageManager":"yarn@4.18.1","dependencies":{"is-number":"7.0.0"}}`,
+		"uv/pyproject.toml":     "[project]\nname='uv-fixture'\nversion='0.1.0'\nrequires-python='>=3.12'\ndependencies=['idna==3.10']\n[tool.uv]\npackage=false\n",
+		"poetry/pyproject.toml": "[project]\nname='poetry-fixture'\nversion='0.1.0'\nrequires-python='>=3.12,<4.0'\ndependencies=['idna==3.10']\n[tool.poetry]\npackage-mode=false\n",
+		"edit.txt":              "retained-edit\n",
 	}
 	// Every write and all package/build execution occur in the guest.
 	if resume == "" {

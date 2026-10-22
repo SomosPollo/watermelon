@@ -667,18 +667,6 @@ func parseNamedVMIdentityMarker(data []byte) (namedVMIdentityMarker, error) {
 	return marker, nil
 }
 
-func ensureJSONEOF(decoder *json.Decoder) error {
-	var trailing any
-	err := decoder.Decode(&trailing)
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	if err == nil {
-		return errors.New("identity file contains trailing JSON data")
-	}
-	return fmt.Errorf("invalid trailing identity data: %w", err)
-}
-
 func validateNamedVMIdentity(identity namedVMIdentity, requestedName, limaHome string) error {
 	if identity.Version != namedVMIdentityVersion {
 		return fmt.Errorf("unsupported named VM identity version %d", identity.Version)
@@ -767,40 +755,7 @@ func writeNewPrivateIdentityFile(path string, data []byte) error {
 }
 
 func readPrivateIdentityFile(path string) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, errors.New("invalid identity file descriptor")
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("identity path %q must be a regular file", path)
-	}
-	if !ownedByCurrentUser(info) {
-		return nil, fmt.Errorf("identity file %q is not owned by the current user", path)
-	}
-	if info.Mode().Perm() != 0600 {
-		return nil, fmt.Errorf("identity file %q has insecure mode %04o; want 0600", path, info.Mode().Perm())
-	}
-	if info.Size() > maxNamedVMIdentityFileSize {
-		return nil, fmt.Errorf("identity file %q exceeds %d bytes", path, maxNamedVMIdentityFileSize)
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxNamedVMIdentityFileSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxNamedVMIdentityFileSize {
-		return nil, fmt.Errorf("identity file %q exceeds %d bytes", path, maxNamedVMIdentityFileSize)
-	}
-	return data, nil
+	return readPrivateStateFile(path, "identity file", maxNamedVMIdentityFileSize)
 }
 
 func syncIdentityDirectory(path string) error {

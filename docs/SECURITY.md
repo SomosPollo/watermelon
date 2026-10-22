@@ -152,6 +152,17 @@ The firewall currently enforces IPv4. IPv6 is disabled in `fail`, `silent`, and 
 
 During VM creation, Watermelon installs its trusted networking prerequisites and pulls configured base images before activating workload policy. Pulling fetches image data but does not run the configured workload. User-requested package provisioning, root provision scripts, and later tool execution happen after the policy is active. Registry domains therefore do not need workload allow rules solely for base-image pulls, while downloads performed by packages or scripts do need matching rules in blocking modes.
 
+Managed workspace bootstrap uses Lima's network DNS defaults rather than
+requiring direct access to fixed public DNS servers. Bootstrap APT operations
+use IPv4 with bounded retries and timeouts, and incomplete index updates fail
+instead of silently using partial metadata. Watermelon's dependency-stage
+script is included in its per-boot provisioning attestation. Workload DNS still passes
+through the managed resolver after enforcement is active.
+
+Pinned pnpm and Yarn downloads are prepared separately with bounded retries.
+Project installs and their lifecycle hooks are invoked once; Watermelon does
+not retry them automatically after a failure.
+
 ## Guest Privilege Boundary
 
 Watermelon's built-in system provisioning and every configured `[provision].scripts` file run with root privileges; user-configured package installation runs in the configured tool containers after network policy is active. After provisioning completes, Watermelon removes the VM user's general passwordless `sudo` access. Interactive shells and commands submitted through `watermelon exec` therefore run as the ordinary VM user and cannot use `sudo` for arbitrary system changes.

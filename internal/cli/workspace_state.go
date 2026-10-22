@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/saeta-eth/watermelon/internal/config"
 )
+
+const maxWorkspaceStateFileSize = 16 << 10
 
 // This record is outside every guest mount. It outlives VM identities and is
 // the authority for disk ownership and approved setup, never guest markers.
@@ -58,16 +61,21 @@ func loadWorkspaceState(dir string) (workspaceState, error) {
 	if err != nil {
 		return workspaceState{}, err
 	}
-	data, err := readPrivateIdentityFile(path)
+	data, err := readPrivateStateFile(path, "workspace state", maxWorkspaceStateFileSize)
 	if err != nil {
 		return workspaceState{}, err
 	}
 	var state workspaceState
-	if err := json.Unmarshal(data, &state); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&state); err != nil {
 		return state, fmt.Errorf("invalid workspace state: %w", err)
 	}
-	if state.Version != 1 || state.Owner != root || (state.Disk != "" && state.Disk != workspaceDiskName(root)) {
-		return state, errors.New("workspace state does not match its owning directory")
+	if err := ensureJSONEOF(decoder); err != nil {
+		return state, fmt.Errorf("invalid workspace state: %w", err)
+	}
+	if err := validateWorkspaceState(root, state); err != nil {
+		return state, err
 	}
 	return state, nil
 }
@@ -77,14 +85,11 @@ func saveWorkspaceState(dir string, state workspaceState) error {
 	if err != nil {
 		return err
 	}
-	if state.Owner != root || state.Version != 1 {
-		return errors.New("refusing mismatched workspace state")
+	if err := validateWorkspaceState(root, state); err != nil {
+		return err
 	}
 	path, err := workspaceStatePath(root, true)
 	if err != nil {
-		return err
-	}
-	if _, err := readPrivateIdentityFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -92,30 +97,14 @@ func saveWorkspaceState(dir string, state workspaceState) error {
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(path), ".workspace-*.tmp")
-	if err != nil {
-		return err
+	return replacePrivateStateFile(path, "workspace state", data, maxWorkspaceStateFileSize)
+}
+
+func validateWorkspaceState(root string, state workspaceState) error {
+	if state.Version != 1 || state.Owner != root || (state.Disk != "" && state.Disk != workspaceDiskName(root)) {
+		return errors.New("workspace state does not match its owning directory")
 	}
-	defer os.Remove(temp.Name())
-	if err := temp.Chmod(0600); err != nil {
-		temp.Close()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temp.Name(), path); err != nil {
-		return err
-	}
-	return syncIdentityDirectory(filepath.Dir(path))
+	return nil
 }
 
 func requireWorkspaceOwnership(dir, vmName string, cfg *config.Config) error {

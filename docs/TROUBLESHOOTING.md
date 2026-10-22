@@ -98,6 +98,14 @@ watermelon list
 limactl list
 ```
 
+If Watermelon reports `sandbox provisioning is not complete`, Lima's ready
+signal did not prove that Watermelon's provisioning stages succeeded. Watermelon stops the
+owned VM rather than allowing commands into that partial environment. Check
+Ubuntu mirror access, host DNS/VPN settings, and hostname overrides in Lima's
+`_config/default.yaml`; on VZ, an override can also disrupt unrelated lookups.
+Correct the network settings before recreating the VM. Normal recreation
+retains managed workspace disks.
+
 If recreation is necessary, first preserve any needed VM-local data. Then stop and recreate the current configured project through Watermelon so ownership records, applied-policy state, and active clients are handled together:
 
 ```bash
