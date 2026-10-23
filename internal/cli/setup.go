@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -29,6 +30,7 @@ import (
 
 type setupOptions struct {
 	Yes, Refresh, DryRun, AcquireOnly bool
+	Customize                         bool
 	Runtime                           string
 }
 
@@ -321,40 +323,80 @@ func runUp(cmd *cobra.Command, dir, name string, options setupOptions) (result e
 		return err
 	}
 	if state.ApprovedConfig != digest {
-		printSetupPlan(cmd, &proposed, plan)
-		if cfg.Setup.Profile != "" && !reflect.DeepEqual(cfg.Setup, proposed.Setup) {
-			fmt.Fprintln(cmd.OutOrStdout(), "This plan replaces the VM while retaining managed workspace data and mounted project files.")
-		}
-		if err := approveSetup(cmd, options.Yes); err != nil {
+		originalDocument, err := readMutableProjectConfig(dir)
+		if err != nil {
 			return err
+		}
+		var reviewedDocument []byte
+		if !options.Yes && (options.Customize || cfg.Workspace.Disk != "" && state.ApprovedConfig == "") {
+			review, err := reviewCloneSetup(cmd, dir, originalDocument, files, proposed, plan)
+			if err != nil {
+				return err
+			}
+			if review.deferred {
+				state.Stage, state.LastError = "source cloned (setup pending)", ""
+				return saveWorkspaceState(dir, state)
+			}
+			proposed, plan, reviewedDocument = review.config, review.plan, review.document
+			digest, err = config.AppliedConfigDigest(&proposed)
+			if err != nil {
+				return err
+			}
+		} else {
+			printSetupPlan(cmd, &proposed, plan)
+			if cfg.Setup.Profile != "" && !reflect.DeepEqual(cfg.Setup, proposed.Setup) {
+				fmt.Fprintln(cmd.OutOrStdout(), "This plan replaces the VM while retaining managed workspace data and mounted project files.")
+			}
+			if err := approveSetup(cmd, options.Yes); err != nil {
+				return err
+			}
 		}
 		if err := requireUnchangedSetupTarget(target); err != nil {
 			return err
 		}
-		// Approved runtime changes replace compute, retaining the separate source disk.
-		if !reflect.DeepEqual(cfg.Setup, proposed.Setup) {
-			if err := destroyAt(cmd, dir, target.VMName); err != nil {
-				return err
-			}
+		if reviewedDocument == nil {
 			persisted := proposed
 			if target.NameExplicit {
-				// --name selects this invocation's VM; it must not silently change
-				// which VM ordinary commands select in the saved host policy.
-				raw, err := loadProjectConfig(dir)
+				// Invocation-only overrides must not change ordinary VM selection.
+				raw, err := config.Parse(originalDocument)
 				if err != nil {
 					return err
 				}
 				persisted.VM.Name = raw.VM.Name
 			}
-			if err := writeProjectConfig(dir, &persisted, false); err != nil {
-				return err
-			}
-			target, err = resolveConfiguredTarget(dir, name)
+			reviewedDocument, err = config.UpdateDocument(originalDocument, &persisted)
 			if err != nil {
 				return err
 			}
-			cfg = target.Config
 		}
+		if len(reviewedDocument) > maxProjectConfigSize {
+			return retainConfigDraft(dir, reviewedDocument, fmt.Errorf("edited config exceeds the %d-byte limit", maxProjectConfigSize))
+		}
+		currentDocument, err := readMutableProjectConfig(dir)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(originalDocument, currentDocument) {
+			return retainConfigDraft(dir, reviewedDocument, fmt.Errorf("project configuration changed while reviewing setup; retry"))
+		}
+		// Approved runtime changes replace compute, retaining the separate source disk.
+		currentDigest, err := config.AppliedConfigDigest(cfg)
+		if err != nil {
+			return err
+		}
+		if currentDigest != digest {
+			if err := destroyAt(cmd, dir, target.VMName); err != nil {
+				return err
+			}
+		}
+		if err := replaceProjectConfigDocument(dir, originalDocument, reviewedDocument); err != nil {
+			return retainConfigDraft(dir, reviewedDocument, err)
+		}
+		target, err = resolveConfiguredTarget(dir, name)
+		if err != nil {
+			return err
+		}
+		cfg = target.Config
 		state.ApprovedConfig = digest
 		state.ReadyFingerprint = ""
 		if err := saveWorkspaceState(dir, state); err != nil {
@@ -562,8 +604,8 @@ func approveSetup(cmd *cobra.Command, yes bool) error {
 	if yes {
 		return nil
 	}
-	if file, ok := cmd.InOrStdin().(*os.File); ok && !term.IsTerminal(int(file.Fd())) {
-		return fmt.Errorf("setup approval requires a terminal; review the plan and pass --yes for noninteractive setup")
+	if err := requireSetupTerminal(cmd); err != nil {
+		return err
 	}
 	fmt.Fprint(cmd.OutOrStdout(), "Prepare this project? [y/N] ")
 	type inputResult struct {
@@ -592,58 +634,77 @@ func approveSetup(cmd *cobra.Command, yes bool) error {
 	return nil
 }
 
+func requireSetupTerminal(cmd *cobra.Command) error {
+	if file, ok := cmd.InOrStdin().(*os.File); ok && !term.IsTerminal(int(file.Fd())) {
+		return fmt.Errorf("setup approval requires a terminal; review the plan and pass --yes for noninteractive setup")
+	}
+	return nil
+}
+
 // Keep reviewed custom grants and tools when discovery changes the project set.
 func proposeProfile(cfg *config.Config, plan project.Plan) config.Config {
 	proposed := *cfg
-	if !reflect.DeepEqual(cfg.Setup, plan.Setup()) {
-		configureProfile(&proposed, plan)
-		if cfg.Setup.Profile != "" {
-			// Remove grants supplied by old profiles as their languages disappear.
-			// Explicit grants outside those defaults remain host policy choices.
-			oldDefaults := map[string]bool{}
-			oldParts := cfg.Setup.Projects
-			if cfg.Setup.Profile != "multi" {
-				oldParts = []config.SetupProject{{Profile: cfg.Setup.Profile, Manager: cfg.Setup.Manager}}
+	if reflect.DeepEqual(cfg.Setup, plan.Setup()) {
+		return proposed
+	}
+	configureProfile(&proposed, plan)
+	// Remove grants supplied by old profiles as their languages disappear.
+	// Explicit grants outside those defaults remain host policy choices.
+	oldDefaults := map[string]bool{}
+	oldParts := cfg.Setup.Projects
+	if cfg.Setup.Profile != "multi" {
+		oldParts = []config.SetupProject{{Profile: cfg.Setup.Profile, Manager: cfg.Setup.Manager}}
+	}
+	for _, part := range oldParts {
+		for _, rule := range profileNetworkRules(part.Profile, part.Manager) {
+			oldDefaults[rule] = true
+		}
+	}
+	for _, rule := range cfg.Network.Allow {
+		if oldDefaults[rule] || cfg.Setup.Profile == "" && cfg.Workspace.Disk != "" && rule == "github.com:443" {
+			continue
+		}
+		found := false
+		for _, existing := range proposed.Network.Allow {
+			found = found || existing == rule
+		}
+		if !found {
+			proposed.Network.Allow = append(proposed.Network.Allow, rule)
+		}
+	}
+	if cfg.Setup.Profile != "" {
+		proposed.Resources = cfg.Resources
+	} else {
+		defaults := config.NewConfig().Resources
+		if cfg.Resources.Memory != defaults.Memory {
+			proposed.Resources.Memory = cfg.Resources.Memory
+		}
+		if cfg.Resources.CPUs != defaults.CPUs {
+			proposed.Resources.CPUs = cfg.Resources.CPUs
+		}
+		if cfg.Resources.Disk != defaults.Disk {
+			proposed.Resources.Disk = cfg.Resources.Disk
+		}
+	}
+	if proposed.Resources.Disk == "10GB" && len(proposed.Setup.Runtimes) > 1 {
+		proposed.Resources.Disk = "20GB"
+	}
+	if proposed.Resources.Disk == "10GB" || proposed.Resources.Disk == "20GB" {
+		for _, part := range plan.Parts() {
+			if config.ExtendedProfile(part.Profile) {
+				proposed.Resources.Disk = "40GB"
+				break
 			}
-			for _, part := range oldParts {
-				for _, rule := range profileNetworkRules(part.Profile, part.Manager) {
-					oldDefaults[rule] = true
-				}
-			}
-			for _, rule := range cfg.Network.Allow {
-				if oldDefaults[rule] {
-					continue
-				}
-				found := false
-				for _, existing := range proposed.Network.Allow {
-					found = found || existing == rule
-				}
-				if !found {
-					proposed.Network.Allow = append(proposed.Network.Allow, rule)
-				}
-			}
-			proposed.Resources = cfg.Resources
-			if proposed.Resources.Disk == "10GB" && len(proposed.Setup.Runtimes) > 1 {
-				proposed.Resources.Disk = "20GB"
-			}
-			if proposed.Resources.Disk == "10GB" || proposed.Resources.Disk == "20GB" {
-				for _, part := range plan.Parts() {
-					if config.ExtendedProfile(part.Profile) {
-						proposed.Resources.Disk = "40GB"
-						break
-					}
-				}
-			}
-			oldCommands := map[string]bool{}
-			for _, command := range config.AllSetupCommands(cfg.Setup) {
-				oldCommands[command] = true
-			}
-			for image, commands := range cfg.Tools {
-				for _, command := range commands {
-					if !oldCommands[command] {
-						proposed.Tools[image] = append(proposed.Tools[image], command)
-					}
-				}
+		}
+	}
+	oldCommands := map[string]bool{}
+	for _, command := range config.AllSetupCommands(cfg.Setup) {
+		oldCommands[command] = true
+	}
+	for image, commands := range cfg.Tools {
+		for _, command := range commands {
+			if !oldCommands[command] {
+				proposed.Tools[image] = append(proposed.Tools[image], command)
 			}
 		}
 	}
@@ -706,6 +767,17 @@ func profileNetworkRules(profile, manager string) []string {
 }
 
 func writeProjectConfig(dir string, cfg *config.Config, exclusive bool) error {
+	if !exclusive {
+		original, err := readMutableProjectConfig(dir)
+		if err != nil {
+			return err
+		}
+		updated, err := config.UpdateDocument(original, cfg)
+		if err != nil {
+			return err
+		}
+		return replaceProjectConfigDocument(dir, original, updated)
+	}
 	var content strings.Builder
 	content.WriteString("# Host-approved Watermelon policy. Repository setup runs inside the sandbox.\n")
 	if cfg.Workspace.Disk != "" {
@@ -715,33 +787,7 @@ func writeProjectConfig(dir string, cfg *config.Config, exclusive bool) error {
 		return err
 	}
 	path := filepath.Join(dir, projectConfigName)
-	if exclusive {
-		return writeNewPrivateIdentityFile(path, []byte(content.String()))
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() || !ownedByCurrentUser(info) {
-		return fmt.Errorf("refusing to replace untrusted project configuration")
-	}
-	f, err := os.CreateTemp(dir, ".watermelon-policy-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(content.String()); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return writeNewPrivateIdentityFile(path, []byte(content.String()))
 }
 
 func destroyAt(cmd *cobra.Command, dir, name string) error {

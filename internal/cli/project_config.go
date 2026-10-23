@@ -14,6 +14,18 @@ import (
 )
 
 func loadProjectConfig(dir string) (*config.Config, error) {
+	data, err := readProjectConfigBytes(dir)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("loading project config %q: %w", filepath.Join(dir, projectConfigName), err)
+	}
+	return cfg, nil
+}
+
+func readProjectConfigBytes(dir string) ([]byte, error) {
 	configPath := filepath.Join(dir, projectConfigName)
 	fd, err := unix.Open(configPath, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOCTTY, 0)
 	if err != nil {
@@ -60,11 +72,7 @@ func loadProjectConfig(dir string) (*config.Config, error) {
 	if len(data) > maxProjectConfigSize {
 		return nil, fmt.Errorf("project config %q exceeds the %d-byte limit", configPath, maxProjectConfigSize)
 	}
-	cfg, err := config.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("loading project config %q: %w", configPath, err)
-	}
-	return cfg, nil
+	return data, nil
 }
 
 func loadValidatedProjectConfigFailClosed(dir string) (*config.Config, error) {

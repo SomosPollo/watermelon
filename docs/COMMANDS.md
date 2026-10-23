@@ -9,7 +9,7 @@ usage. Most commands select the nearest `.watermelon.toml`; see
 | Prepare | `doctor`, `init`, `clone`, `up` |
 | Work | `exec`, `run`, `code`, `copy` |
 | Inspect | `status`, `logs`, `list`, `config validate` |
-| Manage | `rebuild`, `stop`, `destroy` |
+| Manage | `config edit`, `rebuild`, `stop`, `destroy` |
 | Integrate assistants | `agents install` |
 
 ## `watermelon doctor`
@@ -95,6 +95,15 @@ watermelon clone [flags] https://github.com/owner/project [destination]
 
 The destination must not exist. Only credential-free public GitHub HTTPS URLs
 are supported. Default setup displays a plan and asks before installation.
+The interactive prompt accepts `y` to continue, `c` to customize common
+settings, `e` to edit the full TOML, `s` to defer setup, or `n` to cancel.
+Customization covers runtime overrides, memory, VM system disk, CPUs,
+forwarded localhost ports, and additional network destinations. Enter keeps
+the current setting; `-` clears forwarded ports. The updated plan is displayed
+again and requires approval before any dependency installation. Declining or
+deferring discards draft customizations and retains source. Initial `up` on an
+unapproved managed clone offers the same review. `--yes` accepts the detected
+plan without customization; `--no-setup` skips the setup prompt entirely.
 
 ## `watermelon up`
 
@@ -141,6 +150,34 @@ watermelon config validate [--json]
 Validates settings and referenced provision scripts without changing a VM.
 Exits 0 for valid settings, 1 otherwise. JSON uses `schema_version: 1`.
 Use `status` separately to compare recorded applied settings.
+
+## `watermelon config edit`
+
+```bash
+watermelon config edit
+# For an editor that needs a wait flag:
+VISUAL='code --wait' watermelon config edit
+```
+
+Finds the nearest host `.watermelon.toml` and opens a private draft using
+`VISUAL`, then `EDITOR`, then `vi`. Editor arguments and quoted paths are
+supported without shell substitutions. Use an editor that waits until editing
+is finished. Invalid configs can be opened for repair.
+
+Only a valid draft replaces the original. Validation includes provision
+script inputs and managed workspace ownership. Generated workspace source and
+disk identity cannot be changed. An editor failure, invalid draft, or concurrent
+config change leaves the active config untouched and reports a recovery draft
+path. Successful edits preserve the file permissions, comments, and formatting.
+
+Editing does not operate on the VM. The result states whether VM settings
+changed: apply those changes with `watermelon rebuild` for an existing VM, or
+`watermelon up` for a new environment. A subsequent workload command refuses
+stale policy and may stop the existing VM until it is rebuilt. IDE-only or
+comment-only edits do not require rebuilding. `rebuild` retains managed source
+and mounted project files, but replaces VM system files.
+For `ask` policy changes, follow the VM-specific foreground recreation command
+from `watermelon status` and keep the subsequent `watermelon run` in the foreground.
 
 ## `watermelon run`
 

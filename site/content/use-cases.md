@@ -14,7 +14,9 @@ cd project
 watermelon run
 ```
 
-`clone` asks before installing dependencies. Pass `--no-setup` to inspect first.
+`clone` lets you review or customize setup before installing dependencies. You
+can defer setup and return with `watermelon up`; see the
+[clone workflow](../../docs/WORKSPACES.md#clone-a-public-project).
 Automatic setup supports Node, Python, Go, Rust, JVM, .NET, Ruby, PHP, and C/C++,
 including mixed-language projects. See [runtime support](../../docs/WORKSPACES.md#runtime-and-dependency-support).
 
@@ -64,6 +66,21 @@ watermelon exec -- npm run build
 For a dev server, [forward its port and bind to 0.0.0.0](../../docs/WORKSPACES.md#run-a-development-server).
 Browse [examples](../../docs/examples/README.md) for React, Next.js, Django,
 monorepos, machine learning, smart contracts, and other stacks.
+
+## Adjust the sandbox as your project changes
+
+When you need another allowed destination, a dev server port, or more memory,
+edit the host policy:
+
+```bash
+watermelon config edit
+```
+
+Valid edits are saved after you close the editor. Watermelon reports whether
+they need a rebuild; editor-only changes do not. Comments and custom settings
+are retained when automatic setup updates the environment. Follow the
+[settings workflow](../../docs/WORKSPACES.md#change-sandbox-settings) to apply
+changes to an existing VM.
 
 ## Choose the right boundary
 

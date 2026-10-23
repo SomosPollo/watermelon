@@ -30,8 +30,8 @@ to download and prepare.
 
 ```bash
 watermelon init
-# Review .watermelon.toml: network rules, tools, and mounted files
-watermelon config validate
+# Optional: customize the detected settings; saving validates them
+watermelon config edit
 watermelon up
 ```
 
@@ -45,6 +45,11 @@ commands can change those files and read any secrets stored there.
 watermelon clone https://github.com/owner/project
 cd project
 ```
+
+At the setup prompt, continue with the detected settings, choose `c` to
+customize runtimes, resources, ports, and network destinations, or `e` to edit
+the TOML. The revised plan is shown before installation. Choose `s` to keep
+the source and prepare it later with `watermelon up`.
 
 Replace the URL; the destination must not exist. `clone` asks before dependency
 setup. Use `--no-setup` to inspect first, then `watermelon up` when ready.

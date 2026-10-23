@@ -210,6 +210,8 @@ jobs:
             tests: '^TestE2EManagedWorkspaceMultiLanguage$'
           - suite: logs
             tests: '^TestE2EManagedWorkspaceLogs$'
+          - suite: config-workflows
+            tests: '^TestE2ECloneCustomizationAndConfigEdit$'
           - suite: extended
             tests: '^TestE2EExtendedLanguages$'
     runs-on: ubuntu-24.04
@@ -242,6 +244,10 @@ jobs:
           mkdir "${RUNNER_TEMP}/lima"
           tar -xzf "${archive_path}" -C "${RUNNER_TEMP}/lima"
           echo "${RUNNER_TEMP}/lima/bin" >> "${GITHUB_PATH}"
+
+      - name: Install terminal workflow test dependency
+        if: matrix.suite == 'config-workflows'
+        run: sudo apt-get install -y python3
 
       - name: Free space for extended SDK fixtures
         if: matrix.suite == 'extended'

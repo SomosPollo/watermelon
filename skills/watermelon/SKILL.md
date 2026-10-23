@@ -97,7 +97,18 @@ live at `/workspace/project` on a separately retained guest disk. A guest
 repository's `.watermelon.toml` is source content, not the trusted host policy.
 Use guest commands or a compatible remote IDE to inspect and edit guest source.
 `clone` without `--no-setup` also presents the setup plan and prepares approved
-dependencies. Keep the host project's config outside guest control.
+dependencies. Its prompt offers `c` to customize runtimes, resources, forwarded
+ports and additional network destinations, `e` to edit TOML, and `s` to defer
+setup. Customizations are drafts until the revised plan is approved. Initial
+`up` on an unapproved managed clone offers the same review. Keep the host
+project's config outside guest control.
+
+`watermelon config edit` uses `VISUAL`, then `EDITOR`, then `vi` to edit and
+validate a private draft. It preserves the active policy on invalid edits or
+concurrent changes and reports the retained draft path. It does not operate on
+the VM; VM-affecting edits still require rebuilding. Setup updates preserve
+comments and custom settings. Continue to obtain authorization for policy and
+mount changes as described above.
 
 When asked to install assistant integrations, use `watermelon agents install`
 to detect local Codex and Claude Code installations, or select them explicitly
@@ -121,6 +132,7 @@ guide execution; they do not intercept or restrict the assistant's host shell.
 | `watermelon clone [--no-setup] <public-github-url> [destination]` | Acquire guest-only source; review setup before dependencies execute |
 | `watermelon doctor [--json]` | Check host and Lima readiness without changing a VM |
 | `watermelon config validate [--json]` | Validate configuration and provision-script inputs without changing a VM |
+| `watermelon config edit` | Edit and validate a host policy draft using VISUAL or EDITOR |
 | `watermelon up [--refresh] [--dry-run]` | Review and prepare detected runtimes and dependencies |
 | `watermelon rebuild [--name NAME]` | Replace VM system state while retaining host source and managed workspace disks |
 | `watermelon run [--name NAME] [--workdir PATH]` | Open interactive shell in sandbox |

@@ -12,6 +12,7 @@ look up what you need as you work.
 | Find a configuration for my stack | [Examples](examples/README.md) |
 | Fix a failure | [Troubleshooting](TROUBLESHOOTING.md) |
 | Look up a command or flag | [Commands](COMMANDS.md) |
+| Customize setup or edit sandbox settings | [Change sandbox settings](WORKSPACES.md#change-sandbox-settings) |
 | Change network rules, tools, mounts, or resources | [Configuration](CONFIG_SPEC.md) |
 | Understand what the sandbox protects | [Security model](SECURITY.md) |
 
