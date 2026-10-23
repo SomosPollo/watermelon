@@ -95,6 +95,9 @@ Installs the skill embedded in the Watermelon binary for local Codex and
 Claude Code sessions. It works outside a project, needs no downloads or API
 credentials, and does not change assistant permissions, hooks, or model settings.
 
+For a complete workflow and version requirements, see
+[using Codex or Claude Code](CODING_ASSISTANTS.md).
+
 ```bash
 watermelon agents install
 watermelon agents install --agent codex
