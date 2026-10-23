@@ -155,6 +155,23 @@ func TestE2EWorkflowTerminalDriver(t *testing.T) {
 	root := t.TempDir()
 	h := &e2eHarness{t: t, root: root, project: root, wm: shell, env: os.Environ()}
 	runWorkflowTerminal(t, h, python, 5*time.Second, [][2]string{{"first> ", "accepted"}, {"second> ", ""}}, "-c", `printf 'first> '; read -r answer; test "$answer" = accepted || exit 2; printf 'second> '; read -r answer; test -z "$answer"`)
+
+	// Lima's background host agent can inherit the terminal on Linux. Its open
+	// descriptor must not prevent the driver from noticing that the CLI exited.
+	pidPath := filepath.Join(root, "background.pid")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidPath)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err == nil {
+			if process, err := os.FindProcess(pid); err == nil {
+				_ = process.Kill()
+			}
+		}
+	})
+	runWorkflowTerminal(t, h, python, 5*time.Second, [][2]string{{"ready> ", "accepted"}}, "-c", `trap '' HUP; sleep 30 & printf '%s\n' "$!" > "$1"; printf 'ready> '; read -r answer; test "$answer" = accepted`, "terminal-test", pidPath)
 }
 
 func workflowFreePort(t *testing.T) int {
@@ -243,7 +260,16 @@ try:
                 os.write(terminal, (answer + '\n').encode())
                 step += 1
             pending = pending[-1048576:]
-    _, status = os.waitpid(pid, 0)
+        if status is None:
+            exited, exit_status = os.waitpid(pid, os.WNOHANG)
+            if exited:
+                status = exit_status
+        # A background Lima process may keep the slave terminal open after the
+        # CLI exits. Drain its final output, then use the CLI's exit status.
+        if status is not None and not readable:
+            break
+    if status is None:
+        _, status = os.waitpid(pid, 0)
 finally:
     os.close(terminal)
     if status is None:
