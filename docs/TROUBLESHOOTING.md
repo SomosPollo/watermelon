@@ -43,7 +43,8 @@ the live firewall. Apply reviewed changes with `watermelon rebuild`, or use
 the printed VM-pinned recreation instruction. Stop/start alone does not update
 policy. For manual `ask`, keep recreation's `run` foreground.
 
-**Missing or invalid settings:** normal `--name` use still validates config.
+**Missing or invalid settings:** use `watermelon config edit` to repair an
+existing config in a validated draft. Normal `--name` use still validates config.
 From the owning root, verified recovery can use:
 
 ```bash
@@ -59,6 +60,13 @@ resize the separately retained managed workspace disk. Only
 `destroy --delete-workspace` permanently deletes that disk and its source.
 
 ## Command issues
+
+For [`config edit`](COMMANDS.md#watermelon-config-edit), an invalid draft or
+concurrent change leaves the active config untouched and prints a recovery
+draft path. Compare or repair that draft before retrying the edit. For a GUI
+editor, use a command that waits for the file to close, such as
+`VISUAL='code --wait' watermelon config edit`. Saving policy edits does not
+apply them to an existing VM; follow the printed rebuild instructions.
 
 | Symptom | Action |
 |---------|--------|

@@ -13,7 +13,7 @@ import (
 )
 
 func NewConfigCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "config", Short: "Inspect project configuration", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
+	cmd := &cobra.Command{Use: "config", Short: "Inspect and edit project configuration", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
 	var jsonOutput bool
 	validate := &cobra.Command{Use: "validate", Short: "Validate host policy without changing a VM", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		dir, err := os.Getwd()
@@ -51,6 +51,7 @@ func NewConfigCmd() *cobra.Command {
 	}}
 	validate.Flags().BoolVar(&jsonOutput, "json", false, "Emit a versioned JSON validation result")
 	cmd.AddCommand(validate)
+	cmd.AddCommand(newConfigEditCmd())
 	return cmd
 }
 

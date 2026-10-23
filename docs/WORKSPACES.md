@@ -17,7 +17,14 @@ have no writable host mounts. Their source, dependencies, and logs survive
 normal VM rebuilds and deletion.
 
 `clone` acquires source, reads manifests without executing project code, and
-asks before preparing dependencies. The acquisition-only GitHub network grant
+asks before preparing dependencies. At that prompt, use `c` to customize
+runtimes, resources, forwarded ports, and additional network destinations, or
+`e` to edit the full TOML in your editor. Watermelon shows the revised plan
+before asking for approval. Use `s` to defer setup; source remains in the guest
+and `watermelon up` offers the review again. Draft customizations are saved
+only when you approve setup.
+
+The acquisition-only GitHub network grant
 is removed from the runtime policy. To inspect before setup:
 
 ```bash
@@ -49,6 +56,25 @@ Existing configs are never overwritten.
 Use `init --template node` (or another profile below) to restrict detection.
 Use `init --template manual` for custom tools and policies; start manual VMs
 with `watermelon run` and install dependencies in the guest.
+
+## Change sandbox settings
+
+From a local project or a clone's host settings directory, open the host policy:
+
+```bash
+watermelon config edit
+```
+
+Use it to adjust allowed destinations, ports, resources, or editor preferences.
+Watermelon validates a draft before saving and reports whether the change needs
+a VM rebuild. Setup updates retain comments and custom settings as runtimes or
+project layouts change. A cloned repository's own config remains guest content;
+the host policy controls the sandbox.
+
+Apply VM-affecting edits with `watermelon rebuild`; preserve needed VM-local
+system files first. Managed source and mounted project files are retained.
+IDE-only and comment-only edits need no rebuild. For editor selection, draft
+recovery, and `ask`-mode changes, see [`config edit`](COMMANDS.md#watermelon-config-edit).
 
 ## Runtime and dependency support
 

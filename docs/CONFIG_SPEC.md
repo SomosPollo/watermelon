@@ -4,6 +4,14 @@
 review it, and run `watermelon config validate`. Unknown keys are errors,
 including fields inside mount entries.
 
+Use `watermelon config edit` to edit a validated draft in `VISUAL` or `EDITOR`
+(`vi` by default). Clone setup also offers customization before approval.
+Automatic setup updates change only settings whose values changed, preserving
+unrelated formatting and comments. Comments inside replaced values are retained
+beside the replacement. Custom tools, network grants outside the old profile's
+defaults, and resource overrides survive runtime/project updates. The temporary
+GitHub grant used to acquire a clone is removed from the runtime policy.
+
 | Change | Section |
 |--------|---------|
 | Automatic languages and managed source | [workspace and setup](#workspace-and-setup) |

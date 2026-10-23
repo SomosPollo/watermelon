@@ -9,12 +9,21 @@ and Watermelon follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Added
 
+- Clone setup customization for runtime versions, resources, forwarded ports,
+  and network destinations, with full TOML editing and deferred preparation.
+- `watermelon config edit` opens a validated draft in `VISUAL` or `EDITOR`,
+  preserves unsuccessful edits for recovery, and reports rebuild requirements.
 - `watermelon agents install` detects local Codex and Claude Code installations
   and installs the bundled Watermelon skill, with explicit assistant selection
   and preservation of conflicting custom skills.
 - `watermelon init` creates or appends project execution guidance in `AGENTS.md`
   and `CLAUDE.md` without replacing existing instructions. Existing local
   projects can adopt it with `init --instructions-only`.
+
+### Fixed
+
+- Preserve comments, unrelated TOML formatting, and custom settings when
+  automatic setup updates a project's configuration.
 
 ## [0.5.0] - 2026-10-21
 

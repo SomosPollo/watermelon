@@ -67,6 +67,7 @@ go test -tags=e2e -run '^TestE2EManagedWorkspaceProjects$' -v ./test/...
 go test -tags=e2e -run '^TestE2EManagedWorkspaceRuntime$' -v ./test/...
 go test -tags=e2e -run '^TestE2EManagedWorkspaceMultiLanguage$' -v ./test/...
 go test -tags=e2e -run '^TestE2EExtendedLanguages$' -timeout=65m -v ./test/...
+go test -tags=e2e -run '^TestE2ECloneCustomizationAndConfigEdit$' -timeout=50m -count=1 -v ./test/...
 ```
 
 The first tests live public GitHub acquisition. The second uses controlled
@@ -76,6 +77,13 @@ four languages together, cross-language hooks, nested dependencies, restart
 and rebuild persistence. The extended test adds JVM, .NET, Ruby, PHP, C/C++,
 pnpm/Yarn, and uv/Poetry in one VM. All require real VMs
 and network access for trusted images and package registries.
+
+The clone/config workflow test uses Python 3's standard-library PTY support to
+drive the real setup prompt. It clones a small public Node project into an
+isolated Lima home, checks deferred and approved customizations, validates
+editor drafts, updates the runtime while retaining comments and custom policy,
+then edits and rebuilds a forwarded port and verifies guest HTTP access.
+Its disposable VMs and workspace disk are cleaned up after the test.
 
 Set `WATERMELON_E2E_ALLOW_TCG=1` to try the full Linux VM lifecycle under slow QEMU TCG when KVM is unavailable.
 CI sets `WATERMELON_E2E_REQUIRE_REAL_VM=1` so missing prerequisites fail instead of silently skipping the security scenarios.

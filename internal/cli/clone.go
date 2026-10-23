@@ -106,7 +106,7 @@ func runClone(cmd *cobra.Command, source, directory, profile, runtime string, ye
 	if err := saveWorkspaceState(dir, state); err != nil {
 		return fmt.Errorf("disk created but ownership state could not be committed: %w", err)
 	}
-	if err := runUp(cmd, dir, "", setupOptions{Yes: yes, AcquireOnly: noSetup}); err != nil {
+	if err := runUp(cmd, dir, "", setupOptions{Yes: yes, AcquireOnly: noSetup, Customize: true}); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Workspace settings are in %q. Change to that directory to use Watermelon. Source files remain inside the guest.\n", dir)
