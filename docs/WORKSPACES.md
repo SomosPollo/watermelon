@@ -91,7 +91,12 @@ watermelon up
 ```
 
 `init` inspects manifests and writes an active tool profile and registry
-allowlist. It does not execute project code or create a VM. Unlike managed
+allowlist. It also appends Watermelon execution guidance to `AGENTS.md` and
+`CLAUDE.md`, preserving existing instructions. Use `watermelon agents install`
+once to install the shared skill for local Codex or Claude Code sessions;
+existing projects can add guidance with `watermelon init --instructions-only`.
+See [assistant setup](COMMANDS.md#watermelon-agents-install).
+It does not execute project code or create a VM. Unlike managed
 clones, local projects retain the existing writable host mount at `/project`.
 Dependencies and project edits in that mount affect host project files.
 

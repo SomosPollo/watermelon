@@ -2,11 +2,11 @@ package cli
 
 import (
 	"fmt"
-	"github.com/saeta-eth/watermelon/internal/config"
-	"github.com/saeta-eth/watermelon/internal/project"
 	"os"
 	"path/filepath"
 
+	"github.com/saeta-eth/watermelon/internal/config"
+	"github.com/saeta-eth/watermelon/internal/project"
 	"github.com/spf13/cobra"
 )
 
@@ -64,20 +64,38 @@ command = "code"
 
 func NewInitCmd() *cobra.Command {
 	var template, runtime string
+	var instructionsOnly bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create .watermelon.toml in the current directory",
+		Short: "Create .watermelon.toml and project instructions for coding assistants",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if instructionsOnly && (template != "" || runtime != "") {
+				return NewUsageError(fmt.Errorf("--instructions-only cannot be combined with --template or --runtime"))
+			}
 			dir, err := os.Getwd()
 			if err != nil {
 				return err
+			}
+			if instructionsOnly {
+				if _, err := loadProjectConfig(dir); err != nil {
+					return err
+				}
+				if err := checkProjectInstructions(dir); err != nil {
+					return err
+				}
+				if err := writeProjectInstructions(dir); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "Watermelon guidance is ready in AGENTS.md and CLAUDE.md; existing instructions and configuration were preserved.")
+				return nil
 			}
 			return runInitWithTemplate(dir, template, runtime)
 		},
 	}
 	cmd.Flags().StringVar(&template, "template", "", "Use all detected languages (all), one language, or manual configuration")
 	cmd.Flags().StringVar(&runtime, "runtime", "", "Set a numeric version or language=version overrides")
+	cmd.Flags().BoolVar(&instructionsOnly, "instructions-only", false, "Add assistant guidance to an existing local Watermelon project without changing its configuration")
 	return cmd
 }
 
@@ -89,9 +107,12 @@ func runInitWithTemplate(dir, template, runtime string) error {
 	configPath := filepath.Join(dir, projectConfigName)
 
 	if _, err := os.Stat(configPath); err == nil {
-		return fmt.Errorf(".watermelon.toml already exists")
+		return fmt.Errorf(".watermelon.toml already exists (use 'watermelon init --instructions-only' to add assistant guidance)")
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("checking config: %w", err)
+	}
+	if err := checkProjectInstructions(dir); err != nil {
+		return fmt.Errorf("checking project instructions: %w", err)
 	}
 
 	if template != "manual" {
@@ -109,6 +130,9 @@ func runInitWithTemplate(dir, template, runtime string) error {
 			if err := writeProjectConfig(dir, cfg, true); err != nil {
 				return err
 			}
+			if err := finishInitInstructions(dir); err != nil {
+				return err
+			}
 			fmt.Printf("Created %s with the %s profile (%s).\nThe host project will be mounted read-write. Review the config, then run 'watermelon up'.\n", configPath, plan.Profile, plan.Image)
 			return nil
 		}
@@ -119,8 +143,19 @@ func runInitWithTemplate(dir, template, runtime string) error {
 	if err := writeNewPrivateIdentityFile(configPath, []byte(defaultConfig)); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
+	if err := finishInitInstructions(dir); err != nil {
+		return err
+	}
 
 	fmt.Printf("Created %s\n", configPath)
 	fmt.Println("Next: configure tools and network access, then run 'watermelon up'.")
+	return nil
+}
+
+func finishInitInstructions(dir string) error {
+	if err := writeProjectInstructions(dir); err != nil {
+		return fmt.Errorf(".watermelon.toml was created, but project instructions could not be completed; after resolving the error, run 'watermelon init --instructions-only': %w", err)
+	}
+	fmt.Println("Added Watermelon guidance to AGENTS.md and CLAUDE.md; existing instructions were preserved.")
 	return nil
 }

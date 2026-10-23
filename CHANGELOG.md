@@ -7,6 +7,15 @@ and Watermelon follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+
+- `watermelon agents install` detects local Codex and Claude Code installations
+  and installs the bundled Watermelon skill, with explicit assistant selection
+  and preservation of conflicting custom skills.
+- `watermelon init` creates or appends project execution guidance in `AGENTS.md`
+  and `CLAUDE.md` without replacing existing instructions. Existing local
+  projects can adopt it with `init --instructions-only`.
+
 ## [0.5.0] - 2026-10-21
 
 Watermelon v0.5.0 introduces managed guest workspaces: clone a public GitHub
