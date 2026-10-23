@@ -1,108 +1,66 @@
 # Use Codex or Claude Code with Watermelon
 
-[Documentation](README.md) · [Command reference](COMMANDS.md#watermelon-agents-install)
-
-Keep Codex or Claude Code on the host, where it can edit your local project.
-Install Watermelon's skill and project instructions so the assistant runs
-dependency installs, builds, tests, scripts, and development servers in the VM.
-
-## Check your Watermelon version
-
-The integration commands were added after v0.5.0. Check your installed CLI:
-
-```bash
-watermelon agents install --help
-```
-
-If the command is unknown, use a release that includes it or build from `main`
-with the [source build instructions](DEVELOPMENT.md#build-and-run). Put the
-updated binary on the `PATH` used by your assistant. The release installer and
-`go install ...@latest` select releases, which may lag behind `main`.
-
-Install [Lima and Watermelon's other prerequisites](INSTALLATION.md#requirements),
-then run `watermelon doctor` before preparing a project.
+Keep your assistant on the host to edit local source. Use Watermelon for its
+installs, builds, tests, scripts, and dev servers.
 
 ## Install the assistant skill
 
-Run on the host:
+Run once on the host:
 
 ```bash
 watermelon agents install
-# Or choose one or both explicitly:
+# Or choose explicitly:
 watermelon agents install --agent codex,claude
 ```
 
-The default detects installed Codex and Claude Code clients. Explicit selection
-also works before their first launch. The skill is bundled in the Watermelon
-binary; installation requires no downloads or assistant API credentials.
-
-Identical installed skills are left untouched. If an older or customized copy
-differs, preserve it and move it aside before reinstalling. See the
-[command reference](COMMANDS.md#watermelon-agents-install) for install locations
-and configuration-directory overrides. Updating the CLI alone does not update
-an already installed skill.
+The skill is bundled in the binary; no downloads or API credentials are needed.
+If an older or customized skill conflicts, preserve it and move it aside before
+reinstalling. Updating the CLI does not update installed skills. See
+[install locations and options](COMMANDS.md#watermelon-agents-install).
 
 ## Prepare your local project
 
-For a project without `.watermelon.toml`:
+For a new Watermelon project, follow the [quick start](../README.md#quick-start):
+`init`, review the config, then `config validate` and `up`.
+`init` adds guidance to `AGENTS.md` and `CLAUDE.md`, preserving existing text.
 
-```bash
-cd your-project
-watermelon init
-# Review the generated runtime, network rules, and mounts.
-watermelon config validate
-watermelon up
-```
-
-`init` adds marked guidance to `AGENTS.md` and `CLAUDE.md`, preserving existing
-instructions, permissions, and Watermelon blocks. Review the initial setup
-plan before approving installation. For manual tool configurations, follow
-the [local project workflow](WORKSPACES.md#prepare-a-local-project).
-
-For an existing Watermelon project, add the guidance without changing its
-configuration:
+For an existing configuration:
 
 ```bash
 cd your-project
 watermelon init --instructions-only
 ```
 
-## Give the assistant a normal development task
+Review the initial `up` plan before approving dependency installation.
 
-Start a new Codex or Claude Code session in the project. For example:
+## Work with the assistant
 
-> Install the development dependencies, run the production build, and run the full test suite.
-
-For an npm project, the assistant should use commands such as:
+Start a new session in the project and give it a normal development task.
+Check that its execution uses commands such as:
 
 ```bash
-watermelon exec -- npm ci --include=dev
 watermelon exec -- npm run build
 watermelon exec -- npm test
+watermelon exec --cwd backend -- python -m pytest
 ```
 
-Commands depend on the project's package manager and scripts. For a nested
-project, use `watermelon exec --cwd frontend -- npm test`; changing only the
-host working directory does not select a guest subdirectory.
+Use `--cwd` for nested projects; changing only the host directory does not
+select a guest subdirectory. Source edits use normal file tools. Host assistant
+API connections stay on the host and need no guest allowlist entries.
 
-Source edits use the assistant's normal file tools. The default local project
-mount is read-write at `/project`. Host assistant API connections stay on the
-host and need no extra guest network allowlist entries. To run the assistant
-itself inside the guest, use the separate
-[AI coding assistants example](examples/ai-coding-assistants/README.md).
+Skills and project instructions guide the assistant; they do not intercept
+its host shell or change its permissions. The VM can modify the mounted project.
+If execution fails, diagnose it inside Watermelon; inspect `watermelon logs`
+for network failures and review policy changes before applying them.
 
-## Check execution and diagnose failures
+Managed clones keep source inside the guest, so edit them through guest commands
+or a remote IDE. To install the assistant itself in the VM, use the
+[AI coding assistants example](examples/ai-coding-assistants/README.md), including
+its per-process network rules.
 
-Check the assistant's reported commands for `watermelon exec`. Skills and
-project instructions guide its behavior; they do not intercept its host shell.
-The assistant's own permissions govern host access. See the
-[security model](SECURITY.md) for the VM and mounted-file boundaries.
+## Check your Watermelon version
 
-A build or test can fail even when Watermelon executes it correctly. Diagnose
-the project error inside the VM. For network failures, inspect
-`watermelon logs` and review any needed policy change before applying it. Do
-not retry project commands on the host as a fallback.
-
-If the skill is missing from a session, confirm its installation and start a
-new session. If the assistant cannot find `watermelon`, check the binary and
-its `PATH`. Keep the VM running between tasks unless you intend to stop it.
+If `watermelon agents install --help` is unknown, install a release containing
+the integration or [build from source](DEVELOPMENT.md#build-and-run). These
+commands were added after v0.5.0; releases may lag behind `main`. Ensure the
+assistant can find the updated binary on `PATH`, then start a new session.

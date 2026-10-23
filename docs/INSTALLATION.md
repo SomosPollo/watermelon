@@ -1,44 +1,36 @@
 # Installation
 
-[Documentation](README.md) · [Quick start](../README.md#quick-start)
-
 ## Requirements
 
-| Requirement | macOS | Linux |
-|-------------|-------|-------|
-| Host | macOS 13 or newer, Apple Silicon or Intel | ARM64 or x86-64 |
-| Lima | Stable 2.0.0 or newer; uses Apple's VZ backend | Stable 2.0.0 or newer; uses QEMU |
-| Other tools | `curl` and an OpenSSH client | `curl`, an OpenSSH client, and `qemu-system-aarch64` or `qemu-system-x86_64` for your architecture |
+| | macOS | Linux |
+|-|-------|-------|
+| Host | macOS 13+, Apple Silicon or Intel | ARM64 or x86-64 |
+| Lima | Stable 2.0.0+, Apple VZ backend | Stable 2.0.0+, QEMU backend |
+| Tools | `curl`, OpenSSH | `curl`, OpenSSH, architecture-matching QEMU system emulator |
 
-Run Watermelon as your ordinary user. Go is needed only for a Go installation
-or a source build. Linux KVM acceleration is recommended; without it, QEMU can
-fall back to slower TCG emulation.
+Run as your ordinary user. Linux KVM acceleration is recommended; QEMU can
+fall back to slower emulation. Go is needed only for Go/source installations.
 
 ## Install a release
 
-Install Lima first. On macOS with Homebrew:
+Install Lima first. On macOS:
 
 ```bash
 brew install lima
 ```
 
-On Linux, install Lima and the architecture-appropriate QEMU system emulator
-using your distribution's packages or an upstream Lima package.
-
-Then install Watermelon and check readiness:
+On Linux, install Lima and `qemu-system-aarch64` or `qemu-system-x86_64` for your
+architecture using distro or upstream packages. Then, on either platform:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SomosPollo/watermelon/main/install.sh | sh
 watermelon doctor
 ```
 
-The installer checks prerequisites before downloading. `doctor` can run from
-any directory without creating or modifying a VM. Resolve any `FAIL` checks
-before starting a project; see [installation troubleshooting](TROUBLESHOOTING.md#installation-issues).
+Resolve `FAIL` checks before creating a sandbox. The installer also checks
+prerequisites before downloads. Continue with the [quick start](../README.md#quick-start).
 
 ### Install without root
-
-Choose a writable directory and add it to `PATH`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SomosPollo/watermelon/main/install.sh \
@@ -46,15 +38,13 @@ curl -fsSL https://raw.githubusercontent.com/SomosPollo/watermelon/main/install.
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Add that `export` line to your shell's startup file to keep it across sessions.
+Keep the `export` in your shell startup file.
 
-### Use a custom QEMU executable on Linux
+### Custom QEMU executable
 
-Preflight resolves and runs `qemu-system-aarch64 --version` or
-`qemu-system-x86_64 --version` for Lima's reported host architecture. If Lima
-uses a non-default executable, set `QEMU_SYSTEM_AARCH64` or
-`QEMU_SYSTEM_X86_64` using Lima's shell-word syntax before running the
-installer or `doctor`. Quote a path containing spaces inside the value:
+On Linux, set `QEMU_SYSTEM_AARCH64` or `QEMU_SYSTEM_X86_64` before the installer
+or `doctor`. Values use Lima's shell-word syntax; quote paths with spaces
+inside the value:
 
 ```bash
 export QEMU_SYSTEM_AARCH64='"/opt/QEMU tools/qemu-system-aarch64"'
@@ -67,36 +57,20 @@ go install github.com/saeta-eth/watermelon/cmd/watermelon@latest
 watermelon doctor
 ```
 
-Use Go 1.27.3 or newer and make sure the Go binary installation directory is
-on `PATH`. This installs only the host CLI. See the next section if you use
-interactive `ask` enforcement.
+Requires Go 1.27.3+ and its binary installation directory on `PATH`. This
+installs the host CLI; `ask` enforcement also needs the sidecar below.
 
 ## The ask-mode network interceptor
 
-`watermelon-nfqd` is a Linux sidecar that runs inside the Lima guest only for
-`security.enforcement = "ask"`. The `fail`, `silent`, and `log` modes do not
-use it.
+Only `ask` uses the Linux guest sidecar, `watermelon-nfqd`. The shell installer
+includes the matching Lima-architecture binary, including under Rosetta.
+Tagged Go builds download their exact matching release sidecar when creating
+an ask-mode VM, verifying GitHub's SHA-256 metadata and embedded build identity.
+This requires GitHub access.
 
-The shell installer downloads both the host CLI and the matching sidecar for
-Lima's default guest architecture. This remains correct when the installer
-runs through Rosetta.
-
-For a tagged Go installation, Watermelon derives its release version from the
-build information embedded by the Go toolchain. Each new or recreated
-`ask`-mode VM downloads the exact same-version
-`watermelon-nfqd-linux-<arch>` release asset. Watermelon checks the download
-against the SHA-256 digest in GitHub's release metadata, then verifies the
-sidecar's embedded Go command, module version, Linux architecture, and
-static-release build settings before installing it. Each VM creation download
-requires access to GitHub.
-
-Unreleased, locally modified, or custom builds are not matched to a release
-asset automatically. For `ask` mode, place a matching regular
-`watermelon-nfqd-linux-<Lima-arch>` (or `watermelon-nfqd`) binary beside the
-`watermelon` executable, or set `WATERMELON_NFQD_BINARY` to its path.
-
-From a trusted Watermelon source checkout, build that explicit sidecar for
-Lima's default guest architecture:
+Unreleased/modified builds need an explicit matching regular binary beside the
+CLI (`watermelon-nfqd-linux-<arch>` or `watermelon-nfqd`), or at
+`WATERMELON_NFQD_BINARY`. From a trusted source checkout:
 
 ```bash
 case "$(limactl info --yq '.hostArch')" in
@@ -111,29 +85,12 @@ export WATERMELON_NFQD_BINARY="$PWD/watermelon-nfqd-linux-$nfqd_arch"
 
 ## Upgrade existing sandboxes
 
-After upgrading the CLI, check each project's recorded policy:
+After upgrading, run `watermelon status` in each project. Old or incompatible
+policy records are unverified; checked execution refuses them until recreation.
+Preserve needed VM-local system files and follow the exact VM-pinned command
+printed by Watermelon. Normal recreation retains host files and managed disks;
+`--delete-workspace` separately deletes managed source and edits.
 
-```bash
-watermelon status
-```
-
-VMs whose applied-policy snapshot predates the current schema are treated as
-unverified. This includes snapshots from before strict defaults, guest UID,
-VM mount/workdir settings, or exact provision-script bytes were recorded.
-`run`, `exec`, and `code` refuse those VMs until they are recreated.
-
-Preserve any needed VM-local files, then run the exact recreation command
-printed by Watermelon from the owning project root. For the default VM name:
-
-```bash
-watermelon destroy --force
-watermelon run
-```
-
-Recreation removes VM-local system state. Mounted host files and managed
-workspace disks are retained; `--delete-workspace` is the separate option for
-permanently deleting a managed disk. Status compares configuration with a
-host-side record; it does not inspect the live firewall.
-
-Continue with the [quick start](../README.md#quick-start) or
-[project workflows](WORKSPACES.md).
+For assistant integrations, rerun `agents install` after preserving any
+conflicting installed skill, then start a new assistant session. See
+[troubleshooting](TROUBLESHOOTING.md) if installation or readiness fails.

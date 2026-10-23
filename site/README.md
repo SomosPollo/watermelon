@@ -42,6 +42,11 @@ exist. It also checks unique HTML IDs and one primary heading per page.
 - `../README.md`, `../CHANGELOG.md`, and `../skills/watermelon/SKILL.md` are also
   published. Agent frontmatter is omitted from the rendered article.
 - `content/use-cases.md` contains the visitor-facing workflow guide.
+- Keep the quick start focused on the first successful command. Explain each
+  behavior once, then link to the workflow or reference that owns the detail.
+  Put flags and validation rules in the references, rather than repeating them
+  in every guide. Keep examples and contributor pages in their expandable
+  navigation groups so the main reading path stays short.
 - `lib/content.mjs` defines titles, reading order, routes, Markdown rendering,
   and repository-relative link resolution. Its fallback includes new guides
   automatically. Heading IDs match GitHub's slug conventions.

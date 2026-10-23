@@ -34,14 +34,22 @@ export function layout({ title, description, base, origin, route = '', body, sec
 export function sidebar(pages, current, base) {
   const groups = ['Start here', 'Guides', 'Reference', 'Examples', 'Contributing'];
   const order = Object.keys(metadata);
-  return `<aside class="docs-sidebar"><button class="docs-menu-toggle" type="button" aria-expanded="false" aria-controls="docs-navigation">Browse documentation <span aria-hidden="true">+</span></button><nav id="docs-navigation" aria-label="Documentation">${groups.map((group) => `<div class="nav-group"><h2>${group}</h2>${pages.filter((page) => page.group === group).sort((a, b) => {
-    const ai = order.indexOf(a.source), bi = order.indexOf(b.source);
-    return (ai < 0 ? 100 : ai) - (bi < 0 ? 100 : bi) || a.title.localeCompare(b.title);
-  }).map((page) => `<a${page.source === current.source ? ' aria-current="page"' : ''} href="${base}${page.route}">${escape(page.title.replace(/ Example$/, ''))}</a>`).join('')}</div>`).join('')}</nav></aside>`;
+  const navigation = groups.map((group) => {
+    const links = pages.filter((page) => page.group === group && page.source !== 'docs/README.md').sort((a, b) => {
+      const ai = order.indexOf(a.source), bi = order.indexOf(b.source);
+      return (ai < 0 ? 100 : ai) - (bi < 0 ? 100 : bi) || a.title.localeCompare(b.title);
+    }).map((page) => `<a${page.source === current.source ? ' aria-current="page"' : ''} href="${base}${page.route}">${escape(page.title.replace(/ Example$/, ''))}</a>`).join('');
+    if (group === 'Examples' || group === 'Contributing') {
+      return `<details class="nav-group"${current.group === group ? ' open' : ''}><summary>${group}</summary>${links}</details>`;
+    }
+    return `<div class="nav-group"><h2>${group}</h2>${links}</div>`;
+  }).join('');
+  return `<aside class="docs-sidebar"><button class="docs-menu-toggle" type="button" aria-expanded="false" aria-controls="docs-navigation">Browse documentation <span aria-hidden="true">+</span></button><nav id="docs-navigation" aria-label="Documentation">${navigation}</nav></aside>`;
 }
 
 export function article(page, html, pages, base, attachments = '') {
   const toc = page.headings.filter((heading) => heading.level <= 3);
   const docs = page.group !== null;
-  return `<main id="main" class="${docs ? 'docs-layout' : 'guide-layout'}">${docs ? sidebar(pages, page, base) : ''}<article class="doc-article"><div class="article-meta"><a href="${base}${docs ? 'docs/' : ''}">${docs ? 'Documentation' : 'Watermelon'}</a><span aria-hidden="true">/</span><span>${escape(page.title)}</span></div>${page.source === 'docs/UX_BACKLOG.md' ? '<aside class="notice">This is a contributor backlog. Proposed items do not describe current product behavior.</aside>' : ''}<div class="prose">${html}</div>${attachments}<div class="article-footer"><a href="${repository}/edit/main/${page.source}">${icon('code')} Edit this page on GitHub</a><a href="${base}docs/">All documentation</a></div></article><aside class="page-toc"><details open><summary>On this page</summary><nav aria-label="On this page">${toc.map((heading) => `<a class="toc-level-${heading.level}" href="#${escape(heading.id)}">${escape(heading.label)}</a>`).join('')}</nav></details></aside></main>`;
+  const outline = toc.length ? `<aside class="page-toc"><details open><summary>On this page</summary><nav aria-label="On this page">${toc.map((heading) => `<a class="toc-level-${heading.level}" href="#${escape(heading.id)}">${escape(heading.label)}</a>`).join('')}</nav></details></aside>` : '';
+  return `<main id="main" class="${docs ? 'docs-layout' : 'guide-layout'}">${docs ? sidebar(pages, page, base) : ''}<article class="doc-article"><div class="article-meta"><a href="${base}${docs ? 'docs/' : ''}">${docs ? 'Documentation' : 'Watermelon'}</a><span aria-hidden="true">/</span><span>${escape(page.title)}</span></div>${page.source === 'docs/UX_BACKLOG.md' ? '<aside class="notice">This is a contributor backlog. Proposed items do not describe current product behavior.</aside>' : ''}<div class="prose">${html}</div>${attachments}<div class="article-footer"><a href="${repository}/edit/main/${page.source}">${icon('code')} Edit this page on GitHub</a><a href="${base}docs/">All documentation</a></div></article>${outline}</main>`;
 }

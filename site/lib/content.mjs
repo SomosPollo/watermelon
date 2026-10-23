@@ -23,7 +23,7 @@ export function normalizeBase(value = '/') {
 
 export const metadata = {
   'README.md': ['Quick start', 'Install Watermelon, choose a workspace, and run your first sandbox.', 'Start here', 'docs/quick-start/'],
-  'docs/README.md': ['Documentation', 'Guides, command and configuration references, and practical examples.', 'Start here', 'docs/'],
+  'docs/README.md': ['Documentation', 'Start a sandbox, choose a workflow, or look up a command or setting.', 'Start here', 'docs/'],
   'docs/INSTALLATION.md': ['Installation', 'Requirements, release installs, Go installs, and upgrades.', 'Start here', 'docs/installation/'],
   'docs/WORKSPACES.md': ['Project workflows', 'Clone, prepare, edit, serve, export, and recover your projects.', 'Guides', 'docs/workflows/'],
   'docs/CODING_ASSISTANTS.md': ['Codex and Claude Code', 'Install the assistant skill and run project installs, builds, and tests in Watermelon.', 'Guides', 'docs/coding-assistants/'],
@@ -32,7 +32,7 @@ export const metadata = {
   'docs/CONFIG_SPEC.md': ['Configuration reference', 'Every .watermelon.toml field, default, and validation rule.', 'Reference', 'docs/configuration/'],
   'docs/SECURITY.md': ['Security model', 'Understand the VM, network, filesystem, and trust boundaries.', 'Reference', 'docs/security/'],
   'CHANGELOG.md': ['Changelog', 'Release changes and upgrade notes.', 'Reference', 'docs/changelog/'],
-  'skills/watermelon/SKILL.md': ['Agent skill', 'Instructions for AI coding agents working with Watermelon.', 'Reference', 'docs/agent-skill/'],
+  'skills/watermelon/SKILL.md': ['Agent skill', 'Instructions for AI coding agents working with Watermelon.', 'Contributing', 'docs/agent-skill/'],
   'docs/DEVELOPMENT.md': ['Development', 'Build Watermelon and run unit, integration, and VM tests.', 'Contributing', 'docs/development/'],
   'docs/RELEASE_REVIEW.md': ['Release review', 'Release verification procedures and contributor checks.', 'Contributing', 'docs/release-review/'],
   'docs/UX_BACKLOG.md': ['UX backlog', 'Proposed improvements and implementation tracking, not current usage instructions.', 'Contributing', 'docs/ux-backlog/'],

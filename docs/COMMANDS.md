@@ -1,632 +1,321 @@
 # Command reference
 
-[Documentation](README.md) · [Project workflows](WORKSPACES.md)
-
-Run `watermelon --help` to list commands, or `watermelon <command> --help` for
-built-in usage. Run the examples below on the host unless they say otherwise.
+Run these commands on the host. Use `watermelon <command> --help` for built-in
+usage. Most commands select the nearest `.watermelon.toml`; see
+[project and VM selection](#project-and-vm-selection).
 
 | Task | Commands |
 |------|----------|
-| Check the host | [doctor](#watermelon-doctor) |
-| Set up coding assistants | [agents install](#watermelon-agents-install) |
-| Prepare a project | [init](#watermelon-init), [clone](#watermelon-clone), [up](#watermelon-up) |
-| Apply settings | [rebuild](#watermelon-rebuild), [config validate](#watermelon-config-validate) |
-| Work in the VM | [run](#watermelon-run), [exec](#watermelon-exec), [code](#watermelon-code) |
-| Manage the VM | [stop](#watermelon-stop), [destroy](#watermelon-destroy), [status](#watermelon-status), [list](#watermelon-list) |
-| Transfer and inspect | [copy](#watermelon-copy), [logs](#watermelon-logs) |
-
-Most commands use the nearest `.watermelon.toml`. `init` writes only in the
-current directory; `agents install`, `doctor`, `list`, and `copy` work independently of a project.
-See [project and VM selection](#project-and-vm-selection) for discovery, names,
-and recovery through invalid settings.
+| Prepare | `doctor`, `init`, `clone`, `up` |
+| Work | `exec`, `run`, `code`, `copy` |
+| Inspect | `status`, `logs`, `list`, `config validate` |
+| Manage | `rebuild`, `stop`, `destroy` |
+| Integrate assistants | `agents install` |
 
 ## `watermelon doctor`
 
-Checks whether the host is ready to run Watermelon. It can be run from any
-directory and does not require a project configuration or create, start, stop,
-or modify a VM.
+Checks host OS, architecture, Lima, SSH, backend readiness, and Linux QEMU/KVM
+without changing a VM. Works outside a project.
 
 ```bash
-watermelon doctor
-watermelon doctor --json
+watermelon doctor [--json]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--json` | Emit the ordered readiness checks using a versioned JSON schema |
-
-The report covers the Watermelon executable, supported host OS and
-architecture, macOS 13 or newer (read with `sw_vers` on Darwin), unprivileged
-execution, a stable Lima 2.0.0 or newer release, Lima's host information and
-state directory, the required VZ or QEMU backend, the architecture-appropriate
-Linux QEMU system executable, SSH, and optional Linux KVM acceleration. Linux
-does not run the macOS version probe. Independent checks continue after a
-failure; checks that depend on a failed prerequisite are reported as skipped.
-
-`PASS` and `WARN` reports exit successfully. Any `FAIL` makes the command exit
-with status 1. `--json` emits the same ordered checks using a versioned schema
-for support tooling and automation.
-
----
+`--json` emits ordered, versioned checks. `PASS` and `WARN` exit 0; any `FAIL`
+exits 1. Resolve failures before setup. See [requirements](INSTALLATION.md#requirements).
 
 ## `watermelon init`
 
-Creates a `.watermelon.toml` configuration file and adds Watermelon execution
-guidance to `AGENTS.md` and `CLAUDE.md` in the current directory. It
-does not search for or modify an ancestor config, so it can intentionally start
-a nested project.
+Creates `.watermelon.toml` in the current directory without running code or
+creating a VM. Detects nested/mixed-language projects and adds marked guidance
+to `AGENTS.md` and `CLAUDE.md`, preserving existing text and Watermelon blocks.
 
 ```bash
-watermelon init
-watermelon init --instructions-only  # Existing local Watermelon project
+watermelon init [--template PROFILE] [--runtime VERSION]
+watermelon init --instructions-only
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--template <profile>` | Detect `all` supported languages, restrict to one language, or use `manual` for a commented configuration |
-| `--runtime <version>` | Select a numeric version for one language, or overrides such as `node=22,python=3.13` |
-| `--instructions-only` | Add assistant guidance to an existing local configuration without changing `.watermelon.toml`; cannot be combined with template or runtime flags |
+| Flag | Meaning |
+|------|---------|
+| `--template` | `all` (default), `node`, `python`, `go`, `rust`, `java`, `dotnet`, `ruby`, `php`, `cpp`, or `manual` |
+| `--runtime` | Numeric version for one language, or `node=22,python=3.13` |
+| `--instructions-only` | Add guidance to an existing local config; cannot combine with template/runtime |
 
-**Behavior:**
-- Detects supported languages and package managers, including nested and mixed-language projects, and creates an active runtime and network profile
-- Accepts `--template all|node|python|go|rust|java|dotnet|ruby|php|cpp|manual` and `--runtime <numeric-version|language=version,...>`
-- Uses a commented minimal template when no supported manifests are present
-- Appends a marked Watermelon block to `AGENTS.md` and `CLAUDE.md`, creating missing files; existing text, file permissions, and existing Watermelon blocks (including local edits) are preserved
-- Checks both instruction files before writing configuration; refuses symlinks, hard links, special files, invalid text, files larger than 1 MiB, and incomplete or duplicate Watermelon markers
-- Fails if `.watermelon.toml` already exists, unless `--instructions-only` is used
-- Does not create or modify the VM
-
-With `--template manual`, configure tools and network rules, then use
-`watermelon run` and install project dependencies inside the guest. Automatic
-profiles use `watermelon up` to prepare dependencies after approval.
-
-**Example output:**
-```
-Added Watermelon guidance to AGENTS.md and CLAUDE.md; existing instructions were preserved.
-Created /path/to/project/.watermelon.toml with the node profile (node:24-bookworm).
-The host project will be mounted read-write. Review the config, then run 'watermelon up'.
-```
-
----
+Existing configs are refused except with `--instructions-only`. With no
+supported manifests, `init` writes a commented manual template. Instruction
+files are checked before config creation; unsafe files or malformed markers
+are refused. Automatic profiles use `up`; manual profiles use `run`.
 
 ## `watermelon agents install`
 
-Installs the skill embedded in the Watermelon binary for local Codex and
-Claude Code sessions. It works outside a project, needs no downloads or API
-credentials, and does not change assistant permissions, hooks, or model settings.
-
-For a complete workflow and version requirements, see
-[using Codex or Claude Code](CODING_ASSISTANTS.md).
+Installs the bundled skill for local Codex/Claude Code, without downloads or
+API credentials. Works outside a project.
 
 ```bash
 watermelon agents install
-watermelon agents install --agent codex
-watermelon agents install --agent claude
 watermelon agents install --agent codex,claude
-watermelon agents install --agent all
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--agent <name>` | Select `codex`, `claude`, or `all`; accepts a comma-separated list or repeated flags. Explicit selection does not require the assistant to be installed yet |
+`--agent` accepts `codex`, `claude`, `all`, comma-separated names, or repeated
+flags. Without it, detection uses `PATH` and existing assistant configuration
+directories (`CODEX_HOME`/`CLAUDE_CONFIG_DIR` overrides supported). Explicit
+selection works before an assistant's first launch.
 
-Without a selector, detects `codex` and `claude` on `PATH` or their existing
-configuration directories. Codex's default detection directory is `~/.codex`
-(or `CODEX_HOME`); Claude's is `~/.claude` (or `CLAUDE_CONFIG_DIR`). If neither
-is detected, exits with instructions to select one explicitly.
-
-| Assistant | Installed skill |
-|-----------|-----------------|
-| Codex (local app, CLI or IDE) | `~/.agents/skills/watermelon/SKILL.md` |
+| Assistant | Skill location |
+|-----------|----------------|
+| Codex | `~/.agents/skills/watermelon/SKILL.md`, even with `CODEX_HOME` set |
 | Claude Code | `~/.claude/skills/watermelon/SKILL.md`, or `$CLAUDE_CONFIG_DIR/skills/watermelon/SKILL.md` |
 
-Codex's user skill location remains `~/.agents/skills` when `CODEX_HOME` is
-set. Custom configuration directories must be absolute. Start a new assistant
-session after installation. The skill activates for projects containing
-`.watermelon.toml`; `init` supplies persistent project instructions for both
-assistants. For existing local projects, use `init --instructions-only`.
+Custom config directories must be absolute. Identical files are unchanged;
+differing content is refused after preflighting all selected destinations.
+Preserve conflicting skills before moving them aside. Symlinks, hard links,
+and special files are refused. Restart the assistant session afterward.
+Updating the CLI does not update installed skills.
 
-Reinstallation leaves identical files untouched. If a destination has different
-content, the command refuses to overwrite it and preflights all selected skill
-files before installing any. Move the conflicting skill aside or merge it
-manually before retrying. Symlinked skill files and directories, hard links,
-and special files are refused. Other skills and assistant settings are preserved.
-To remove an installed integration, remove only its `watermelon` skill directory;
-project instructions can be removed between the `watermelon:begin` and
-`watermelon:end` markers, including the markers themselves.
-
-Project instructions route code execution through `watermelon exec` and forbid
-falling back to host execution when it fails. They guide assistant behavior;
-they do not enforce command interception. Host access remains governed by the
-assistant's own permissions. The VM can modify the mounted project.
-
----
+The integration guides execution; it does not intercept commands or change
+assistant permissions. See [assistant setup](CODING_ASSISTANTS.md). To remove
+it, delete only the `watermelon` skill directory and the project's marked
+`watermelon:begin` through `watermelon:end` blocks, including markers.
 
 ## `watermelon clone`
 
-Clones a public GitHub repository into a managed guest workspace. Source and
-edits live at `/workspace/project` on a separate guest disk; the host directory
-holds settings. The destination must not already exist.
+Acquires a public GitHub repository into `/workspace/project` on a retained
+guest disk. The new host directory contains settings. See [clone workflow](WORKSPACES.md#clone-a-public-project).
 
 ```bash
-watermelon clone https://github.com/owner/project
-watermelon clone --no-setup https://github.com/owner/project inspection
-watermelon clone --template node --runtime 22 https://github.com/owner/project
+watermelon clone [flags] https://github.com/owner/project [destination]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--template <profile>` | Use `all` detected languages, or restrict to `node`, `python`, `go`, `rust`, `java`, `dotnet`, `ruby`, `php`, or `cpp` |
-| `--runtime <version>` | Select a numeric version for one language, or overrides such as `node=22,go=1.27` |
-| `--no-setup` | Acquire source without installing project dependencies |
+| Flag | Meaning |
+|------|---------|
+| `--template PROFILE` | `all` detected languages, or one automatic profile listed under `init` |
+| `--runtime VERSION` | Select one runtime or `language=version,...` overrides |
+| `--no-setup` | Acquire source without installing dependencies |
 | `--yes`, `-y` | Approve the displayed setup plan without prompting |
 
-By default, `clone` detects supported languages and package managers, displays
-the setup plan, and asks before installing dependencies. Root and nested
-projects share one sandbox. Only credential-free public GitHub HTTPS URLs are
-supported. See [clone workflow and trust boundaries](WORKSPACES.md#clone-a-public-project).
-
----
+The destination must not exist. Only credential-free public GitHub HTTPS URLs
+are supported. Default setup displays a plan and asks before installation.
 
 ## `watermelon up`
 
-Creates or starts the configured environment and installs approved project
-dependencies. Unchanged manifests skip repeated installation.
+Creates/starts the environment and prepares approved dependencies. Unchanged
+manifests skip installation; changed runtimes/layouts require approval before
+VM replacement.
 
 ```bash
-watermelon up
-watermelon up --dry-run
-watermelon up --runtime node=22,go=1.27
+watermelon up [--refresh] [--dry-run] [--runtime VERSION] [--yes] [--name NAME]
 ```
 
-| Flag | Description |
-|------|-------------|
+| Flag | Meaning |
+|------|---------|
+| `--refresh` | Reinstall despite unchanged inspected manifests |
+| `--dry-run` | Inspect settings without VM operations; inspecting managed source requires live `up` |
+| `--runtime VERSION` | Propose new runtime versions; unspecified languages keep approved versions |
 | `--yes`, `-y` | Approve the displayed setup plan without prompting |
-| `--refresh` | Reinstall dependencies even when inspected manifests are unchanged |
-| `--dry-run` | Inspect local settings without VM operations; managed source inspection still needs a live `up` |
-| `--runtime <version>` | Override selected runtime versions through a new approval plan |
-| `--name <name>` | Select a VM name for a local mounted project |
+| `--name NAME` | Select a VM for a local mounted project |
 
-A changed runtime or project layout requires approval before VM replacement.
-Unspecified runtime versions keep their approved values. `up` requires
-noninteractive `fail`, `silent`, or explicitly chosen `log` enforcement.
-For `ask`, use a foreground `run` session and install dependencies interactively.
-See [runtime and dependency support](WORKSPACES.md#runtime-and-dependency-support).
-
----
+Supports `fail`, `silent`, and explicitly selected `log`. For `ask`, use a
+foreground `run` session and install interactively. See [runtime support](WORKSPACES.md#runtime-and-dependency-support).
 
 ## `watermelon rebuild`
 
-Replaces VM-local system state while retaining the managed workspace disk or
-mounted host project. Preserve any files stored elsewhere in the VM first.
-Rebuild does not implicitly grant new network or mount permissions.
+Replaces VM system state and reapplies configuration, retaining host source
+and managed disks. Interrupts work; preserve needed files elsewhere in the VM
+first. Automatic profiles recheck dependencies; manual profiles stay manual.
 
 ```bash
-watermelon rebuild
-# Automation: confirm replacement and approve a changed setup plan
-watermelon rebuild --force --yes
+watermelon rebuild [--name NAME] [--force] [--yes]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--force`, `-f` | Confirm VM replacement without prompting |
-| `--yes`, `-y` | Separately approve a changed setup plan without prompting |
-| `--name <name>` | Select a VM name for a local mounted project |
-
-Projects with automatic setup recheck and prepare dependencies. Manual
-configurations retain their workflow; rebuilding does not add manifest
-detection or automatic installation.
-
----
+`--force`/`-f` confirms replacement. `--yes`/`-y` separately approves a changed
+setup plan. Use both for an approved noninteractive rebuild. Rebuild does not
+implicitly expand network or mount permissions. For manual `ask` mode, follow
+the foreground recreation instructions printed by the CLI.
 
 ## `watermelon config validate`
 
-Validates the discovered configuration and referenced provision-script inputs
-without changing a VM.
-
 ```bash
-watermelon config validate
-watermelon config validate --json
+watermelon config validate [--json]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--json` | Emit a validation result with `schema_version: 1` |
-
-A valid configuration exits 0. Invalid settings or unreadable inputs exit 1.
-Validation does not prove that an existing VM matches the settings; use
-`watermelon status` to compare the recorded applied policy.
-
----
+Validates settings and referenced provision scripts without changing a VM.
+Exits 0 for valid settings, 1 otherwise. JSON uses `schema_version: 1`.
+Use `status` separately to compare recorded applied settings.
 
 ## `watermelon run`
 
-Enters an interactive shell inside the sandbox VM.
+Creates/starts the VM and opens an unprivileged guest shell. Automatic profiles
+ensure approved setup is ready. Exiting leaves the VM running.
 
 ```bash
-watermelon run [--name <vm-name>] [--workdir <guest-path>]
-watermelon run --no-shell
+watermelon run [--name NAME] [--workdir PATH] [--no-shell]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
-| `--workdir <path>` | Override the configured guest working directory for this shell; the directory must already exist |
-| `--no-shell` | Create or start the VM without opening a shell; unavailable with `ask` enforcement |
+`--workdir` selects an existing absolute guest directory for this shell.
+Otherwise it uses `vm.workdir`, `/project` when mounted, or the guest login
+directory. `--no-shell` starts without entering a shell and is unavailable in
+`ask` mode. General passwordless `sudo` is removed; declare global tools in
+manual `[provision]` instead.
 
-**Behavior:**
-- Creates the VM on first run (may take a few minutes)
-- Starts the VM if it was stopped
-- Opens a bash shell at `--workdir`, `[vm].workdir`, `/project` for the default mounted-project configuration, or the guest login directory in no-mount mode
-- The VM stays running after you exit; dependencies and VM-local state survive shell exits and VM restarts
-- With `--no-shell`, creates or starts the VM and exits without opening a shell, except when enforcement is `ask`
-
-The shell runs as the ordinary VM user. General passwordless `sudo` is removed after system provisioning. For reproducible global CLIs and command wrappers, declare packages under `[provision]` and recreate the VM instead of relying on ad-hoc system changes.
-
-Global `[provision]` package lists apply to manual configurations. Automatic
-profiles manage their toolchains through `[setup]` and cannot be combined with
-those lists.
-
-`ask` is deliberately foreground-only. `watermelon run --no-shell` is rejected because no host process would remain to display network prompts. Run without `--no-shell` and keep Watermelon and its interactive shell open; the prompt server remains available until that shell exits. One saved host port connects the VM to one foreground prompt controller, so wait for that controller to exit before starting another ask-mode `run`, `exec`, or `code` command for the same VM.
-
-On Linux, a verdict prompt reads and writes the foreground controlling terminal rather than guest stdin or command stdout. Watermelon pauses forwarding interactive guest input while the prompt is visible, so a shell keystroke cannot become a policy verdict and a verdict cannot reach the guest. If no foreground controlling terminal is available, the request blocks by default instead of reading another input stream. macOS uses its native dialog backend.
-
-**VM naming:**
-
-The VM name is selected in this order:
-
-1. `--name`
-2. `[vm].name`
-3. `watermelon-{project}-{hash}`, derived from the canonical project path
-
-Custom names use lowercase letters, digits, and single `.`, `_`, or `-` separators, are at most 76 bytes, and are owned by their creating project. The lowercase restriction prevents case-variant names from aliasing one Lima directory on common macOS filesystems. Watermelon records and verifies that identity, rejects a name already used by another project or by an unmanaged Lima instance, and refuses name-selecting lifecycle and log commands from a different project.
-
-Watermelon serializes short lifecycle decisions for the same VM name, then interactive shells, `exec` commands, foreground IDE sessions, and `copy` transfers hold a shared usage lease. Subject to ask mode's single prompt-controller limit, shared leases allow other non-destructive Watermelon commands and sessions to proceed. `watermelon stop` remains an immediate interrupt: it does not wait for clients, and stopping the VM ends their connections or transfers. `watermelon destroy` also stops a running VM immediately, then waits for the terminated Watermelon clients to release their usage leases before it deletes VM state. The wait protects cleanup and later name reuse; it does not let guest work finish before shutdown.
-
-**No-mount mode:**
-
-```toml
-[vm]
-mount_project = false
-# workdir = "/home/watermelon/work"  # Optional
-```
-
-The host project is not mounted and `/project` is not assumed. With an explicit `vm.workdir`, shells, exec commands, and tool containers use it, but Watermelon does not create the directory. Create it during provisioning with ownership suitable for the ordinary `watermelon` guest user before the first command enters it. The same pre-existing-directory requirement applies to `run --workdir` and `ide.workdir`. Without a configured workdir, the shell begins in the guest login directory and tool wrappers bind the guest's current directory into their container at the same path.
-
----
+In `ask`, keep the shell open to serve prompts. Each VM permits one foreground
+`run`, `exec`, or `code` prompt controller at a time.
 
 ## `watermelon exec`
 
-Runs a single command inside the VM without an interactive shell.
-`--cwd <relative-directory>` selects a project subdirectory and its Python
-environment, for example `watermelon exec --cwd backend python -m pytest`.
-Place the flag before the command.
-
-Automatic setup preserves this directory inside the project runtime. Manual
-`[tools]` wrappers still use their configured VM workdir; for those tools,
-select a subdirectory with the tool's own option, such as
-`watermelon exec -- npm --prefix frontend test`.
+Runs a guest command, starting a stopped VM. Automatic profiles ensure setup
+is ready; manual profiles need an existing VM created with `run`.
 
 ```bash
-watermelon exec [--name <vm-name>] [--cwd <relative-directory>] -- <command> [args...]
-watermelon exec [--name <vm-name>] "<shell command>"
+watermelon exec [--name NAME] [--cwd DIRECTORY] -- command [args...]
+watermelon exec -- npm test
+watermelon exec --cwd backend -- python -m pytest
+watermelon exec -- sh -c 'npm install && npm run build'
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
-| `--cwd <directory>` | Run in this existing project-relative directory and select its Python environment; requires a configured or default project workdir |
+Put Watermelon flags before the guest command. `--cwd` selects an existing
+project-relative directory and Python environment; the host invocation
+subdirectory is not mirrored. Manual tool wrappers use their configured
+workdir; use tool options such as `npm --prefix frontend test` for them.
+A single string containing spaces/operators runs through guest `sh -lc`;
+multiple arguments are passed directly.
 
-Watermelon flags must appear before the guest command. Use `--` to make the boundary explicit, especially when the guest command has flags of its own.
+Redirected stdin goes to the guest. In Linux `ask`, verdicts use the foreground
+controlling terminal independently; without one, requests block. macOS uses
+native dialogs. The prompt controller stays active until the command exits.
 
-**Examples:**
-```bash
-watermelon exec "npm install"
-watermelon exec "npm test"
-watermelon exec "python -m pytest"
-watermelon exec "npm install && npm run build"
-watermelon exec -- npm install
-watermelon exec --name dev -- docker run --name web nginx
-producer | watermelon exec -- consumer
-```
-
-Redirected stdin is forwarded unchanged to the guest command. In Linux `ask` mode, verdicts still come from the controlling terminal, so bytes from `producer` in the pipeline above can never be interpreted as a verdict. A redirected stdin does not by itself disable prompts when Watermelon still has a foreground controlling terminal. In a detached session, CI job, or other environment with no controlling terminal, non-allowlisted requests block by default rather than waiting on or consuming the pipe. macOS displays its native dialog independently of stdin.
-
-**Behavior:**
-- With a setup profile, ensures approved project setup is ready; manual projects require an existing VM (run `watermelon run` first)
-- Starts the VM if it was stopped
-- Passes multi-argument commands directly to `limactl shell`
-- Runs a single string containing spaces or shell operators through `sh -lc` inside the VM
-- Runs in `[vm].workdir`, `/project` by default when mounted, or the guest login directory when no workdir is configured; an explicit workdir must already exist in the guest
-- Preserves flags after the guest command starts; for example, Docker's `--name` is not interpreted as Watermelon's flag
-- Forwards redirected stdin exclusively to the guest command
-- In `ask` mode, runs the host prompt server for the command's full duration, then shuts it down when the command exits; another foreground ask prompt controller for that VM prevents this command from starting
-- Returns `0` when the guest command succeeds and propagates numeric guest exit statuses from `1` through `255` unchanged
-- Reports a guest command terminated by signal `N` using the Unix shell convention `128+N` (for example, `SIGINT` is `130` and `SIGTERM` is `143`)
-- Returns `1` for failures Watermelon detects while preparing or attaching the command (including invocation, configuration, policy, and VM startup failures) or while releasing its VM usage lease
-- Treats `255` as inherently ambiguous: it can be an explicit guest status or a Lima/SSH transport failure after command handoff
-- Useful for CI/CD pipelines and scripts
-
----
+Guest numeric exit codes 0–255 are preserved; signals use `128+N` (SIGINT 130).
+Watermelon preparation/attachment/lease-release failures return 1. Status 255
+can mean a guest result or a Lima/SSH transport failure. Setup output goes to
+stderr so command stdout can be piped.
 
 ## `watermelon code`
 
-Opens your IDE connected to the sandbox VM via SSH.
+Opens a remote editor and stays foreground until its remote window closes.
+Automatic profiles ensure setup; manual profiles need an existing VM.
 
 ```bash
-watermelon code [--name <vm-name>]
+watermelon code [--name NAME]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
-
-**Behavior:**
-- With an automatic setup profile, ensures approved setup is ready; manual projects require an existing VM (run `watermelon run` first)
-- Starts the VM if it was stopped
-- Automatically configures `~/.ssh/config` for Lima VMs (one-time setup)
-- Launches your configured IDE with Remote-SSH to the VM and passes `--wait`
-- Remains in the foreground until the IDE's remote window exits; keep this terminal open for the duration of the IDE session
-- Opens `[ide].workdir`, then `[vm].workdir`, or `/project` when the project mount uses its default workdir
-- Omits the remote directory argument when the project is not mounted and neither workdir is configured, allowing the IDE to use the guest login directory
-- In `ask` mode, keeps the host prompt server active for the entire foreground IDE session; no other ask-mode `run`, `exec`, or `code` prompt controller can be active for that VM at the same time
-
-**IDE Configuration:**
-
-Install your editor's CLI on the host and its Remote-SSH support. Make sure
-the CLI is available on `PATH` (for example, `command -v code`). By default,
-Watermelon uses VS Code (`code`). Configure another compatible editor in
-`.watermelon.toml`:
+Install the host editor CLI and Remote-SSH support. The CLI must implement
+`--remote` and `--wait`; compatible examples include `code`, `cursor`, `codium`,
+and `code-insiders`. Watermelon configures Lima entries in `~/.ssh/config`.
 
 ```toml
 [ide]
-command = "cursor"  # Or "code", "codium", "code-insiders", etc.
-workdir = "/workspace/app"  # Optional IDE-only remote directory
+command = "cursor"
+# workdir = "/workspace/app"  # Optional existing guest directory
 ```
 
-`ide.workdir` affects only `watermelon code`. Interactive shells and `watermelon exec` use `vm.workdir`.
-
-The configured command must implement the VS Code CLI-compatible `--remote ssh-remote+<host>` and `--wait` options. Watermelon relies on `--wait` to keep the prompt server and VM usage lease alive until the remote IDE window closes. An editor command that ignores or rejects `--wait` is not compatible with `watermelon code`.
-
-**Supported IDEs:**
-- VS Code (`code`)
-- Cursor (`cursor`)
-- VSCodium (`codium`)
-- VS Code Insiders (`code-insiders`)
-- Other VS Code-compatible CLIs supporting both `--remote` and `--wait`
-
-**Manual SSH Connection:**
-
-If you prefer to connect manually:
-```bash
-ssh lima-watermelon-myapp-a1b2c3d4
-```
-
-The SSH host is printed when you run `watermelon run`.
-
-A manual SSH process is outside Watermelon's session coordination: it neither starts an `ask`-mode prompt server nor holds the usage lease that delays deletion. In `ask` mode, keep a Watermelon foreground prompt controller active separately if the manually connected workload needs prompted network access. A concurrent `watermelon stop` or `destroy` can terminate the manual connection immediately.
-
----
+Directory precedence: `ide.workdir`, `vm.workdir`, `/project` when mounted,
+then the editor's guest login default. IDE-only workdir changes do not affect
+`run` or `exec`. In `ask`, this foreground process also serves prompts.
+Manual SSH starts no prompt server and holds no Watermelon usage lease.
 
 ## `watermelon stop`
 
-Stops the VM while preserving all state.
-
 ```bash
-watermelon stop [--name <vm-name>]
+watermelon stop [--name NAME]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
-
-**Behavior:**
-- Gracefully shuts down the VM
-- All installed packages and files are preserved
-- VM can be restarted with `watermelon run`
-- Stops immediately even when interactive shells, commands, or IDE sessions are active; those sessions terminate as the VM shuts down
-- If a present config is malformed or unreadable, returns that error but first attempts to stop running VMs whose project binding or durable ownership can still be verified; with explicit `--name`, the same recovery also applies when the config is missing and the command runs from the owning project root
-
----
+Stops immediately, terminating active sessions/transfers while preserving
+VM state. Restart with `run` or `exec`. Through an invalid config, it attempts
+to stop only a verifiably owned VM and still returns the config error.
 
 ## `watermelon destroy`
 
-Permanently deletes the VM and its VM-local system state. Mounted host project
-files and managed workspace disks are retained by default.
-
-Use `--delete-workspace` to also remove a managed workspace disk. That flag
-permanently deletes source files, uncommitted edits, and project dependencies
-after confirming their loss. It requires a valid owned managed workspace and
-refuses an active setup operation.
-
 ```bash
-watermelon destroy [--name <vm-name>]
-watermelon destroy --force  # Skip confirmation
-watermelon destroy -f       # Short form
+watermelon destroy [--name NAME] [--force] [--delete-workspace]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
-| `--force`, `-f` | Skip the confirmation prompt |
-| `--delete-workspace` | Also permanently delete the owned managed disk, source files, uncommitted edits, and dependencies |
+Deletes VM system state after confirmation. Host files and managed disks are
+retained. **`--delete-workspace` also permanently deletes managed source,
+uncommitted edits, and dependencies**; it requires valid ownership, refuses
+active setup, and never force-deletes an attached disk.
 
-**Behavior:**
-- Prompts for confirmation (unless `--force`)
-- Deletes the VM completely
-- Packages and files stored only on the VM system disk are lost; managed workspace data is retained unless `--delete-workspace` is used
-- Project files on host are not affected
-- If the VM is running, stops it immediately, terminating active interactive shells, commands, and IDE connections
-- After shutdown, waits for terminated Watermelon client processes to detach and release their usage leases before deleting the VM; `--force` skips confirmation, not this cleanup-safety wait
-- Revalidates project ownership before deletion and removes the corresponding host identity and policy state
-- With an explicit `--name`, can recover a custom-named VM after an invalid discovered config, but only when its durable identity proves ownership; when the config is missing entirely, run recovery from the owning project root
-- If Lima no longer has that verified VM, removes its stale Watermelon identity and policy state without asking Lima to delete another instance
-
----
+`--force`/`-f` skips confirmation only. A running VM stops immediately; destroy
+then waits for terminated Watermelon clients to detach before cleanup/name
+reuse. Verified stale identity/policy state can be cleaned even if Lima has
+already lost the VM. See recovery below.
 
 ## `watermelon status`
 
-Shows the VM status and recorded policy for the resolved project. For a
-managed workspace, human output also includes the guest path, retained disk,
-setup stage, and a bounded last-setup error when available. A missing VM is
-reported successfully with exit status 0.
-
 ```bash
-watermelon status [--name <vm-name>] [--json]
+watermelon status [--name NAME] [--json]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--name <name>` | Override `[vm].name` and the name derived from the resolved project root |
-| `--json` | Emit `schema_version: 1` with VM, recorded-policy, and available workspace/setup state |
+Shows project path, VM name, running/stopped/missing state, and configured vs
+recorded applied policy. Managed output includes workspace/setup state when
+available. Missing VMs return success. JSON uses `schema_version: 1`.
 
-**Example output:**
-```
-Project:  /Users/dev/myapp
-VM Name:  watermelon-myapp-a1b2c3d4
-Status:   Running
-Configured Policy: fail (blocks and logs connections outside the allowlist)
-Applied Policy:    fail (blocks and logs connections outside the allowlist) (recorded, current)
-```
-
-`Configured Policy` comes from the discovered `.watermelon.toml`; `Applied Policy` comes from a host-side versioned record written after successful VM creation. “Current” means that record matches the current VM-affecting configuration; status does not inspect the live firewall. For an existing VM, status labels a changed record as stale and missing, invalid, or legacy records as unverified, then prints the required recreation command. The comparison rereads the exact bytes of every provision script. Keep those host files present and readable: editing a script makes the configuration stale, while a missing, unreadable, or newly invalid script prevents status from completing the comparison.
-
-**Status values:**
-- `Running` - VM is active
-- `Stopped` - VM exists but is not running
-- `Not found` - No VM exists for this project
-
----
+“Current” means the host record matches configuration, including exact provision
+script bytes; it is not a live firewall audit. Stale/unverified policy prints
+recreation instructions. Keep configured scripts readable for this comparison.
 
 ## `watermelon list`
-
-Lists all watermelon VMs across all projects.
 
 ```bash
 watermelon list
 ```
 
-**Example output:**
-```
-NAME                          STATUS    PROJECT
-watermelon-myapp-a1b2c3d4     Running   /Users/dev/myapp
-fixed-build-vm                Stopped   /Users/dev/build
-```
-
-The list includes existing Lima VMs with Watermelon's historical `watermelon-` name prefix and existing registered custom-named VMs. A legacy row derives `PROJECT` from its `/project` mount when available. For a registered name, `PROJECT` comes from Watermelon's secure ownership record, so no-mount VMs remain attributable. Arbitrary unregistered custom names are excluded. If a present registered VM's identity or read-only identity mount cannot be verified, listing fails rather than guessing its owner. A stale identity whose Lima VM is already gone is not shown; use `watermelon destroy --name <name>` from its owning project to remove that host state.
-
----
+Lists VMs across projects: historical `watermelon-` names and registered custom
+names. Registered ownership supplies project attribution, including no-mount
+VMs. Unverified identities fail rather than guessing; absent VMs are omitted.
 
 ## `watermelon copy`
 
-Copies files between the host and one Lima VM.
-
 ```bash
-watermelon copy [--recursive] <src> <dst>
+watermelon copy [--recursive | -r] source destination
+watermelon copy ./file.txt VM_NAME:/tmp/
+watermelon copy VM_NAME:/workspace/project/result.txt ./result.txt
 ```
 
-Exactly one operand must use `vm-name:path` syntax:
-
-```bash
-# Host to VM
-watermelon copy ./file.txt my-project-vm:/tmp/
-
-# VM to host
-watermelon copy my-project-vm:/tmp/output.log ./
-
-# Directory copy
-watermelon copy -r ./scripts/ my-project-vm:/home/watermelon/scripts/
-```
-
-| Flag | Description |
-|------|-------------|
-| `--recursive`, `-r` | Copy directories recursively |
-
-The VM name is explicit; `copy` does not accept `--name` or infer a VM from `.watermelon.toml`. It is a low-level Lima copy operation and validates the operand syntax, not Watermelon project ownership, so target only a VM you own. Watermelon does coordinate the selected name and holds a shared usage lease for the full transfer: `destroy` waits for the copy client to detach before deleting state or reusing the name. `stop` and `destroy` still stop a running VM immediately, so either can interrupt a transfer and leave a partial destination. If a local filename contains a colon, prefix it with `./` so it is unambiguously local, for example `./report:2026.txt`.
-
----
+Exactly one operand must use `vm-name:path`. No config discovery, `--name`, or
+Watermelon ownership check occurs; target only a VM you own. Transfers hold a
+usage lease, but stop/destroy can interrupt them and leave partial files.
+Prefix local filenames containing colons with `./`.
 
 ## `watermelon logs`
 
-Shows rate-limited IPv4 network policy events recorded by the firewall.
-
 ```bash
-watermelon logs [--name <vm-name>]  # Show a bounded tail of recent logs
-watermelon logs --clear              # Clear the log
-watermelon logs --name build --clear # Clear a named VM's log
+watermelon logs [--name NAME] [--clear]
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--name <name>` | Override `[vm].name` and select the resolved project's registered VM log |
-| `--clear` | Clear the selected log |
+Reads a bounded tail of rate-limited IPv4 policy events. `--clear` removes
+written records; in-flight events may appear afterward. Managed logs live on
+the retained guest disk and require a running VM; `logs` does not start it.
+Other registered VMs use per-VM host state; legacy mounted VMs use
+`.watermelon/logs.log`. Use the command to resolve the correct location.
 
-Managed workspace logs are stored on the persistent guest disk. The sandbox
-must be running to read or clear them; `logs` does not start it automatically.
-These logs survive VM rebuilds. Other VM modes retain their existing host log
-locations.
-
-**Example output:**
-```
-2024-01-15T10:30:45 kernel: watermelon-net ... DST=203.0.113.10 ... DPT=443
-2024-01-15T10:30:46 kernel: watermelon-net ... DST=198.51.100.20 ... DPT=80
-```
-
-**Behavior:**
-- Reads managed logs from the guest data disk; other registered VMs use their host log and legacy mounted VMs use `.watermelon/logs.log` in the project
-- Refuses a custom name whose secure identity record is missing or owned by another project
-- In `fail`, each event represents traffic that was blocked
-- In `log`, each event represents IPv4 traffic that was observed and allowed; IPv6 is allowed but is not currently captured
-- `silent` does not record policy events; `ask` reports decisions through its prompt instead
-- Useful for discovering which destinations a package attempts to reach
-- Add legitimate domains to `[network].allow` in your config
-
-**Workflow for discovering needed domains:**
-1. Set `enforcement = "log"` in config, understanding that this temporarily allows non-allowlisted traffic
-2. Rebuild to apply discovery mode: `watermelon rebuild`
-3. Run your command: `watermelon exec "npm install"`
-4. Inspect policy events: `watermelon logs`
-5. Add needed domains and restore strict mode with `enforcement = "fail"`
-6. Rebuild to apply the strict policy: `watermelon rebuild`
-7. Retry
-
-Rebuilding removes VM-local system state; mounted host project files and managed workspace disks remain. Preserve needed VM-local files first.
-
----
+In `fail`, events were blocked; in `log`, they were allowed. `silent` records
+none; `ask` uses prompts. See [network troubleshooting](TROUBLESHOOTING.md#network-issues).
 
 ## Ask-mode saved decisions
 
-The process shown in a network prompt is informational; it does not restrict the decision. **Always Allow and Save** immediately permits the displayed TCP host and port for every process in the current VM runtime. It also writes the bare host to the global `[network].allow` list. That saved host-only rule has no process, protocol, or port scope; managed DNS redirection still applies.
-
-The broader saved rule is not part of the provisioned firewall until the VM is recreated. After the current Watermelon session finishes, preserve any needed VM-local state, then run the exact, VM-pinned recreation command printed by Watermelon from the project root. Recreation removes VM-local state. If this is deferred, the next policy-checked `run`, `exec`, or `code` detects the stale configuration and stops a securely bound running VM before returning the recreation instruction.
-
----
+**Always Allow and Save** permits the literal IP/TCP port across all processes
+for the current runtime, then saves the displayed bare host as a broader global
+allow rule. Process/hostname labels are informational. After the session, use
+the exact VM-pinned recreation command printed by Watermelon. Until then,
+policy is stale and the next checked execution can stop the VM. See
+[ask-mode limits](CONFIG_SPEC.md#security).
 
 ## Project and VM selection
 
-Project-scoped commands search the canonical current directory and its physical
-parents for the nearest `.watermelon.toml`, stopping at a Git, filesystem, or
-untrusted-directory boundary. The config directory becomes the resolved
-project root for VM identity and mounts and for associating policy state,
-scripts, and logs; `status` prints it as `Project:`. The invocation subdirectory
-is not preserved as a guest workdir: explicit and configured workdirs keep
-their existing precedence, with `/project` as the mounted default. A nearer
-invalid config is an error rather than a reason to use a higher one. `init`
-remains current-directory-only, while `doctor`, `list`, and `copy` are
-project-independent. See [File Location](CONFIG_SPEC.md#file-location) for the
-precise rules.
+Commands use the nearest config within [discovery boundaries](CONFIG_SPEC.md#file-location).
+The config directory owns the VM, mounts, scripts, and policy state. `init`
+writes only in the current directory; `doctor`, `agents install`, `list`, and
+`copy` work outside a project.
 
-For normal operation, commands that accept `--name` resolve and validate the
-discovered config. The flag overrides `[vm].name`; it never adopts a VM owned
-by another project or creates one from default configuration. Two fail-closed
-recovery paths are deliberately narrower: `stop` can stop a securely verified
-project-owned VM while returning an invalid discovered-config error, and
-`destroy --name` can use its durable ownership record in that case. If the
-config is missing entirely, run explicit-name recovery from the owning project
-root; a descendant alone cannot reconstruct that former root.
+Name precedence is `--name`, `vm.name`, then `watermelon-{project}-{hash}` from
+the canonical project path. A name is project-owned, never a shared alias.
+Normal `--name` use still requires valid settings and verified ownership.
+Lifecycle decisions are serialized; workloads and transfers hold shared leases.
+Stop interrupts immediately; destroy waits for client detachment after stopping.
 
-Commands that create or attach to workloads (`run`, `exec`, `code`, and
-`copy`) run the host, Lima, and backend preflight before VM use, including the
-macOS 13 floor and a stable Lima 2.0.0 or newer release. `stop` and `destroy`
-do not apply that compatibility gate, so an older but functional Lima can still
-be used for fail-closed recovery.
+For missing/invalid settings, `stop --name NAME` and `destroy --name NAME` can
+recover only durably verified ownership. With missing config, run from the
+owning root. Follow the VM-pinned command printed by Watermelon. Use Watermelon
+recovery rather than deleting Lima instances directly.
+
+Workload entry runs host/Lima/backend preflight. Stop/destroy remain available
+with an older functional Lima for recovery. Config/preparation failures exit 1.
