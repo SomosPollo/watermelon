@@ -7,6 +7,7 @@ and choose between a managed guest workspace and a mounted local project.
 
 - [Installation](INSTALLATION.md): prerequisites, release and Go installs, ask-mode sidecars, and upgrades.
 - [Project workflows](WORKSPACES.md): clone or prepare a project, choose runtimes, edit, serve, export files, and manage stored data.
+- [Codex and Claude Code](CODING_ASSISTANTS.md): install the agent skill, prepare project instructions, and run assistant-driven development in Watermelon.
 - [Examples](examples/README.md): configurations and workflows for particular tools and project types.
 - [Troubleshooting](TROUBLESHOOTING.md): diagnose host, VM, command, network, and port failures.
 

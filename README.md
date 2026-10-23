@@ -120,6 +120,10 @@ a managed disk, including source and uncommitted edits. See
 
 ## Use with Codex or Claude Code
 
+These integration commands were added after v0.5.0. If your installed CLI does
+not recognize `agents install`, follow the
+[version and source build guidance](docs/CODING_ASSISTANTS.md#check-your-watermelon-version).
+
 Install the bundled Watermelon skill once for detected local assistants:
 
 ```bash
@@ -145,8 +149,8 @@ This integration guides the assistant; it does not intercept its host shell.
 Only commands routed through Watermelon run in the VM, and the default local
 project mount remains writable. These instructions target local mounted
 projects; managed clones keep source inside the guest. See
-[assistant setup](docs/COMMANDS.md#watermelon-agents-install) for install
-locations and conflict handling.
+[assistant setup](docs/CODING_ASSISTANTS.md) for the complete workflow and
+installation troubleshooting.
 
 ## Network policy and limits
 

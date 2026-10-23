@@ -26,6 +26,7 @@ export const metadata = {
   'docs/README.md': ['Documentation', 'Guides, command and configuration references, and practical examples.', 'Start here', 'docs/'],
   'docs/INSTALLATION.md': ['Installation', 'Requirements, release installs, Go installs, and upgrades.', 'Start here', 'docs/installation/'],
   'docs/WORKSPACES.md': ['Project workflows', 'Clone, prepare, edit, serve, export, and recover your projects.', 'Guides', 'docs/workflows/'],
+  'docs/CODING_ASSISTANTS.md': ['Codex and Claude Code', 'Install the assistant skill and run project installs, builds, and tests in Watermelon.', 'Guides', 'docs/coding-assistants/'],
   'docs/TROUBLESHOOTING.md': ['Troubleshooting', 'Diagnose installation, VM, command, network, and port issues.', 'Guides', 'docs/troubleshooting/'],
   'docs/COMMANDS.md': ['Command reference', 'Every command, flag, and project selection rule.', 'Reference', 'docs/commands/'],
   'docs/CONFIG_SPEC.md': ['Configuration reference', 'Every .watermelon.toml field, default, and validation rule.', 'Reference', 'docs/configuration/'],

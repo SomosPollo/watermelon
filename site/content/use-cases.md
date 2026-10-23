@@ -16,9 +16,35 @@ Replace the URL with a public GitHub repository. `clone` displays a setup plan a
 
 Automatic setup supports Node, Python, Go, Rust, JVM, .NET, Ruby, PHP, and C/C++, including mixed-language projects. See [project workflows](../../docs/WORKSPACES.md) for supported runtimes, version selection, and storage behavior.
 
+## Use Codex or Claude Code with a local project
+
+Keep your assistant on the host and use Watermelon for project execution.
+Install the bundled skill, then add guidance to the project's `AGENTS.md` and
+`CLAUDE.md` without replacing existing instructions:
+
+```bash
+watermelon agents install --agent codex,claude
+cd your-project
+watermelon init
+# Review the generated policy and setup plan before approval.
+watermelon config validate
+watermelon up
+```
+
+For a project that already has `.watermelon.toml`, use
+`watermelon init --instructions-only` instead of `init`. Start a new assistant
+session and give it a normal development task; its project commands should
+use `watermelon exec`.
+
+The integration commands were added after v0.5.0. See the
+[assistant setup guide](../../docs/CODING_ASSISTANTS.md) for version requirements,
+installation conflicts, and execution checks. Host assistant API connections
+do not require guest allowlist entries. Skills guide the assistant; only
+commands routed through Watermelon execute in the VM.
+
 ## Give AI coding tools the network access they need
 
-An AI assistant may need its API while a package manager needs only a registry. Configure general network rules and additional per-process rules to separate those needs.
+For an assistant installed inside the VM, its API and a package manager's registry need different network access. Configure general network rules and additional per-process rules to separate those needs.
 
 ```toml
 [network]
@@ -31,7 +57,8 @@ claude = ["api.anthropic.com", "*.anthropic.com"]
 
 This is a policy excerpt, not a complete configuration. The [AI coding assistants example](../../docs/examples/ai-coding-assistants/README.md) includes provisioning and command wrappers. Run the configured wrapper so its process-specific network policy applies. Allowed destinations can still carry data out of the VM; keep credentials and mounts limited to what the task requires.
 
-For agents that should use Watermelon when running project commands, see the [agent skill](../../skills/watermelon/SKILL.md).
+For host assistants that should route project commands through Watermelon, use
+the [assistant setup guide](../../docs/CODING_ASSISTANTS.md).
 
 ## Inspect unfamiliar packages
 
