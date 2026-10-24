@@ -66,6 +66,14 @@ Mono the code. Font files and their licenses are supplied by Fontsource.
 The custom SVG watermelon mark is the only illustration asset; the VM diagram
 is HTML and CSS. Animation respects reduced-motion preferences.
 
+Typography is shared through the `--text-*`, `--weight-*`, and `--leading-*`
+tokens in `public/style.css`. Body copy uses `--text-body` (1rem), controls and
+supporting copy use `--text-small` (0.875rem), and metadata uses `--text-meta`
+(0.75rem). Display and page headings use fluid, rem-based scales. Reuse these
+roles across components; on small screens, adjust wrapping, spacing, or columns
+instead of reducing reading and control sizes. Keep long documentation code
+blocks and tables scrollable within their containers.
+
 ## Publish on GitHub Pages
 
 1. In the repository's **Settings → Pages → Build and deployment**, select
